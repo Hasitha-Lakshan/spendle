@@ -1,0 +1,367 @@
+@import "tailwindcss";
+
+/* Define theme variables - Vibrant Pastel Theme (default) */
+:root {
+  --background: 60 100% 97%; /* Soft cream */
+  --foreground: 280 30% 25%; /* Deep lavender */
+  --card: 0 0% 100%; /* Pure white */
+  --card-foreground: 280 30% 25%; /* Deep lavender */
+  --popover: 60 100% 97%; /* Soft cream */
+  --popover-foreground: 280 30% 25%; /* Deep lavender */
+  --primary: 330 100% 71%; /* Vibrant pink */
+  --primary-foreground: 0 0% 100%; /* White */
+  --secondary: 180 100% 85%; /* Bright mint */
+  --secondary-foreground: 200 100% 25%; /* Deep teal */
+  --muted: 45 100% 88%; /* Soft peach */
+  --muted-foreground: 280 20% 45%; /* Muted lavender */
+  --accent: 270 100% 75%; /* Electric purple */
+  --accent-foreground: 0 0% 100%; /* White */
+  --border: 45 100% 85%; /* Warm peach border */
+  --input: 45 100% 90%; /* Light peach input */
+  --destructive: 0 100% 65%; /* Bright coral red */
+  --destructive-foreground: 0 0% 100%; /* White */
+  --success: 150 100% 65%; /* Mint green */
+  --success-foreground: 150 100% 20%; /* Dark green */
+  --warning: 45 100% 65%; /* Golden yellow */
+  --warning-foreground: 45 100% 20%; /* Dark gold */
+  --info: 210 100% 75%; /* Sky blue */
+  --info-foreground: 210 100% 25%; /* Navy blue */
+
+  /* NEW: Industry-standard restore/utility colors */
+  --restore: 210 100% 85%; /* Soft sky blue - Most recommended */
+  --restore-foreground: 210 100% 25%; /* Navy blue */
+  --utility: 270 80% 80%; /* Soft lavender */
+  --utility-foreground: 270 50% 25%; /* Deep purple */
+  --renew: 150 80% 80%; /* Soft mint green */
+  --renew-foreground: 150 100% 20%; /* Forest green */
+  --system: 200 80% 80%; /* Soft teal */
+  --system-foreground: 200 100% 25%; /* Deep teal */
+}
+
+/* Dark Theme */
+.dark {
+  --background: 240 20% 12%; /* Deep navy */
+  --foreground: 60 100% 90%; /* Soft cream */
+  --card: 240 20% 15%; /* Dark navy card */
+  --card-foreground: 60 100% 90%; /* Soft cream */
+  --popover: 240 20% 12%; /* Deep navy */
+  --popover-foreground: 60 100% 90%; /* Soft cream */
+  --primary: 330 100% 65%; /* Vibrant pink */
+  --primary-foreground: 0 0% 100%; /* White */
+  --secondary: 180 60% 25%; /* Deep teal */
+  --secondary-foreground: 180 100% 85%; /* Bright mint */
+  --muted: 240 15% 25%; /* Muted navy */
+  --muted-foreground: 240 10% 65%; /* Light gray-blue */
+  --accent: 270 80% 60%; /* Electric purple */
+  --accent-foreground: 0 0% 100%; /* White */
+  --border: 240 15% 30%; /* Navy border */
+  --input: 240 15% 25%; /* Dark navy input */
+  --destructive: 0 100% 60%; /* Bright red */
+  --destructive-foreground: 0 0% 100%; /* White */
+  --success: 150 60% 40%; /* Forest green */
+  --success-foreground: 150 100% 90%; /* Light mint */
+  --warning: 45 100% 50%; /* Golden yellow */
+  --warning-foreground: 45 100% 10%; /* Dark gold */
+  --info: 210 80% 50%; /* Royal blue */
+  --info-foreground: 210 100% 90%; /* Light blue */
+
+  /* NEW: Dark mode versions */
+  --restore: 210 60% 40%; /* Deep blue */
+  --restore-foreground: 210 100% 90%; /* Light blue */
+  --utility: 270 50% 40%; /* Deep purple */
+  --utility-foreground: 270 100% 90%; /* Light lavender */
+  --renew: 150 50% 35%; /* Deep green */
+  --renew-foreground: 150 100% 90%; /* Light mint */
+  --system: 200 50% 35%; /* Deep teal */
+  --system-foreground: 200 100% 90%; /* Light teal */
+}
+
+/* Apply theme variables to Tailwind classes */
+@layer base {
+  * {
+    border-color: hsl(var(--border));
+  }
+
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+  }
+}
+
+/* Custom utility classes for theme variables */
+.bg-background {
+  background-color: hsl(var(--background));
+}
+
+.text-foreground {
+  color: hsl(var(--foreground));
+}
+
+.bg-card {
+  background-color: hsl(var(--card));
+}
+
+.text-card-foreground {
+  color: hsl(var(--card-foreground));
+}
+
+.bg-primary {
+  background-color: hsl(var(--primary));
+}
+
+.text-primary-foreground {
+  color: hsl(var(--primary-foreground));
+}
+
+.bg-secondary {
+  background-color: hsl(var(--secondary));
+}
+
+.text-secondary-foreground {
+  color: hsl(var(--secondary-foreground));
+}
+
+.bg-muted {
+  background-color: hsl(var(--muted));
+}
+
+.text-muted-foreground {
+  color: hsl(var(--muted-foreground));
+}
+
+.bg-accent {
+  background-color: hsl(var(--accent));
+}
+
+.text-accent-foreground {
+  color: hsl(var(--accent-foreground));
+}
+
+.border-border {
+  border-color: hsl(var(--border));
+}
+
+.text-destructive {
+  color: hsl(var(--destructive));
+}
+
+.bg-destructive {
+  background-color: hsl(var(--destructive));
+}
+
+.text-destructive-foreground {
+  color: hsl(var(--destructive-foreground));
+}
+
+.text-success {
+  color: hsl(var(--success));
+}
+
+.bg-success {
+  background-color: hsl(var(--success));
+}
+
+.text-success-foreground {
+  color: hsl(var(--success-foreground));
+}
+
+.text-warning {
+  color: hsl(var(--warning));
+}
+
+.bg-warning {
+  background-color: hsl(var(--warning));
+}
+
+.text-warning-foreground {
+  color: hsl(var(--warning-foreground));
+}
+
+.text-info {
+  color: hsl(var(--info));
+}
+
+.bg-info {
+  background-color: hsl(var(--info));
+}
+
+.text-info-foreground {
+  color: hsl(var(--info-foreground));
+}
+
+/* NEW: Restore & Utility color classes */
+.bg-restore {
+  background-color: hsl(var(--restore));
+}
+
+.text-restore-foreground {
+  color: hsl(var(--restore-foreground));
+}
+
+.bg-utility {
+  background-color: hsl(var(--utility));
+}
+
+.text-utility-foreground {
+  color: hsl(var(--utility-foreground));
+}
+
+.bg-renew {
+  background-color: hsl(var(--renew));
+}
+
+.text-renew-foreground {
+  color: hsl(var(--renew-foreground));
+}
+
+.bg-system {
+  background-color: hsl(var(--system));
+}
+
+.text-system-foreground {
+  color: hsl(var(--system-foreground));
+}
+
+/* Custom gradients */
+.gradient-primary {
+  background: linear-gradient(135deg, hsl(var(--primary)), hsl(var(--accent)));
+}
+
+.gradient-secondary {
+  background: linear-gradient(135deg, hsl(var(--secondary)), hsl(var(--info)));
+}
+
+.gradient-accent {
+  background: linear-gradient(135deg, hsl(var(--accent)), hsl(var(--primary)));
+}
+
+.gradient-restore {
+  background: linear-gradient(135deg, hsl(var(--restore)), hsl(var(--info)));
+}
+
+/* Custom shadows */
+.shadow-pastel {
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+}
+
+.dark .shadow-pastel {
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+}
+
+/* Animations */
+@keyframes pulse-gentle {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.8;
+  }
+}
+
+.animate-pulse-gentle {
+  animation: pulse-gentle 2s ease-in-out infinite;
+}
+
+/* Custom button styles */
+.btn-primary {
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  transition: all 0.2s ease;
+}
+
+.btn-primary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 25px rgba(0, 0, 0, 0.15);
+}
+
+.btn-accent {
+  background: hsl(var(--accent));
+  color: hsl(var(--accent-foreground));
+  transition: all 0.2s ease;
+}
+
+.btn-accent:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 25px rgba(0, 0, 0, 0.15);
+}
+
+.btn-restore {
+  background: hsl(var(--restore));
+  color: hsl(var(--restore-foreground));
+  transition: all 0.2s ease;
+}
+
+.btn-restore:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 25px rgba(0, 0, 0, 0.15);
+}
+
+/* Enhanced dropdown styling with visible default arrow */
+
+/* Remove the custom background image and let browser handle the arrow */
+select {
+  /* Remove custom arrow styling to show default */
+  background-image: none !important;
+  background-position: unset;
+  background-repeat: unset;
+  background-size: unset;
+
+  /* Ensure proper padding for the arrow space */
+  padding-right: 2.5rem;
+
+  /* Make sure the default arrow is visible */
+  -webkit-appearance: menulist;
+  -moz-appearance: menulist;
+  appearance: menulist;
+
+  /* Ensure proper styling */
+  background-color: hsl(var(--background));
+  color: hsl(var(--foreground));
+}
+
+/* For WebKit browsers (Chrome, Safari) - enhance arrow visibility */
+select::-webkit-inner-spin-button,
+select::-webkit-calendar-picker-indicator {
+  opacity: 1;
+}
+
+/* Alternative approach: Use a cleaner custom arrow that's more visible */
+.select-with-arrow {
+  background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23374151' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6,9 12,15 18,9'%3e%3c/polyline%3e%3c/svg%3e") !important;
+  background-position: right 0.75rem center !important;
+  background-repeat: no-repeat !important;
+  background-size: 1rem 1rem !important;
+  padding-right: 2.75rem !important;
+  -webkit-appearance: none !important;
+  -moz-appearance: none !important;
+  appearance: none !important;
+}
+
+/* Dark mode arrow */
+.dark .select-with-arrow {
+  background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23D1D5DB' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6,9 12,15 18,9'%3e%3c/polyline%3e%3c/svg%3e") !important;
+}
+
+/* Option styling remains the same */
+select option {
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  padding: 0.5rem;
+}
+
+select option:hover,
+select option:focus,
+select option:checked {
+  background: hsl(var(--primary) / 0.2) !important;
+  color: hsl(var(--foreground)) !important;
+}
+
+:root {
+  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
