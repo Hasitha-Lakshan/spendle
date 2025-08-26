@@ -1315,6 +1315,72 @@ BEGIN
 END;
 $$;
 
+-- Comprehensive Account Validation
+CREATE OR REPLACE FUNCTION validate_account_data(
+    p_account_id UUID,
+    p_account_type account_type DEFAULT NULL,
+    p_currency VARCHAR(10) DEFAULT NULL
+)
+RETURNS TABLE(
+    is_valid BOOLEAN,
+    validation_errors TEXT[]
+)
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = pg_catalog, public
+STABLE
+AS $$
+DECLARE
+    v_errors TEXT[] := '{}';
+    v_account_type account_type;
+    v_currency VARCHAR(10);
+    v_user_id UUID;
+    v_current_user UUID;
+BEGIN
+    v_current_user := current_user_id();
+    
+    -- Check if account exists and user has access
+    SELECT type, currency, user_id 
+    INTO v_account_type, v_currency, v_user_id
+    FROM accounts 
+    WHERE id = p_account_id AND deleted_at IS NULL;
+    
+    IF NOT FOUND THEN
+        v_errors := array_append(v_errors, 'Account not found or access denied');
+    ELSE
+        -- Check ownership
+        IF v_user_id != v_current_user THEN
+            v_errors := array_append(v_errors, 'Account ownership validation failed');
+        END IF;
+        
+        -- Check type consistency
+        IF p_account_type IS NOT NULL AND v_account_type != p_account_type THEN
+            v_errors := array_append(v_errors, 'Account type mismatch');
+        END IF;
+        
+        -- Check currency consistency
+        IF p_currency IS NOT NULL AND v_currency != p_currency THEN
+            v_errors := array_append(v_errors, 'Currency mismatch');
+        END IF;
+        
+        -- Check specialized account data exists
+        CASE v_account_type
+            WHEN 'cash' THEN
+                IF NOT EXISTS(SELECT 1 FROM cash_accounts WHERE account_id = p_account_id AND deleted_at IS NULL) THEN
+                    v_errors := array_append(v_errors, 'Cash account details missing');
+                END IF;
+            WHEN 'bank' THEN
+                IF NOT EXISTS(SELECT 1 FROM bank_accounts WHERE account_id = p_account_id AND deleted_at IS NULL) THEN
+                    v_errors := array_append(v_errors, 'Bank account details missing');
+                END IF;
+            -- Add other account types as needed
+        END CASE;
+    END IF;
+    
+    RETURN QUERY SELECT (array_length(v_errors, 1) IS NULL OR array_length(v_errors, 1) = 0), v_errors;
+END;
+$$;
+
 -- =========================================
 -- 9. REPORTING & DASHBOARD FUNCTIONS
 -- =========================================
@@ -1513,6 +1579,242 @@ $$;
 -- Note: Uncomment the following line if pg_cron extension is available
 -- SELECT cron.schedule('process-recurring', '0 0 * * *', 'SELECT schedule_recurring_processing();');
 
+-- =========================================
+-- 3. UTILITY FUNCTIONS
+-- =========================================
+
+-- Get User's Default Currency
+CREATE OR REPLACE FUNCTION get_user_default_currency(p_user_id UUID DEFAULT NULL)
+RETURNS VARCHAR(10)
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = pg_catalog, public
+STABLE
+AS $$
+DECLARE
+    v_user_id UUID;
+    v_currency VARCHAR(10);
+BEGIN
+    v_user_id := COALESCE(p_user_id, current_user_id());
+    
+    -- Get most commonly used currency by this user
+    SELECT currency INTO v_currency
+    FROM accounts 
+    WHERE user_id = v_user_id AND deleted_at IS NULL
+    GROUP BY currency 
+    ORDER BY COUNT(*) DESC 
+    LIMIT 1;
+    
+    RETURN COALESCE(v_currency, 'USD');
+END;
+$$;
+
+-- Validate Account Ownership
+CREATE OR REPLACE FUNCTION validate_account_ownership(p_account_id UUID, p_user_id UUID DEFAULT NULL)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = pg_catalog, public
+STABLE
+AS $$
+DECLARE
+    v_user_id UUID;
+    v_exists BOOLEAN;
+BEGIN
+    v_user_id := COALESCE(p_user_id, current_user_id());
+    
+    SELECT EXISTS(
+        SELECT 1 FROM accounts 
+        WHERE id = p_account_id 
+        AND user_id = v_user_id 
+        AND deleted_at IS NULL
+    ) INTO v_exists;
+    
+    RETURN v_exists;
+END;
+$$;
+
+-- Get Transaction Count for User
+CREATE OR REPLACE FUNCTION get_user_transaction_count(
+    p_user_id UUID DEFAULT NULL,
+    p_transaction_type transaction_type DEFAULT NULL,
+    p_start_date DATE DEFAULT NULL,
+    p_end_date DATE DEFAULT NULL
+)
+RETURNS INTEGER
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = pg_catalog, public
+STABLE
+AS $$
+DECLARE
+    v_user_id UUID;
+    v_count INTEGER;
+BEGIN
+    v_user_id := COALESCE(p_user_id, current_user_id());
+    
+    SELECT COUNT(*)::INTEGER INTO v_count
+    FROM transactions
+    WHERE user_id = v_user_id
+      AND deleted_at IS NULL
+      AND (p_transaction_type IS NULL OR type = p_transaction_type)
+      AND (p_start_date IS NULL OR created_at::DATE >= p_start_date)
+      AND (p_end_date IS NULL OR created_at::DATE <= p_end_date);
+      
+    RETURN v_count;
+END;
+$$;
+
+-- Format Currency Amount
+CREATE OR REPLACE FUNCTION format_currency_amount(
+    p_amount DECIMAL(36,18),
+    p_currency VARCHAR(10) DEFAULT 'USD'
+)
+RETURNS TEXT
+LANGUAGE plpgsql
+IMMUTABLE
+SECURITY INVOKER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+    RETURN CASE p_currency
+        WHEN 'USD' THEN '$' || TO_CHAR(p_amount, 'FM999,999,999,990.00')
+        WHEN 'EUR' THEN '€' || TO_CHAR(p_amount, 'FM999,999,999,990.00')
+        WHEN 'GBP' THEN '£' || TO_CHAR(p_amount, 'FM999,999,999,990.00')
+        WHEN 'JPY' THEN '¥' || TO_CHAR(p_amount, 'FM999,999,999,990')
+        WHEN 'LKR' THEN 'Rs. ' || TO_CHAR(p_amount, 'FM999,999,999,990.00')
+        WHEN 'BTC' THEN TO_CHAR(p_amount, 'FM0.00000000') || ' BTC'
+        WHEN 'ETH' THEN TO_CHAR(p_amount, 'FM0.000000') || ' ETH'
+        ELSE TO_CHAR(p_amount, 'FM999,999,999,990.00') || ' ' || p_currency
+    END;
+END;
+$$;
+
+-- =========================================
+-- 4. PERFORMANCE MONITORING FUNCTIONS
+-- =========================================
+
+-- Get Database Statistics
+CREATE OR REPLACE FUNCTION get_user_database_stats(p_user_id UUID DEFAULT NULL)
+RETURNS TABLE(
+    user_id UUID,
+    total_accounts INTEGER,
+    total_transactions INTEGER,
+    total_categories INTEGER,
+    total_income_sources INTEGER,
+    total_counterparties INTEGER,
+    active_recurring_schedules INTEGER,
+    last_transaction_date TIMESTAMPTZ,
+    account_creation_date TIMESTAMPTZ
+)
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = pg_catalog, public
+STABLE
+AS $$
+DECLARE
+    v_user_id UUID;
+BEGIN
+    v_user_id := COALESCE(p_user_id, current_user_id());
+    
+    RETURN QUERY
+    SELECT 
+        v_user_id,
+        (SELECT COUNT(*)::INTEGER FROM accounts WHERE user_id = v_user_id AND deleted_at IS NULL),
+        (SELECT COUNT(*)::INTEGER FROM transactions WHERE user_id = v_user_id AND deleted_at IS NULL),
+        (SELECT COUNT(*)::INTEGER FROM expense_categories WHERE user_id = v_user_id AND deleted_at IS NULL),
+        (SELECT COUNT(*)::INTEGER FROM income_sources WHERE user_id = v_user_id AND deleted_at IS NULL),
+        (SELECT COUNT(*)::INTEGER FROM counterparties WHERE user_id = v_user_id AND deleted_at IS NULL),
+        (SELECT COUNT(*)::INTEGER FROM transactions_recurring WHERE user_id = v_user_id AND deleted_at IS NULL),
+        (SELECT MAX(created_at) FROM transactions WHERE user_id = v_user_id AND deleted_at IS NULL),
+        (SELECT created_at FROM profiles WHERE user_id = v_user_id AND deleted_at IS NULL);
+END;
+$$;
+
+-- =========================================
+-- 6. SECURITY ENHANCEMENTS
+-- =========================================
+-- Function to check rate limits
+CREATE OR REPLACE FUNCTION check_rate_limit(
+    p_endpoint VARCHAR(100),
+    p_max_requests INTEGER DEFAULT 100,
+    p_window_minutes INTEGER DEFAULT 60
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY INVOKER
+VOLATILE
+AS $$
+DECLARE
+    v_user_id UUID;
+    v_current_count INTEGER;
+    v_window_start TIMESTAMPTZ;
+BEGIN
+    v_user_id := current_user_id();
+    v_window_start := NOW() - (p_window_minutes || ' minutes')::INTERVAL;
+    
+    -- Get current count for this user/endpoint in the time window
+    SELECT COALESCE(SUM(request_count), 0)::INTEGER
+    INTO v_current_count
+    FROM api_rate_limits
+    WHERE user_id = v_user_id
+      AND endpoint = p_endpoint
+      AND window_start > v_window_start;
+    
+    -- If under limit, record this request
+    IF v_current_count < p_max_requests THEN
+        INSERT INTO api_rate_limits (user_id, endpoint, request_count)
+        VALUES (v_user_id, p_endpoint, 1)
+        ON CONFLICT (user_id, endpoint) 
+        DO UPDATE SET 
+            request_count = api_rate_limits.request_count + 1,
+            created_at = NOW();
+        
+        RETURN TRUE;
+    ELSE
+        RETURN FALSE;
+    END IF;
+END;
+$$;
+
+-- =========================================
+-- 7. BACKUP AND MAINTENANCE HELPERS
+-- =========================================
+
+-- Cleanup old audit logs
+CREATE OR REPLACE FUNCTION cleanup_old_audit_logs(p_days_to_keep INTEGER DEFAULT 90)
+RETURNS INTEGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_deleted_count INTEGER;
+BEGIN
+    DELETE FROM audit_logs 
+    WHERE created_at < (CURRENT_DATE - (p_days_to_keep || ' days')::INTERVAL);
+    
+    GET DIAGNOSTICS v_deleted_count = ROW_COUNT;
+    RETURN v_deleted_count;
+END;
+$$;
+
+-- Cleanup old rate limit records
+CREATE OR REPLACE FUNCTION cleanup_old_rate_limits()
+RETURNS INTEGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_deleted_count INTEGER;
+BEGIN
+    DELETE FROM api_rate_limits 
+    WHERE created_at < (NOW() - INTERVAL '24 hours');
+    
+    GET DIAGNOSTICS v_deleted_count = ROW_COUNT;
+    RETURN v_deleted_count;
+END;
+$$;
+
 -- ================================
 -- Grant Permissions
 -- ================================
@@ -1543,6 +1845,15 @@ GRANT EXECUTE ON FUNCTION get_recent_transactions(INTEGER) TO authenticated;
 GRANT EXECUTE ON FUNCTION check_admin_permissions() TO authenticated;
 GRANT EXECUTE ON FUNCTION check_balance_integrity(UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION schedule_recurring_processing() TO authenticated;
+GRANT EXECUTE ON FUNCTION get_user_default_currency(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION validate_account_ownership(UUID, UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION get_user_transaction_count(UUID, transaction_type, DATE, DATE) TO authenticated;
+GRANT EXECUTE ON FUNCTION format_currency_amount(DECIMAL, VARCHAR) TO authenticated;
+GRANT EXECUTE ON FUNCTION validate_account_data(UUID, account_type, VARCHAR) TO authenticated;
+GRANT EXECUTE ON FUNCTION get_user_database_stats(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION check_rate_limit(VARCHAR, INTEGER, INTEGER) TO authenticated;
+GRANT EXECUTE ON FUNCTION cleanup_old_audit_logs(INTEGER) TO authenticated;
+GRANT EXECUTE ON FUNCTION cleanup_old_rate_limits() TO authenticated;
 
 -- ================================
 -- Function Documentation
@@ -1582,6 +1893,14 @@ COMMENT ON FUNCTION get_user_account_summary() IS 'RLS-compliant user account su
 COMMENT ON FUNCTION get_recent_transactions(INTEGER) IS 'RLS-compliant recent transactions query';
 
 COMMENT ON FUNCTION check_balance_integrity(UUID) IS 'RLS-compliant balance integrity verification';
+
+COMMENT ON FUNCTION get_user_default_currency(UUID) IS 'Get most commonly used currency for user';
+
+COMMENT ON FUNCTION validate_account_ownership(UUID, UUID) IS 'Validate user owns specified account';
+
+COMMENT ON FUNCTION check_rate_limit(VARCHAR, INTEGER, INTEGER) IS 'API rate limiting with configurable windows';
+
+COMMENT ON TABLE api_rate_limits IS 'Rate limiting tracking for API endpoints';
 
 -- ================================
 -- END OF FUNCTIONS
