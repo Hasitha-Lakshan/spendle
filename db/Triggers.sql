@@ -1818,6 +1818,65 @@ CREATE TRIGGER trg_log_admin_changes
     FOR EACH ROW EXECUTE FUNCTION log_admin_changes();
 
 -- =========================================
+-- 20. TRANSACTIONS GENERATED COLUMNS TRIGGERS
+-- =========================================
+
+-- 1. Set created_month
+CREATE OR REPLACE FUNCTION public.set_created_month()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.created_month := DATE_TRUNC('month', NEW.created_at)::DATE;
+    RETURN NEW;
+END;
+$$
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_catalog;
+
+-- 2. Set type_amount_jsonb
+CREATE OR REPLACE FUNCTION public.set_type_amount_jsonb()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.type_amount_jsonb := jsonb_build_object(
+        'type', NEW.type,
+        'amount', NEW.amount
+    );
+    RETURN NEW;
+END;
+$$
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_catalog;
+
+-- 3. Set is_recent
+CREATE OR REPLACE FUNCTION public.set_is_recent()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.is_recent := NEW.created_at >= (CURRENT_DATE - INTERVAL '30 days');
+    RETURN NEW;
+END;
+$$
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_catalog;
+
+-- Combined triggers
+CREATE TRIGGER trg_transactions_set_created_month
+BEFORE INSERT OR UPDATE ON transactions
+FOR EACH ROW
+EXECUTE FUNCTION public.set_created_month();
+
+CREATE TRIGGER trg_transactions_set_jsonb
+BEFORE INSERT OR UPDATE ON transactions
+FOR EACH ROW
+EXECUTE FUNCTION public.set_type_amount_jsonb();
+
+CREATE TRIGGER trg_transactions_set_is_recent
+BEFORE INSERT OR UPDATE ON transactions
+FOR EACH ROW
+EXECUTE FUNCTION public.set_is_recent();
+
+-- =========================================
 -- GRANT PERMISSIONS FOR RLS FUNCTIONS
 -- =========================================
 

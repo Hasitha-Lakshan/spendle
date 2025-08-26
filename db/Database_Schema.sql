@@ -236,7 +236,12 @@ CREATE TABLE transactions (
   notes TEXT,
   deleted_at timestamptz NULL DEFAULT NULL,
   created_at timestamptz DEFAULT now(),
-  updated_at timestamptz DEFAULT now()
+  updated_at timestamptz DEFAULT now(),
+
+  -- Stored columns for indexes
+  created_month DATE,               -- month for aggregation
+  type_amount_jsonb JSONB,          -- JSONB for type + amount queries
+  is_recent BOOLEAN DEFAULT TRUE    -- last 30 days flag
 );
 
 -- =========================================
@@ -378,6 +383,18 @@ CREATE TABLE audit_logs (
 );
 
 -- =========================================
+-- API Rate Limits
+-- =========================================
+CREATE TABLE IF NOT EXISTS api_rate_limits (
+    id BIGSERIAL PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    endpoint VARCHAR(100) NOT NULL,
+    request_count INTEGER DEFAULT 1,
+    window_start TIMESTAMPTZ DEFAULT NOW(),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- =========================================
 -- Indexes (FKs, common filters, JSONB, partial soft-delete on key tables)
 -- =========================================
 
@@ -447,3 +464,5 @@ CREATE INDEX idx_audit_created_at ON audit_logs(created_at);
 -- JSONB GIN indexes (generic keys)
 CREATE INDEX idx_audit_old_data_gin ON audit_logs USING gin (old_data);
 CREATE INDEX idx_audit_new_data_gin ON audit_logs USING gin (new_data);
+
+CREATE INDEX idx_rate_limits_user_endpoint ON api_rate_limits(user_id, endpoint, window_start);
