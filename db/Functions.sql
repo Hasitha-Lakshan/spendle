@@ -1743,6 +1743,7 @@ CREATE OR REPLACE FUNCTION check_rate_limit(
 RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY INVOKER
+SET search_path = pg_catalog, public
 VOLATILE
 AS $$
 DECLARE
@@ -1756,18 +1757,18 @@ BEGIN
     -- Get current count for this user/endpoint in the time window
     SELECT COALESCE(SUM(request_count), 0)::INTEGER
     INTO v_current_count
-    FROM api_rate_limits
+    FROM public.api_rate_limits
     WHERE user_id = v_user_id
       AND endpoint = p_endpoint
       AND window_start > v_window_start;
     
     -- If under limit, record this request
     IF v_current_count < p_max_requests THEN
-        INSERT INTO api_rate_limits (user_id, endpoint, request_count)
+        INSERT INTO public.api_rate_limits (user_id, endpoint, request_count)
         VALUES (v_user_id, p_endpoint, 1)
         ON CONFLICT (user_id, endpoint) 
         DO UPDATE SET 
-            request_count = api_rate_limits.request_count + 1,
+            request_count = public.api_rate_limits.request_count + 1,
             created_at = NOW();
         
         RETURN TRUE;
@@ -1786,11 +1787,12 @@ CREATE OR REPLACE FUNCTION cleanup_old_audit_logs(p_days_to_keep INTEGER DEFAULT
 RETURNS INTEGER
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = pg_catalog, public
 AS $$
 DECLARE
     v_deleted_count INTEGER;
 BEGIN
-    DELETE FROM audit_logs 
+    DELETE FROM public.audit_logs 
     WHERE created_at < (CURRENT_DATE - (p_days_to_keep || ' days')::INTERVAL);
     
     GET DIAGNOSTICS v_deleted_count = ROW_COUNT;
@@ -1803,11 +1805,12 @@ CREATE OR REPLACE FUNCTION cleanup_old_rate_limits()
 RETURNS INTEGER
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = pg_catalog, public
 AS $$
 DECLARE
     v_deleted_count INTEGER;
 BEGIN
-    DELETE FROM api_rate_limits 
+    DELETE FROM public.api_rate_limits
     WHERE created_at < (NOW() - INTERVAL '24 hours');
     
     GET DIAGNOSTICS v_deleted_count = ROW_COUNT;
