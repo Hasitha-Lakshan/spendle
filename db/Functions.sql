@@ -1900,8 +1900,6 @@ COMMENT ON FUNCTION validate_account_ownership(UUID, UUID) IS 'Validate user own
 
 COMMENT ON FUNCTION check_rate_limit(VARCHAR, INTEGER, INTEGER) IS 'API rate limiting with configurable windows';
 
-COMMENT ON TABLE api_rate_limits IS 'Rate limiting tracking for API endpoints';
-
 -- ================================
 -- END OF FUNCTIONS
 -- ================================

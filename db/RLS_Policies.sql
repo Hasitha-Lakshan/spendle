@@ -266,3 +266,25 @@ CREATE POLICY delete_audit_logs_admins ON audit_logs
         FROM profiles p 
         WHERE p.user_id = (SELECT auth.uid()) AND p.is_admin = TRUE
     ));
+
+-- =========================================
+-- API RATE LIMITS
+-- =========================================
+ALTER TABLE api_rate_limits ENABLE ROW LEVEL SECURITY;
+
+-- Users can only select their own rows
+CREATE POLICY select_own_api_rate_limits ON api_rate_limits
+    FOR SELECT USING (user_id = current_user_id());
+
+-- Users can only insert rows for themselves
+CREATE POLICY insert_own_api_rate_limits ON api_rate_limits
+    FOR INSERT WITH CHECK (user_id = current_user_id());
+
+-- Users can only update their own rows
+CREATE POLICY update_own_api_rate_limits ON api_rate_limits
+    FOR UPDATE USING (user_id = current_user_id())
+    WITH CHECK (user_id = current_user_id());
+
+-- Users can only delete their own rows
+CREATE POLICY delete_own_api_rate_limits ON api_rate_limits
+    FOR DELETE USING (user_id = current_user_id());
