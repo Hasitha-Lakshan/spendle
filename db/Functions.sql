@@ -18,7 +18,7 @@
 -- Parameters: user_id, date range
 -- Returns: Table with account, source, and totals
 -- Security: INVOKER (relies on RLS)
--- RLS: Uses current_user_id() to filter user's data only
+-- RLS: Uses auth.uid() to filter user's data only
 CREATE OR REPLACE FUNCTION get_income_summary(
     p_start_date timestamptz DEFAULT NULL,
     p_end_date timestamptz DEFAULT NULL
@@ -63,7 +63,7 @@ $$;
 -- Parameters: user_id (implicit via RLS), date range
 -- Returns: Table with account, category, subcategory, and totals
 -- Security: INVOKER (relies on RLS)
--- RLS: Uses current_user_id() to filter user's data only
+-- RLS: Uses auth.uid() to filter user's data only
 CREATE OR REPLACE FUNCTION get_expense_summary(
     p_start_date timestamptz DEFAULT NULL,
     p_end_date timestamptz DEFAULT NULL
@@ -113,7 +113,7 @@ $$;
 -- Parameters: user_id (implicit via RLS), date range
 -- Returns: Table with account, asset details, and totals
 -- Security: INVOKER (relies on RLS)
--- RLS: Uses current_user_id() to filter user's data only
+-- RLS: Uses auth.uid() to filter user's data only
 CREATE OR REPLACE FUNCTION get_investment_summary(
     p_start_date timestamptz DEFAULT NULL,
     p_end_date timestamptz DEFAULT NULL
@@ -161,7 +161,7 @@ $$;
 -- Parameters: user_id (implicit via RLS)
 -- Returns: Table with counterparty details and amounts
 -- Security: INVOKER (relies on RLS)
--- RLS: Uses current_user_id() to filter user's data only
+-- RLS: Uses auth.uid() to filter user's data only
 CREATE OR REPLACE FUNCTION get_borrow_lend_summary()
 RETURNS TABLE(
     transaction_type transaction_type,
@@ -416,7 +416,7 @@ DECLARE
     v_user_id UUID;
 BEGIN
     -- Get current user (will be validated by RLS)
-    v_user_id := current_user_id();
+    v_user_id := auth.uid();
     IF v_user_id IS NULL THEN
         RAISE EXCEPTION 'No authenticated user found';
     END IF;
@@ -473,7 +473,7 @@ DECLARE
     v_user_id UUID;
 BEGIN
     -- Get current user (will be validated by RLS)
-    v_user_id := current_user_id();
+    v_user_id := auth.uid();
     IF v_user_id IS NULL THEN
         RAISE EXCEPTION 'No authenticated user found';
     END IF;
@@ -537,7 +537,7 @@ DECLARE
     v_user_id UUID;
 BEGIN
     -- Get current user (will be validated by RLS)
-    v_user_id := current_user_id();
+    v_user_id := auth.uid();
     IF v_user_id IS NULL THEN
         RAISE EXCEPTION 'No authenticated user found';
     END IF;
@@ -607,7 +607,7 @@ DECLARE
     v_next_occurrence timestamptz;
 BEGIN
     -- Get current user
-    v_user_id := current_user_id();
+    v_user_id := auth.uid();
     IF v_user_id IS NULL THEN
         RAISE EXCEPTION 'No authenticated user found';
     END IF;
@@ -728,17 +728,30 @@ SECURITY INVOKER
 SET search_path = pg_catalog, public
 VOLATILE
 AS $$
+DECLARE
+    profile_exists BOOLEAN;
+    current_defaults_inserted BOOLEAN;
 BEGIN
-    -- Insert or update profile to trigger defaults
-    INSERT INTO profiles (user_id, defaults_inserted)
-    VALUES (p_user_id, FALSE)
-    ON CONFLICT (user_id) 
-    DO UPDATE SET 
-        defaults_inserted = FALSE,
-        updated_at = NOW()
-    WHERE profiles.defaults_inserted = TRUE; -- Only reset if already initialized
+    -- Check if profile exists and get defaults status
+    SELECT EXISTS(SELECT 1 FROM profiles WHERE user_id = p_user_id), 
+           COALESCE((SELECT defaults_inserted FROM profiles WHERE user_id = p_user_id), FALSE)
+    INTO profile_exists, current_defaults_inserted;
     
-    -- The insert_profile_defaults trigger will handle the actual setup
+    IF profile_exists THEN
+        -- If profile exists but defaults not inserted, trigger them
+        IF NOT current_defaults_inserted THEN
+            UPDATE profiles 
+            SET defaults_inserted = FALSE,
+                updated_at = NOW()
+            WHERE user_id = p_user_id;
+            -- The trigger will fire and insert defaults
+        END IF;
+    ELSE
+        -- Insert new profile with defaults_inserted = FALSE
+        -- The AFTER INSERT trigger will automatically create defaults
+        INSERT INTO profiles (user_id, defaults_inserted)
+        VALUES (p_user_id, FALSE);
+    END IF;
 END;
 $$;
 
@@ -886,7 +899,7 @@ DECLARE
     acc_currency TEXT;
     v_current_user UUID;
 BEGIN
-    v_current_user := public.current_user_id();
+    v_current_user := auth.uid();
     
     -- Get account info
     SELECT type, currency INTO acc_type, acc_currency 
@@ -1041,7 +1054,7 @@ DECLARE
     updated_rows INTEGER;
     v_current_user UUID;
 BEGIN
-    v_current_user := current_user_id();
+    v_current_user := auth.uid();
     
     -- Get account type
     SELECT type INTO acc_type 
@@ -1123,7 +1136,7 @@ $$;
 -- Parameters: None
 -- Returns: INTEGER - Number of orphaned specialized accounts cleaned
 -- Security: DEFINER (system-level cleanup task)
--- RLS: Enforces ownership by filtering against current_user_id()
+-- RLS: Enforces ownership by filtering against auth.uid()
 CREATE OR REPLACE FUNCTION cleanup_orphaned_specialized_accounts()
 RETURNS INTEGER 
 LANGUAGE plpgsql
@@ -1135,7 +1148,7 @@ DECLARE
     total_count INTEGER := 0;
     v_current_user UUID;
 BEGIN
-    v_current_user := current_user_id();
+    v_current_user := auth.uid();
     
     -- Clean up each specialized account type
     UPDATE public.cash_accounts 
@@ -1258,7 +1271,7 @@ AS $$
 DECLARE
     v_current_user UUID;
 BEGIN
-    v_current_user := current_user_id();
+    v_current_user := auth.uid();
     
     RETURN QUERY
     SELECT 
@@ -1337,7 +1350,7 @@ DECLARE
     v_user_id UUID;
     v_current_user UUID;
 BEGIN
-    v_current_user := current_user_id();
+    v_current_user := auth.uid();
     
     -- Check if account exists and user has access
     SELECT type, currency, user_id 
@@ -1406,7 +1419,7 @@ AS $$
 DECLARE
     v_current_user UUID;
 BEGIN
-    v_current_user := current_user_id();
+    v_current_user := auth.uid();
     
     RETURN QUERY
     SELECT 
@@ -1447,7 +1460,7 @@ AS $$
 DECLARE
     v_current_user UUID;
 BEGIN
-    v_current_user := current_user_id();
+    v_current_user := auth.uid();
     
     RETURN QUERY
     SELECT 
@@ -1511,7 +1524,7 @@ DECLARE
     v_current_user UUID;
     is_admin BOOLEAN := FALSE;
 BEGIN
-    v_current_user := current_user_id();
+    v_current_user := auth.uid();
     
     IF v_current_user IS NULL THEN
         RETURN FALSE;
@@ -1560,8 +1573,8 @@ BEGIN
     -- Log the processing result in audit logs
     INSERT INTO public.audit_logs(user_id, action_by, table_name, record_id, action, new_data)
     VALUES (
-        public.current_user_id(), -- Current user
-        public.current_user_id(), -- Current user action
+        auth.uid(), -- Current user
+        auth.uid(), -- Current user action
         'system',
         gen_random_uuid(),
         'RECURRING_PROCESSING',
@@ -1595,7 +1608,7 @@ DECLARE
     v_user_id UUID;
     v_currency VARCHAR(10);
 BEGIN
-    v_user_id := COALESCE(p_user_id, current_user_id());
+    v_user_id := COALESCE(p_user_id, auth.uid());
     
     -- Get most commonly used currency by this user
     SELECT currency INTO v_currency
@@ -1621,7 +1634,7 @@ DECLARE
     v_user_id UUID;
     v_exists BOOLEAN;
 BEGIN
-    v_user_id := COALESCE(p_user_id, current_user_id());
+    v_user_id := COALESCE(p_user_id, auth.uid());
     
     SELECT EXISTS(
         SELECT 1 FROM accounts 
@@ -1651,7 +1664,7 @@ DECLARE
     v_user_id UUID;
     v_count INTEGER;
 BEGIN
-    v_user_id := COALESCE(p_user_id, current_user_id());
+    v_user_id := COALESCE(p_user_id, auth.uid());
     
     SELECT COUNT(*)::INTEGER INTO v_count
     FROM transactions
@@ -1715,7 +1728,7 @@ AS $$
 DECLARE
     v_user_id UUID;
 BEGIN
-    v_user_id := COALESCE(p_user_id, current_user_id());
+    v_user_id := COALESCE(p_user_id, auth.uid());
     
     RETURN QUERY
     SELECT 
@@ -1751,7 +1764,7 @@ DECLARE
     v_current_count INTEGER;
     v_window_start TIMESTAMPTZ;
 BEGIN
-    v_user_id := current_user_id();
+    v_user_id := auth.uid();
     v_window_start := NOW() - (p_window_minutes || ' minutes')::INTERVAL;
     
     -- Get current count for this user/endpoint in the time window
@@ -1815,6 +1828,421 @@ BEGIN
     
     GET DIAGNOSTICS v_deleted_count = ROW_COUNT;
     RETURN v_deleted_count;
+END;
+$$;
+
+-- =========================================
+-- Hard Delete Functions
+-- =========================================
+-- These functions allow hard deletion while respecting ownership
+-- They bypass RLS but include explicit permission checks
+
+-- Generic hard delete function for any table
+CREATE OR REPLACE FUNCTION hard_delete_record(
+    table_name TEXT,
+    record_id UUID,
+    user_id_to_check UUID DEFAULT NULL
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    current_user_id UUID;
+    is_admin BOOLEAN;
+    sql_query TEXT;
+    record_exists BOOLEAN;
+BEGIN
+    current_user_id := auth.uid();
+    
+    IF current_user_id IS NULL THEN
+        RAISE EXCEPTION 'Not authenticated';
+    END IF;
+    
+    -- Check if user is admin
+    is_admin := check_admin_permissions();
+    
+    -- If user_id_to_check is provided, verify ownership (unless admin)
+    IF user_id_to_check IS NOT NULL AND NOT is_admin THEN
+        IF current_user_id != user_id_to_check THEN
+            RAISE EXCEPTION 'Permission denied: not owner';
+        END IF;
+    END IF;
+    
+    -- Validate table name to prevent SQL injection
+    IF table_name NOT IN (
+        'accounts', 'transactions', 'expense_categories', 'expense_subcategories',
+        'income_sources', 'counterparties', 'transactions_recurring',
+        'cash_accounts', 'bank_accounts', 'credit_card_accounts', 'loan_accounts',
+        'investment_accounts', 'crypto_accounts', 'wallet_accounts', 'receivable_accounts',
+        'transactions_income', 'transactions_expense', 'transactions_investment',
+        'transactions_borrow', 'transactions_lend', 'transactions_transfer', 'transactions_adjustment'
+    ) THEN
+        RAISE EXCEPTION 'Invalid table name';
+    END IF;
+    
+    -- Build and execute the delete query
+    sql_query := format('DELETE FROM %I WHERE id = $1', table_name);
+    EXECUTE sql_query USING record_id;
+    
+    -- Check if any rows were affected
+    GET DIAGNOSTICS record_exists = ROW_COUNT;
+    
+    RETURN record_exists > 0;
+END;
+$$;
+
+-- Hard delete expense category (and all subcategories)
+CREATE OR REPLACE FUNCTION hard_delete_expense_category(category_id UUID)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    current_user_id UUID;
+    category_owner UUID;
+    is_admin BOOLEAN;
+BEGIN
+    current_user_id := auth.uid();
+    
+    IF current_user_id IS NULL THEN
+        RAISE EXCEPTION 'Not authenticated';
+    END IF;
+    
+    -- Get category details
+    SELECT user_id INTO category_owner
+    FROM expense_categories
+    WHERE id = category_id AND deleted_at IS NULL;
+    
+    IF category_owner IS NULL THEN
+        RAISE EXCEPTION 'Category not found';
+    END IF;
+    
+    -- Check permissions
+    is_admin := check_admin_permissions();
+    IF NOT is_admin AND current_user_id != category_owner THEN
+        RAISE EXCEPTION 'Permission denied';
+    END IF;
+    
+    -- Delete subcategories first
+    DELETE FROM expense_subcategories WHERE category_id = category_id;
+    
+    -- Delete the main category
+    DELETE FROM expense_categories WHERE id = category_id;
+    
+    RETURN TRUE;
+END;
+$$;
+
+-- Hard delete counterparty (check for transaction references first)
+CREATE OR REPLACE FUNCTION hard_delete_counterparty(counterparty_id UUID)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    current_user_id UUID;
+    counterparty_owner UUID;
+    is_admin BOOLEAN;
+    transaction_count INTEGER;
+BEGIN
+    current_user_id := auth.uid();
+    
+    IF current_user_id IS NULL THEN
+        RAISE EXCEPTION 'Not authenticated';
+    END IF;
+    
+    -- Get counterparty details
+    SELECT user_id INTO counterparty_owner
+    FROM counterparties
+    WHERE id = counterparty_id AND deleted_at IS NULL;
+    
+    IF counterparty_owner IS NULL THEN
+        RAISE EXCEPTION 'Counterparty not found';
+    END IF;
+    
+    -- Check permissions
+    is_admin := check_admin_permissions();
+    IF NOT is_admin AND current_user_id != counterparty_owner THEN
+        RAISE EXCEPTION 'Permission denied';
+    END IF;
+    
+    -- Check if counterparty is referenced in transactions
+    SELECT COUNT(*) INTO transaction_count
+    FROM (
+        SELECT 1 FROM transactions_borrow WHERE counterparty_id = counterparty_id
+        UNION ALL
+        SELECT 1 FROM transactions_lend WHERE counterparty_id = counterparty_id
+    ) t;
+    
+    IF transaction_count > 0 THEN
+        RAISE EXCEPTION 'Cannot delete counterparty: % transactions reference this counterparty. Delete transactions first.', transaction_count;
+    END IF;
+    
+    -- Delete the counterparty
+    DELETE FROM counterparties WHERE id = counterparty_id;
+    
+    RETURN TRUE;
+END;
+$$;
+
+-- Hard delete recurring transaction template
+CREATE OR REPLACE FUNCTION hard_delete_recurring_transaction(recurring_id UUID)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    current_user_id UUID;
+    recurring_owner UUID;
+    template_transaction_id UUID;
+    is_admin BOOLEAN;
+BEGIN
+    current_user_id := auth.uid();
+    
+    IF current_user_id IS NULL THEN
+        RAISE EXCEPTION 'Not authenticated';
+    END IF;
+    
+    -- Get recurring transaction details
+    SELECT user_id, transaction_template_id INTO recurring_owner, template_transaction_id
+    FROM transactions_recurring
+    WHERE id = recurring_id AND deleted_at IS NULL;
+    
+    IF recurring_owner IS NULL THEN
+        RAISE EXCEPTION 'Recurring transaction not found';
+    END IF;
+    
+    -- Check permissions
+    is_admin := check_admin_permissions();
+    IF NOT is_admin AND current_user_id != recurring_owner THEN
+        RAISE EXCEPTION 'Permission denied';
+    END IF;
+    
+    -- Delete the recurring transaction record
+    DELETE FROM transactions_recurring WHERE id = recurring_id;
+    
+    -- Optionally delete the template transaction too
+    -- (You might want to keep it for audit purposes)
+    IF template_transaction_id IS NOT NULL THEN
+        PERFORM hard_delete_transaction(template_transaction_id);
+    END IF;
+    
+    RETURN TRUE;
+END;
+$$;
+
+-- Hard delete user profile and ALL associated data (admin only)
+CREATE OR REPLACE FUNCTION hard_delete_user_profile(target_user_id UUID)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    current_user_id UUID;
+    is_admin BOOLEAN;
+    account_ids UUID[];
+    account_id UUID;
+BEGIN
+    current_user_id := auth.uid();
+    
+    IF current_user_id IS NULL THEN
+        RAISE EXCEPTION 'Not authenticated';
+    END IF;
+    
+    -- Only admins can delete user profiles
+    is_admin := check_admin_permissions();
+    IF NOT is_admin THEN
+        RAISE EXCEPTION 'Admin permissions required';
+    END IF;
+    
+    -- Prevent self-deletion
+    IF current_user_id = target_user_id THEN
+        RAISE EXCEPTION 'Cannot delete your own profile';
+    END IF;
+    
+    -- Get all account IDs for this user
+    SELECT ARRAY(SELECT id FROM accounts WHERE user_id = target_user_id) INTO account_ids;
+    
+    -- Delete all accounts (this will cascade to transactions)
+    FOREACH account_id IN ARRAY account_ids LOOP
+        PERFORM hard_delete_account(account_id);
+    END LOOP;
+    
+    -- Delete remaining user data
+    DELETE FROM transactions_recurring WHERE user_id = target_user_id;
+    DELETE FROM expense_subcategories WHERE category_id IN (
+        SELECT id FROM expense_categories WHERE user_id = target_user_id
+    );
+    DELETE FROM expense_categories WHERE user_id = target_user_id;
+    DELETE FROM income_sources WHERE user_id = target_user_id;
+    DELETE FROM counterparties WHERE user_id = target_user_id;
+    DELETE FROM api_rate_limits WHERE user_id = target_user_id;
+    
+    -- Delete the profile last
+    DELETE FROM profiles WHERE user_id = target_user_id;
+    
+    RETURN TRUE;
+END;
+$$;
+
+-- Specific hard delete functions for common operations
+
+-- Hard delete account (and all related data)
+CREATE OR REPLACE FUNCTION hard_delete_account(account_id UUID)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    current_user_id UUID;
+    account_owner UUID;
+    account_type account_type;
+    is_admin BOOLEAN;
+BEGIN
+    current_user_id := auth.uid();
+    
+    IF current_user_id IS NULL THEN
+        RAISE EXCEPTION 'Not authenticated';
+    END IF;
+    
+    -- Get account details
+    SELECT user_id, type INTO account_owner, account_type
+    FROM accounts
+    WHERE id = account_id;
+    
+    IF account_owner IS NULL THEN
+        RAISE EXCEPTION 'Account not found';
+    END IF;
+    
+    -- Check permissions
+    is_admin := check_admin_permissions();
+    IF NOT is_admin AND current_user_id != account_owner THEN
+        RAISE EXCEPTION 'Permission denied';
+    END IF;
+    
+    -- Delete from specialized account table first
+    CASE account_type
+        WHEN 'cash' THEN DELETE FROM cash_accounts WHERE account_id = account_id;
+        WHEN 'bank' THEN DELETE FROM bank_accounts WHERE account_id = account_id;
+        WHEN 'credit_card' THEN DELETE FROM credit_card_accounts WHERE account_id = account_id;
+        WHEN 'loan' THEN DELETE FROM loan_accounts WHERE account_id = account_id;
+        WHEN 'investment' THEN DELETE FROM investment_accounts WHERE account_id = account_id;
+        WHEN 'crypto' THEN DELETE FROM crypto_accounts WHERE account_id = account_id;
+        WHEN 'wallet' THEN DELETE FROM wallet_accounts WHERE account_id = account_id;
+        WHEN 'receivable' THEN DELETE FROM receivable_accounts WHERE account_id = account_id;
+    END CASE;
+    
+    -- Delete transaction details that reference this account
+    DELETE FROM transactions_income WHERE account_id = account_id;
+    DELETE FROM transactions_expense WHERE account_id = account_id;
+    DELETE FROM transactions_investment WHERE account_id = account_id;
+    DELETE FROM transactions_borrow WHERE account_id = account_id;
+    DELETE FROM transactions_lend WHERE account_id = account_id;
+    DELETE FROM transactions_adjustment WHERE account_id = account_id;
+    DELETE FROM transactions_transfer WHERE from_account = account_id OR to_account = account_id;
+    
+    -- Delete the main account record
+    DELETE FROM accounts WHERE id = account_id;
+    
+    RETURN TRUE;
+END;
+$$;
+
+-- Hard delete transaction (and all related data)
+CREATE OR REPLACE FUNCTION hard_delete_transaction(transaction_id UUID)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    current_user_id UUID;
+    transaction_owner UUID;
+    transaction_type transaction_type;
+    is_admin BOOLEAN;
+BEGIN
+    current_user_id := auth.uid();
+    
+    IF current_user_id IS NULL THEN
+        RAISE EXCEPTION 'Not authenticated';
+    END IF;
+    
+    -- Get transaction details
+    SELECT user_id, type INTO transaction_owner, transaction_type
+    FROM transactions
+    WHERE id = transaction_id;
+    
+    IF transaction_owner IS NULL THEN
+        RAISE EXCEPTION 'Transaction not found';
+    END IF;
+    
+    -- Check permissions
+    is_admin := check_admin_permissions();
+    IF NOT is_admin AND current_user_id != transaction_owner THEN
+        RAISE EXCEPTION 'Permission denied';
+    END IF;
+    
+    -- Delete from transaction detail tables
+    DELETE FROM transactions_income WHERE transaction_id = transaction_id;
+    DELETE FROM transactions_expense WHERE transaction_id = transaction_id;
+    DELETE FROM transactions_investment WHERE transaction_id = transaction_id;
+    DELETE FROM transactions_borrow WHERE transaction_id = transaction_id;
+    DELETE FROM transactions_lend WHERE transaction_id = transaction_id;
+    DELETE FROM transactions_transfer WHERE transaction_id = transaction_id;
+    DELETE FROM transactions_adjustment WHERE transaction_id = transaction_id;
+    
+    -- Delete the main transaction record
+    DELETE FROM transactions WHERE id = transaction_id;
+    
+    RETURN TRUE;
+END;
+$$;
+
+-- Batch hard delete old soft-deleted records (admin only)
+CREATE OR REPLACE FUNCTION cleanup_soft_deleted_records(
+    older_than_days INTEGER DEFAULT 90
+)
+RETURNS TABLE(
+    table_name TEXT,
+    deleted_count BIGINT
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    cutoff_date TIMESTAMPTZ;
+    tables_to_clean TEXT[] := ARRAY[
+        'transactions', 'accounts', 'expense_categories', 'expense_subcategories',
+        'income_sources', 'counterparties', 'transactions_recurring'
+    ];
+    tbl TEXT;
+    deleted_rows BIGINT;
+BEGIN
+    -- Only admins can run this
+    IF NOT check_admin_permissions() THEN
+        RAISE EXCEPTION 'Admin permissions required';
+    END IF;
+    
+    cutoff_date := NOW() - (older_than_days || ' days')::INTERVAL;
+    
+    FOREACH tbl IN ARRAY tables_to_clean LOOP
+        EXECUTE format(
+            'DELETE FROM %I WHERE deleted_at IS NOT NULL AND deleted_at < $1',
+            tbl
+        ) USING cutoff_date;
+        
+        GET DIAGNOSTICS deleted_rows = ROW_COUNT;
+        
+        RETURN QUERY SELECT tbl, deleted_rows;
+    END LOOP;
 END;
 $$;
 

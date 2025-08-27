@@ -36,7 +36,7 @@ BEGIN
     END IF;
     
     -- Get the actor (current authenticated user) - can be same or different from affected user
-    actor_user_id := current_user_id();
+    actor_user_id := auth.uid();
     
     -- If no authenticated user, use the affected user as fallback (for system operations)
     IF actor_user_id IS NULL THEN
@@ -124,16 +124,24 @@ DECLARE
     default_source_id UUID;
 BEGIN
     -- Only insert defaults if not already inserted
-    IF NOT NEW.defaults_inserted THEN
+    IF NOT COALESCE(NEW.defaults_inserted, FALSE) THEN
         -- Create default cash account
         INSERT INTO accounts(user_id, account_name, type, currency)
         VALUES (NEW.user_id, 'Cash Wallet', 'cash', 'USD')
         RETURNING id INTO default_account_id;
 
+        -- Create default cash account details
+        INSERT INTO cash_accounts(account_id, location, balance, status, notes)
+        VALUES (default_account_id, 'Wallet', 0, 'active', 'Default cash account');
+
         -- Create default expense category
         INSERT INTO expense_categories(user_id, name) 
         VALUES (NEW.user_id, 'General')
         RETURNING id INTO default_category_id;
+        
+        -- Create default expense subcategory
+        INSERT INTO expense_subcategories(category_id, name)
+        VALUES (default_category_id, 'Miscellaneous');
         
         -- Create default income source
         INSERT INTO income_sources(user_id, name) 
@@ -142,17 +150,20 @@ BEGIN
 
         -- Mark defaults as inserted
         UPDATE profiles 
-        SET defaults_inserted = TRUE 
-        WHERE id = NEW.id;
+        SET defaults_inserted = TRUE,
+            updated_at = NOW()
+        WHERE user_id = NEW.user_id;
     END IF;
 
     RETURN NEW;
 END;
 $$;
 
-CREATE TRIGGER trg_profiles_defaults
+CREATE TRIGGER trg_insert_profile_defaults
     AFTER INSERT ON profiles
-    FOR EACH ROW EXECUTE FUNCTION insert_profile_defaults();
+    FOR EACH ROW
+    WHEN (NEW.defaults_inserted IS FALSE OR NEW.defaults_inserted IS NULL)
+    EXECUTE FUNCTION insert_profile_defaults();
 
 -- =========================================
 -- 4. SPECIALIZED ACCOUNT SYNC WITH PROPER FIELD INITIALIZATION
@@ -220,7 +231,7 @@ BEGIN
     SELECT amount, user_id INTO v_amount, v_user_id 
     FROM public.transactions 
     WHERE id = NEW.transaction_id 
-      AND user_id = current_user_id()
+      AND user_id = auth.uid()
       AND deleted_at IS NULL;
     
     IF NOT FOUND THEN
@@ -239,7 +250,7 @@ BEGIN
     SELECT type INTO v_account_type 
     FROM public.accounts 
     WHERE id = v_account_id 
-      AND user_id = current_user_id()
+      AND user_id = auth.uid()
       AND deleted_at IS NULL;
     
     IF NOT FOUND THEN
@@ -425,7 +436,7 @@ BEGIN
     SELECT COALESCE(amount, 0), user_id INTO v_amount, v_user_id 
     FROM transactions 
     WHERE id = NEW.transaction_id
-    AND user_id = current_user_id()
+    AND user_id = auth.uid()
     AND deleted_at IS NULL;
     
     IF NOT FOUND THEN
@@ -436,7 +447,7 @@ BEGIN
     SELECT type INTO from_acc_type 
     FROM accounts 
     WHERE id = NEW.from_account
-    AND user_id = current_user_id()
+    AND user_id = auth.uid()
     AND deleted_at IS NULL;
     
     IF NOT FOUND THEN
@@ -446,7 +457,7 @@ BEGIN
     SELECT type INTO to_acc_type 
     FROM accounts 
     WHERE id = NEW.to_account
-    AND user_id = current_user_id()
+    AND user_id = auth.uid()
     AND deleted_at IS NULL;
     
     IF NOT FOUND THEN
@@ -802,14 +813,14 @@ BEGIN
                   AND EXISTS (
                       SELECT 1 FROM public.accounts a 
                       WHERE a.id = transactions_income.account_id 
-                        AND a.user_id = current_user_id()
+                        AND a.user_id = auth.uid()
                         AND a.deleted_at IS NULL
                   );
                 IF FOUND THEN
                     SELECT type INTO acc_type 
                     FROM public.accounts 
                     WHERE id = tx_details.account_id 
-                      AND user_id = current_user_id()
+                      AND user_id = auth.uid()
                       AND deleted_at IS NULL;
 
                     UPDATE public.accounts 
@@ -852,14 +863,14 @@ BEGIN
                   AND EXISTS (
                       SELECT 1 FROM public.accounts a 
                       WHERE a.id = transactions_expense.account_id 
-                        AND a.user_id = current_user_id()
+                        AND a.user_id = auth.uid()
                         AND a.deleted_at IS NULL
                   );
                 IF FOUND THEN
                     SELECT type INTO acc_type 
                     FROM public.accounts 
                     WHERE id = tx_details.account_id 
-                      AND user_id = current_user_id()
+                      AND user_id = auth.uid()
                       AND deleted_at IS NULL;
 
                     UPDATE public.accounts 
@@ -902,14 +913,14 @@ BEGIN
                   AND EXISTS (
                       SELECT 1 FROM public.accounts a 
                       WHERE a.id = transactions_investment.account_id 
-                        AND a.user_id = current_user_id()
+                        AND a.user_id = auth.uid()
                         AND a.deleted_at IS NULL
                   );
                 IF FOUND THEN
                     SELECT type INTO acc_type 
                     FROM public.accounts 
                     WHERE id = tx_details.account_id 
-                      AND user_id = current_user_id()
+                      AND user_id = auth.uid()
                       AND deleted_at IS NULL;
 
                     UPDATE public.accounts 
@@ -940,14 +951,14 @@ BEGIN
                   AND EXISTS (
                       SELECT 1 FROM public.accounts a 
                       WHERE a.id = transactions_adjustment.account_id 
-                        AND a.user_id = current_user_id()
+                        AND a.user_id = auth.uid()
                         AND a.deleted_at IS NULL
                   );
                 IF FOUND THEN
                     SELECT type INTO acc_type 
                     FROM public.accounts 
                     WHERE id = tx_details.account_id 
-                      AND user_id = current_user_id()
+                      AND user_id = auth.uid()
                       AND deleted_at IS NULL;
 
                     UPDATE public.accounts 
@@ -998,7 +1009,7 @@ BEGIN
                   AND EXISTS (
                       SELECT 1 FROM public.accounts a 
                       WHERE a.id = transactions_borrow.account_id 
-                        AND a.user_id = current_user_id()
+                        AND a.user_id = auth.uid()
                         AND a.deleted_at IS NULL
                   );
                 IF FOUND THEN
@@ -1019,7 +1030,7 @@ BEGIN
                   AND EXISTS (
                       SELECT 1 FROM public.accounts a 
                       WHERE a.id = transactions_lend.account_id 
-                        AND a.user_id = current_user_id()
+                        AND a.user_id = auth.uid()
                         AND a.deleted_at IS NULL
                   );
                 IF FOUND THEN
@@ -1040,26 +1051,26 @@ BEGIN
                   AND EXISTS (
                       SELECT 1 FROM public.accounts a1 
                       WHERE a1.id = transactions_transfer.from_account 
-                        AND a1.user_id = current_user_id()
+                        AND a1.user_id = auth.uid()
                         AND a1.deleted_at IS NULL
                   )
                   AND EXISTS (
                       SELECT 1 FROM public.accounts a2 
                       WHERE a2.id = transactions_transfer.to_account 
-                        AND a2.user_id = current_user_id()
+                        AND a2.user_id = auth.uid()
                         AND a2.deleted_at IS NULL
                   );
                 IF FOUND THEN
                     SELECT type INTO from_acc_type 
                     FROM public.accounts 
                     WHERE id = transfer_details.from_account 
-                      AND user_id = current_user_id()
+                      AND user_id = auth.uid()
                       AND deleted_at IS NULL;
 
                     SELECT type INTO to_acc_type 
                     FROM public.accounts 
                     WHERE id = transfer_details.to_account 
-                      AND user_id = current_user_id()
+                      AND user_id = auth.uid()
                       AND deleted_at IS NULL;
 
                     UPDATE public.accounts 
@@ -1170,13 +1181,13 @@ BEGIN
     SELECT user_id INTO v_account_user 
     FROM public.accounts 
     WHERE id = NEW.account_id 
-      AND user_id = current_user_id()
+      AND user_id = auth.uid()
       AND deleted_at IS NULL;
     
     SELECT user_id INTO v_tx_user 
     FROM public.transactions 
     WHERE id = NEW.transaction_id 
-      AND user_id = current_user_id()
+      AND user_id = auth.uid()
       AND deleted_at IS NULL;
     
     IF v_account_user IS NULL OR v_tx_user IS NULL THEN
@@ -1232,19 +1243,19 @@ BEGIN
     SELECT user_id INTO from_user 
     FROM accounts 
     WHERE id = NEW.from_account 
-    AND user_id = current_user_id()
+    AND user_id = auth.uid()
     AND deleted_at IS NULL;
     
     SELECT user_id INTO to_user 
     FROM accounts 
     WHERE id = NEW.to_account 
-    AND user_id = current_user_id()
+    AND user_id = auth.uid()
     AND deleted_at IS NULL;
     
     SELECT user_id INTO tx_user 
     FROM transactions 
     WHERE id = NEW.transaction_id 
-    AND user_id = current_user_id()
+    AND user_id = auth.uid()
     AND deleted_at IS NULL;
     
     IF from_user IS NULL OR to_user IS NULL OR tx_user IS NULL THEN
@@ -1282,7 +1293,7 @@ BEGIN
         SELECT 1 
         FROM public.counterparties
         WHERE user_id = NEW.user_id
-          AND user_id = public.current_user_id() -- RLS check
+          AND user_id = auth.uid() -- RLS check
           AND name = NEW.name 
           AND type = NEW.type 
           AND deleted_at IS NULL
@@ -1367,7 +1378,7 @@ BEGIN
     SELECT currency INTO v_tx_currency 
     FROM public.transactions 
     WHERE id = NEW.transaction_id 
-      AND user_id = current_user_id()
+      AND user_id = auth.uid()
       AND deleted_at IS NULL;
     
     IF v_tx_currency IS NULL THEN
@@ -1379,7 +1390,7 @@ BEGIN
         SELECT currency INTO v_account_currency 
         FROM public.accounts 
         WHERE id = NEW.from_account 
-          AND user_id = current_user_id()
+          AND user_id = auth.uid()
           AND deleted_at IS NULL;
         
         IF v_account_currency IS NULL THEN
@@ -1393,7 +1404,7 @@ BEGIN
         SELECT currency INTO v_account_currency 
         FROM public.accounts 
         WHERE id = NEW.to_account 
-          AND user_id = current_user_id()
+          AND user_id = auth.uid()
           AND deleted_at IS NULL;
         
         IF v_account_currency IS NULL THEN
@@ -1408,7 +1419,7 @@ BEGIN
         SELECT currency INTO v_account_currency 
         FROM public.accounts 
         WHERE id = NEW.account_id 
-          AND user_id = current_user_id()
+          AND user_id = auth.uid()
           AND deleted_at IS NULL;
         
         IF v_account_currency IS NULL THEN
@@ -1465,7 +1476,7 @@ AS $$
 BEGIN
     -- Auto-populate action_by if not provided
     IF NEW.action_by IS NULL THEN
-        NEW.action_by := current_user_id();
+        NEW.action_by := auth.uid();
         -- If no authenticated user, use the affected user
         IF NEW.action_by IS NULL THEN
             NEW.action_by := NEW.user_id;
@@ -1477,7 +1488,7 @@ BEGIN
         SELECT 1 FROM transactions 
         WHERE id = NEW.transaction_template_id 
           AND user_id = NEW.user_id
-          AND user_id = current_user_id()
+          AND user_id = auth.uid()
           AND deleted_at IS NULL
     ) THEN
         RAISE EXCEPTION 'Template transaction does not exist, is deleted, or access denied';
@@ -1518,7 +1529,7 @@ DECLARE
     new_tx_ids UUID[] := ARRAY[]::UUID[];
     v_current_user UUID;
 BEGIN
-    v_current_user := current_user_id();
+    v_current_user := auth.uid();
 
     FOR rec IN
         SELECT r.* FROM transactions_recurring r
@@ -1686,7 +1697,7 @@ BEGIN
     SELECT ec.user_id INTO category_user_id 
     FROM public.expense_categories ec 
     WHERE ec.id = NEW.category_id 
-      AND ec.user_id = public.current_user_id()
+      AND ec.user_id = auth.uid()
       AND ec.deleted_at IS NULL;
 
     IF NOT FOUND THEN
@@ -1698,7 +1709,7 @@ BEGIN
         SELECT t.user_id INTO transaction_user_id
         FROM public.transactions t
         WHERE t.id = NEW.transaction_id
-          AND t.user_id = public.current_user_id()
+          AND t.user_id = auth.uid()
           AND t.deleted_at IS NULL;
 
         IF NOT FOUND THEN
@@ -1737,7 +1748,7 @@ BEGIN
         INSERT INTO public.audit_logs(user_id, action_by, table_name, record_id, action, old_data, new_data)
         VALUES (
             NEW.user_id,
-            COALESCE(public.current_user_id(), NEW.user_id),
+            COALESCE(auth.uid(), NEW.user_id),
             'profiles',
             NEW.id,
             'ADMIN_PRIVILEGE_CHANGE',
@@ -1816,8 +1827,55 @@ BEFORE INSERT OR UPDATE ON transactions
 FOR EACH ROW
 EXECUTE FUNCTION public.set_is_recent();
 
+
 -- =========================================
--- 21. CREATE PROFILE ON NEW USER SIGN UP
+-- 21. VALIDATE ACCOUNT MODIFICATIONS
+-- =========================================
+CREATE OR REPLACE FUNCTION validate_account_modification()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+    -- Check if account has associated transactions
+    IF EXISTS (
+        SELECT 1 FROM transactions t
+        WHERE t.user_id = OLD.user_id AND t.deleted_at IS NULL AND
+        (
+            t.id IN (SELECT transaction_id FROM transactions_income WHERE account_id = OLD.id AND deleted_at IS NULL) OR
+            t.id IN (SELECT transaction_id FROM transactions_expense WHERE account_id = OLD.id AND deleted_at IS NULL) OR
+            t.id IN (SELECT transaction_id FROM transactions_investment WHERE account_id = OLD.id AND deleted_at IS NULL) OR
+            t.id IN (SELECT transaction_id FROM transactions_borrow WHERE account_id = OLD.id AND deleted_at IS NULL) OR
+            t.id IN (SELECT transaction_id FROM transactions_lend WHERE account_id = OLD.id AND deleted_at IS NULL) OR
+            t.id IN (SELECT transaction_id FROM transactions_transfer WHERE (from_account = OLD.id OR to_account = OLD.id) AND deleted_at IS NULL) OR
+            t.id IN (SELECT transaction_id FROM transactions_adjustment WHERE account_id = OLD.id AND deleted_at IS NULL)
+        )
+    ) THEN
+        IF TG_OP = 'UPDATE' AND (OLD.type != NEW.type OR OLD.currency != NEW.currency) THEN
+            RAISE EXCEPTION 'Cannot modify account type or currency when transactions exist';
+        ELSIF TG_OP = 'DELETE' THEN
+            RAISE EXCEPTION 'Cannot delete account with existing transactions. Use soft delete instead.';
+        END IF;
+    END IF;
+    
+    RETURN COALESCE(NEW, OLD);
+END;
+$$;
+
+-- Add triggers for account validation
+DROP TRIGGER IF EXISTS trg_validate_account_update ON accounts;
+CREATE TRIGGER trg_validate_account_update
+    BEFORE UPDATE ON accounts
+    FOR EACH ROW EXECUTE FUNCTION validate_account_modification();
+
+DROP TRIGGER IF EXISTS trg_validate_account_delete ON accounts;
+CREATE TRIGGER trg_validate_account_delete
+    BEFORE DELETE ON accounts
+    FOR EACH ROW EXECUTE FUNCTION validate_account_modification();
+
+-- =========================================
+-- 22. CREATE PROFILE ON NEW USER SIGN UP
 -- =========================================
 -- Insert profile if it doesn't exist
 -- CREATE OR REPLACE FUNCTION public.insert_profile_if_not_exists()
@@ -1847,7 +1905,6 @@ EXECUTE FUNCTION public.set_is_recent();
 -- =========================================
 
 -- Grant execute permissions to authenticated users for all functions
-GRANT EXECUTE ON FUNCTION current_user_id() TO authenticated;
 GRANT EXECUTE ON FUNCTION log_audit() TO authenticated;
 GRANT EXECUTE ON FUNCTION set_updated_at() TO authenticated;
 GRANT EXECUTE ON FUNCTION insert_profile_defaults() TO authenticated;
@@ -1870,12 +1927,12 @@ GRANT EXECUTE ON FUNCTION validate_credit_limit() TO authenticated;
 GRANT EXECUTE ON FUNCTION validate_account_balance() TO authenticated;
 GRANT EXECUTE ON FUNCTION validate_subcategory_ownership() TO authenticated;
 GRANT EXECUTE ON FUNCTION log_admin_changes() TO authenticated;
+GRANT EXECUTE ON FUNCTION validate_account_modification() TO authenticated;
 
 -- =========================================
 -- COMMENTS AND DOCUMENTATION
 -- =========================================
 
-COMMENT ON FUNCTION current_user_id() IS 'RLS-compliant function to get current authenticated user ID';
 COMMENT ON FUNCTION log_audit() IS 'RLS-compliant audit logging with dual user tracking';
 COMMENT ON FUNCTION apply_transaction_balance() IS 'RLS-compliant balance updates for transaction operations';
 COMMENT ON FUNCTION apply_transfer_balances() IS 'RLS-compliant balance updates for transfer operations';

@@ -467,3 +467,24 @@ CREATE INDEX idx_audit_old_data_gin ON audit_logs USING gin (old_data);
 CREATE INDEX idx_audit_new_data_gin ON audit_logs USING gin (new_data);
 
 CREATE INDEX idx_rate_limits_user_endpoint ON api_rate_limits(user_id, endpoint, window_start);
+
+CREATE INDEX IF NOT EXISTS idx_accounts_user_deleted 
+ON accounts(user_id, deleted_at) WHERE deleted_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_transactions_user_deleted 
+ON transactions(user_id, deleted_at) WHERE deleted_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_profiles_user_admin_deleted 
+ON profiles(user_id, is_admin, deleted_at) WHERE deleted_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_expense_categories_user_deleted 
+ON expense_categories(user_id, deleted_at) WHERE deleted_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_income_sources_user_deleted 
+ON income_sources(user_id, deleted_at) WHERE deleted_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_counterparties_user_deleted 
+ON counterparties(user_id, deleted_at) WHERE deleted_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_transactions_recurring_user_deleted 
+ON transactions_recurring(user_id, deleted_at) WHERE deleted_at IS NULL;

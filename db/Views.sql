@@ -63,7 +63,7 @@ LEFT JOIN loan_accounts la ON a.id = la.account_id AND la.deleted_at IS NULL
 LEFT JOIN investment_accounts ia ON a.id = ia.account_id AND ia.deleted_at IS NULL
 LEFT JOIN receivable_accounts ra ON a.id = ra.account_id AND ra.deleted_at IS NULL
 WHERE a.deleted_at IS NULL 
-  AND a.user_id = current_user_id();
+  AND a.user_id = auth.uid();
 
 -- Transaction Summary View with Enhanced Details
 CREATE OR REPLACE VIEW v_transaction_details
@@ -177,7 +177,7 @@ LEFT JOIN accounts a_from ON tt.from_account = a_from.id AND a_from.deleted_at I
 LEFT JOIN accounts a_to ON tt.to_account = a_to.id AND a_to.deleted_at IS NULL
 
 WHERE t.deleted_at IS NULL 
-  AND t.user_id = current_user_id();
+  AND t.user_id = auth.uid();
 
 -- Net Worth Calculation View
 CREATE OR REPLACE VIEW v_user_net_worth
@@ -221,7 +221,7 @@ SELECT
     MAX(amount) AS max_amount
 FROM transactions
 WHERE deleted_at IS NULL
-  AND user_id = current_user_id()
+  AND user_id = auth.uid()
 GROUP BY user_id, currency, DATE_TRUNC('month', created_at), type;
 
 -- =========================================
