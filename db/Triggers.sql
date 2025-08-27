@@ -150,7 +150,6 @@ BEGIN
 END;
 $$;
 
-DROP TRIGGER IF EXISTS trg_profiles_defaults ON profiles;
 CREATE TRIGGER trg_profiles_defaults
     AFTER INSERT ON profiles
     FOR EACH ROW EXECUTE FUNCTION insert_profile_defaults();
@@ -198,7 +197,6 @@ BEGIN
 END;
 $$;
 
-DROP TRIGGER IF EXISTS trg_insert_specialized_account ON accounts;
 CREATE TRIGGER trg_insert_specialized_account
     AFTER INSERT ON accounts
     FOR EACH ROW EXECUTE FUNCTION insert_specialized_account();
@@ -384,32 +382,26 @@ END;
 $$;
 
 -- Attach to all transaction detail tables
-DROP TRIGGER IF EXISTS trg_tx_income_balance ON transactions_income;
 CREATE TRIGGER trg_tx_income_balance
     AFTER INSERT ON transactions_income
     FOR EACH ROW EXECUTE FUNCTION apply_transaction_balance();
 
-DROP TRIGGER IF EXISTS trg_tx_expense_balance ON transactions_expense;
 CREATE TRIGGER trg_tx_expense_balance
     AFTER INSERT ON transactions_expense
     FOR EACH ROW EXECUTE FUNCTION apply_transaction_balance();
 
-DROP TRIGGER IF EXISTS trg_tx_investment_balance ON transactions_investment;
 CREATE TRIGGER trg_tx_investment_balance
     AFTER INSERT ON transactions_investment
     FOR EACH ROW EXECUTE FUNCTION apply_transaction_balance();
 
-DROP TRIGGER IF EXISTS trg_tx_adjustment_balance ON transactions_adjustment;
 CREATE TRIGGER trg_tx_adjustment_balance
     AFTER INSERT ON transactions_adjustment
     FOR EACH ROW EXECUTE FUNCTION apply_transaction_balance();
 
-DROP TRIGGER IF EXISTS trg_tx_borrow_balance ON transactions_borrow;
 CREATE TRIGGER trg_tx_borrow_balance
     AFTER INSERT ON transactions_borrow
     FOR EACH ROW EXECUTE FUNCTION apply_transaction_balance();
 
-DROP TRIGGER IF EXISTS trg_tx_lend_balance ON transactions_lend;
 CREATE TRIGGER trg_tx_lend_balance
     AFTER INSERT ON transactions_lend
     FOR EACH ROW EXECUTE FUNCTION apply_transaction_balance();
@@ -580,119 +572,96 @@ END;
 $$;
 
 -- Apply to all major tables
-DROP TRIGGER IF EXISTS trg_profiles_no_delete ON profiles;
 CREATE TRIGGER trg_profiles_no_delete
     BEFORE DELETE ON profiles
     FOR EACH ROW EXECUTE FUNCTION enforce_soft_delete();
 
-DROP TRIGGER IF EXISTS trg_accounts_no_delete ON accounts;
 CREATE TRIGGER trg_accounts_no_delete
     BEFORE DELETE ON accounts
     FOR EACH ROW EXECUTE FUNCTION enforce_soft_delete();
 
-DROP TRIGGER IF EXISTS trg_transactions_no_delete ON transactions;
 CREATE TRIGGER trg_transactions_no_delete
     BEFORE DELETE ON transactions
     FOR EACH ROW EXECUTE FUNCTION enforce_soft_delete();
 
-DROP TRIGGER IF EXISTS trg_counterparties_no_delete ON counterparties;
 CREATE TRIGGER trg_counterparties_no_delete
     BEFORE DELETE ON counterparties
     FOR EACH ROW EXECUTE FUNCTION enforce_soft_delete();
 
-DROP TRIGGER IF EXISTS trg_expense_categories_no_delete ON expense_categories;
 CREATE TRIGGER trg_expense_categories_no_delete
     BEFORE DELETE ON expense_categories
     FOR EACH ROW EXECUTE FUNCTION enforce_soft_delete();
 
-DROP TRIGGER IF EXISTS trg_expense_subcategories_no_delete ON expense_subcategories;
 CREATE TRIGGER trg_expense_subcategories_no_delete
     BEFORE DELETE ON expense_subcategories
     FOR EACH ROW EXECUTE FUNCTION enforce_soft_delete();
 
-DROP TRIGGER IF EXISTS trg_income_sources_no_delete ON income_sources;
 CREATE TRIGGER trg_income_sources_no_delete
     BEFORE DELETE ON income_sources
     FOR EACH ROW EXECUTE FUNCTION enforce_soft_delete();
 
-DROP TRIGGER IF EXISTS trg_transactions_recurring_no_delete ON transactions_recurring;
 CREATE TRIGGER trg_transactions_recurring_no_delete
     BEFORE DELETE ON transactions_recurring
     FOR EACH ROW EXECUTE FUNCTION enforce_soft_delete();
 
 -- Soft delete for specialized account tables
-DROP TRIGGER IF EXISTS trg_cash_accounts_no_delete ON cash_accounts;
 CREATE TRIGGER trg_cash_accounts_no_delete
     BEFORE DELETE ON cash_accounts
     FOR EACH ROW EXECUTE FUNCTION enforce_soft_delete();
 
-DROP TRIGGER IF EXISTS trg_bank_accounts_no_delete ON bank_accounts;
 CREATE TRIGGER trg_bank_accounts_no_delete
     BEFORE DELETE ON bank_accounts
     FOR EACH ROW EXECUTE FUNCTION enforce_soft_delete();
 
-DROP TRIGGER IF EXISTS trg_credit_card_accounts_no_delete ON credit_card_accounts;
 CREATE TRIGGER trg_credit_card_accounts_no_delete
     BEFORE DELETE ON credit_card_accounts
     FOR EACH ROW EXECUTE FUNCTION enforce_soft_delete();
 
-DROP TRIGGER IF EXISTS trg_loan_accounts_no_delete ON loan_accounts;
 CREATE TRIGGER trg_loan_accounts_no_delete
     BEFORE DELETE ON loan_accounts
     FOR EACH ROW EXECUTE FUNCTION enforce_soft_delete();
 
-DROP TRIGGER IF EXISTS trg_investment_accounts_no_delete ON investment_accounts;
 CREATE TRIGGER trg_investment_accounts_no_delete
     BEFORE DELETE ON investment_accounts
     FOR EACH ROW EXECUTE FUNCTION enforce_soft_delete();
 
-DROP TRIGGER IF EXISTS trg_crypto_accounts_no_delete ON crypto_accounts;
 CREATE TRIGGER trg_crypto_accounts_no_delete
     BEFORE DELETE ON crypto_accounts
     FOR EACH ROW EXECUTE FUNCTION enforce_soft_delete();
 
-DROP TRIGGER IF EXISTS trg_wallet_accounts_no_delete ON wallet_accounts;
 CREATE TRIGGER trg_wallet_accounts_no_delete
     BEFORE DELETE ON wallet_accounts
     FOR EACH ROW EXECUTE FUNCTION enforce_soft_delete();
 
-DROP TRIGGER IF EXISTS trg_receivable_accounts_no_delete ON receivable_accounts;
 CREATE TRIGGER trg_receivable_accounts_no_delete
     BEFORE DELETE ON receivable_accounts
     FOR EACH ROW EXECUTE FUNCTION enforce_soft_delete();
 
 -- Soft delete for transaction detail tables
-DROP TRIGGER IF EXISTS trg_transactions_income_no_delete ON transactions_income;
 CREATE TRIGGER trg_transactions_income_no_delete
     BEFORE DELETE ON transactions_income
     FOR EACH ROW EXECUTE FUNCTION enforce_soft_delete();
 
-DROP TRIGGER IF EXISTS trg_transactions_expense_no_delete ON transactions_expense;
 CREATE TRIGGER trg_transactions_expense_no_delete
     BEFORE DELETE ON transactions_expense
     FOR EACH ROW EXECUTE FUNCTION enforce_soft_delete();
 
-DROP TRIGGER IF EXISTS trg_transactions_investment_no_delete ON transactions_investment;
 CREATE TRIGGER trg_transactions_investment_no_delete
     BEFORE DELETE ON transactions_investment
     FOR EACH ROW EXECUTE FUNCTION enforce_soft_delete();
 
-DROP TRIGGER IF EXISTS trg_transactions_borrow_no_delete ON transactions_borrow;
 CREATE TRIGGER trg_transactions_borrow_no_delete
     BEFORE DELETE ON transactions_borrow
     FOR EACH ROW EXECUTE FUNCTION enforce_soft_delete();
 
-DROP TRIGGER IF EXISTS trg_transactions_lend_no_delete ON transactions_lend;
 CREATE TRIGGER trg_transactions_lend_no_delete
     BEFORE DELETE ON transactions_lend
     FOR EACH ROW EXECUTE FUNCTION enforce_soft_delete();
 
-DROP TRIGGER IF EXISTS trg_transactions_transfer_no_delete ON transactions_transfer;
 CREATE TRIGGER trg_transactions_transfer_no_delete
     BEFORE DELETE ON transactions_transfer
     FOR EACH ROW EXECUTE FUNCTION enforce_soft_delete();
 
-DROP TRIGGER IF EXISTS trg_transactions_adjustment_no_delete ON transactions_adjustment;
 CREATE TRIGGER trg_transactions_adjustment_no_delete
     BEFORE DELETE ON transactions_adjustment
     FOR EACH ROW EXECUTE FUNCTION enforce_soft_delete();
@@ -749,7 +718,6 @@ BEGIN
 END;
 $$;
 
-DROP TRIGGER IF EXISTS trg_cleanup_specialized_account ON accounts;
 CREATE TRIGGER trg_cleanup_specialized_account
     AFTER UPDATE ON accounts
     FOR EACH ROW EXECUTE FUNCTION cleanup_specialized_account();
@@ -802,7 +770,6 @@ BEGIN
 END;
 $$;
 
-DROP TRIGGER IF EXISTS trg_cleanup_transaction_details ON transactions;
 CREATE TRIGGER trg_cleanup_transaction_details
     AFTER UPDATE ON transactions
     FOR EACH ROW EXECUTE FUNCTION cleanup_transaction_details();
@@ -1182,7 +1149,6 @@ BEGIN
 END;
 $$;
 
-DROP TRIGGER IF EXISTS trg_reverse_balance_soft_delete ON transactions;
 CREATE TRIGGER trg_reverse_balance_soft_delete
     AFTER UPDATE ON transactions
     FOR EACH ROW EXECUTE FUNCTION reverse_balance_on_soft_delete();
@@ -1226,32 +1192,26 @@ END;
 $$;
 
 -- Apply to all transaction detail tables
-DROP TRIGGER IF EXISTS trg_tx_income_validate ON transactions_income;
 CREATE TRIGGER trg_tx_income_validate
     BEFORE INSERT ON transactions_income
     FOR EACH ROW EXECUTE FUNCTION validate_transaction_user();
 
-DROP TRIGGER IF EXISTS trg_tx_expense_validate ON transactions_expense;
 CREATE TRIGGER trg_tx_expense_validate
     BEFORE INSERT ON transactions_expense
     FOR EACH ROW EXECUTE FUNCTION validate_transaction_user();
 
-DROP TRIGGER IF EXISTS trg_tx_investment_validate ON transactions_investment;
 CREATE TRIGGER trg_tx_investment_validate
     BEFORE INSERT ON transactions_investment
     FOR EACH ROW EXECUTE FUNCTION validate_transaction_user();
 
-DROP TRIGGER IF EXISTS trg_tx_adjustment_validate ON transactions_adjustment;
 CREATE TRIGGER trg_tx_adjustment_validate
     BEFORE INSERT ON transactions_adjustment
     FOR EACH ROW EXECUTE FUNCTION validate_transaction_user();
 
-DROP TRIGGER IF EXISTS trg_tx_borrow_validate ON transactions_borrow;
 CREATE TRIGGER trg_tx_borrow_validate
     BEFORE INSERT ON transactions_borrow
     FOR EACH ROW EXECUTE FUNCTION validate_transaction_user();
 
-DROP TRIGGER IF EXISTS trg_tx_lend_validate ON transactions_lend;
 CREATE TRIGGER trg_tx_lend_validate
     BEFORE INSERT ON transactions_lend
     FOR EACH ROW EXECUTE FUNCTION validate_transaction_user();
@@ -1304,7 +1264,6 @@ BEGIN
 END;
 $$;
 
-DROP TRIGGER IF EXISTS trg_tx_transfer_validate ON transactions_transfer;
 CREATE TRIGGER trg_tx_transfer_validate
     BEFORE INSERT ON transactions_transfer
     FOR EACH ROW EXECUTE FUNCTION validate_transfer_accounts();
@@ -1337,7 +1296,6 @@ BEGIN
 END;
 $$;
 
-DROP TRIGGER IF EXISTS trg_counterparty_unique ON counterparties;
 CREATE TRIGGER trg_counterparty_unique
     BEFORE INSERT OR UPDATE ON counterparties
     FOR EACH ROW EXECUTE FUNCTION enforce_counterparty_unique();
@@ -1364,7 +1322,6 @@ BEGIN
 END;
 $$;
 
-DROP TRIGGER IF EXISTS trg_receivable_status ON receivable_accounts;
 CREATE TRIGGER trg_receivable_status
     BEFORE INSERT OR UPDATE ON receivable_accounts
     FOR EACH ROW EXECUTE FUNCTION update_receivable_status();
@@ -1389,7 +1346,6 @@ BEGIN
 END;
 $$;
 
-DROP TRIGGER IF EXISTS trg_loan_status ON loan_accounts;
 CREATE TRIGGER trg_loan_status
     BEFORE INSERT OR UPDATE ON loan_accounts
     FOR EACH ROW EXECUTE FUNCTION update_loan_status();
@@ -1469,37 +1425,30 @@ END;
 $$;
 
 -- Apply currency validation to all transaction detail tables
-DROP TRIGGER IF EXISTS trg_currency_match_income ON transactions_income;
 CREATE TRIGGER trg_currency_match_income
     BEFORE INSERT OR UPDATE ON transactions_income
     FOR EACH ROW EXECUTE FUNCTION enforce_currency_match();
 
-DROP TRIGGER IF EXISTS trg_currency_match_expense ON transactions_expense;
 CREATE TRIGGER trg_currency_match_expense
     BEFORE INSERT OR UPDATE ON transactions_expense
     FOR EACH ROW EXECUTE FUNCTION enforce_currency_match();
 
-DROP TRIGGER IF EXISTS trg_currency_match_investment ON transactions_investment;
 CREATE TRIGGER trg_currency_match_investment
     BEFORE INSERT OR UPDATE ON transactions_investment
     FOR EACH ROW EXECUTE FUNCTION enforce_currency_match();
 
-DROP TRIGGER IF EXISTS trg_currency_match_adjustment ON transactions_adjustment;
 CREATE TRIGGER trg_currency_match_adjustment
     BEFORE INSERT OR UPDATE ON transactions_adjustment
     FOR EACH ROW EXECUTE FUNCTION enforce_currency_match();
 
-DROP TRIGGER IF EXISTS trg_currency_match_borrow ON transactions_borrow;
 CREATE TRIGGER trg_currency_match_borrow
     BEFORE INSERT OR UPDATE ON transactions_borrow
     FOR EACH ROW EXECUTE FUNCTION enforce_currency_match();
 
-DROP TRIGGER IF EXISTS trg_currency_match_lend ON transactions_lend;
 CREATE TRIGGER trg_currency_match_lend
     BEFORE INSERT OR UPDATE ON transactions_lend
     FOR EACH ROW EXECUTE FUNCTION enforce_currency_match();
 
-DROP TRIGGER IF EXISTS trg_currency_match_transfer ON transactions_transfer;
 CREATE TRIGGER trg_currency_match_transfer
     BEFORE INSERT OR UPDATE ON transactions_transfer
     FOR EACH ROW EXECUTE FUNCTION enforce_currency_match();
@@ -1548,7 +1497,6 @@ BEGIN
 END;
 $$;
 
-DROP TRIGGER IF EXISTS trg_setup_recurring ON transactions_recurring;
 CREATE TRIGGER trg_setup_recurring
     BEFORE INSERT ON transactions_recurring
     FOR EACH ROW EXECUTE FUNCTION setup_recurring_transaction();
@@ -1671,7 +1619,6 @@ BEGIN
 END;
 $$;
 
-DROP TRIGGER IF EXISTS trg_validate_credit_limit ON credit_card_accounts;
 CREATE TRIGGER trg_validate_credit_limit
     BEFORE INSERT OR UPDATE ON credit_card_accounts
     FOR EACH ROW EXECUTE FUNCTION validate_credit_limit();
@@ -1706,22 +1653,18 @@ BEGIN
 END;
 $$;
 
-DROP TRIGGER IF EXISTS trg_validate_cash_balance ON cash_accounts;
 CREATE TRIGGER trg_validate_cash_balance
     BEFORE UPDATE ON cash_accounts
     FOR EACH ROW EXECUTE FUNCTION validate_account_balance();
 
-DROP TRIGGER IF EXISTS trg_validate_bank_balance ON bank_accounts;
 CREATE TRIGGER trg_validate_bank_balance
     BEFORE UPDATE ON bank_accounts
     FOR EACH ROW EXECUTE FUNCTION validate_account_balance();
 
-DROP TRIGGER IF EXISTS trg_validate_wallet_balance ON wallet_accounts;
 CREATE TRIGGER trg_validate_wallet_balance
     BEFORE UPDATE ON wallet_accounts
     FOR EACH ROW EXECUTE FUNCTION validate_account_balance();
 
-DROP TRIGGER IF EXISTS trg_validate_crypto_balance ON crypto_accounts;
 CREATE TRIGGER trg_validate_crypto_balance
     BEFORE UPDATE ON crypto_accounts
     FOR EACH ROW EXECUTE FUNCTION validate_account_balance();
@@ -1771,12 +1714,10 @@ BEGIN
 END;
 $$;
 
-DROP TRIGGER IF EXISTS trg_validate_subcategory ON expense_subcategories;
 CREATE TRIGGER trg_validate_subcategory
     BEFORE INSERT OR UPDATE ON expense_subcategories
     FOR EACH ROW EXECUTE FUNCTION validate_subcategory_ownership();
 
-DROP TRIGGER IF EXISTS trg_validate_expense_category ON transactions_expense;
 CREATE TRIGGER trg_validate_expense_category
     BEFORE INSERT OR UPDATE ON transactions_expense
     FOR EACH ROW EXECUTE FUNCTION validate_subcategory_ownership();
@@ -1812,7 +1753,6 @@ BEGIN
 END;
 $$;
 
-DROP TRIGGER IF EXISTS trg_log_admin_changes ON profiles;
 CREATE TRIGGER trg_log_admin_changes
     AFTER UPDATE ON profiles
     FOR EACH ROW EXECUTE FUNCTION log_admin_changes();
@@ -1875,6 +1815,32 @@ CREATE TRIGGER trg_transactions_set_is_recent
 BEFORE INSERT OR UPDATE ON transactions
 FOR EACH ROW
 EXECUTE FUNCTION public.set_is_recent();
+
+-- =========================================
+-- 21. CREATE PROFILE ON NEW USER SIGN UP
+-- =========================================
+-- Insert profile if it doesn't exist
+-- CREATE OR REPLACE FUNCTION public.insert_profile_if_not_exists()
+-- RETURNS TRIGGER
+-- LANGUAGE plpgsql
+-- SECURITY DEFINER
+-- SET search_path = public, pg_temp
+-- AS $$
+-- BEGIN
+--     -- Insert a new profile only if no profile exists for this user_id
+--     INSERT INTO public.profiles (user_id)
+--     VALUES (NEW.id)
+--     ON CONFLICT (user_id) DO NOTHING;
+
+--     RETURN NEW;
+-- END;
+-- $$;
+
+-- -- 2. Trigger on auth.users
+-- CREATE TRIGGER trigger_insert_profile
+-- AFTER INSERT ON auth.users
+-- FOR EACH ROW
+-- EXECUTE FUNCTION public.insert_profile_if_not_exists();
 
 -- =========================================
 -- GRANT PERMISSIONS FOR RLS FUNCTIONS
