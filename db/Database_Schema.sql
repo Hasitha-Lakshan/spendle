@@ -42,7 +42,8 @@ CREATE TABLE profiles (
   defaults_inserted BOOLEAN DEFAULT FALSE,    -- flag to indicate if default accounts/categories are inserted
   is_admin BOOLEAN DEFAULT FALSE,             -- flag to indicate if the user has admin privileges
   deleted_at timestamptz NULL DEFAULT NULL,   -- soft delete timestamp
-  created_at timestamptz DEFAULT now()        -- creation timestamp
+  created_at timestamptz DEFAULT now(),        -- creation timestamp
+  updated_at timestamptz DEFAULT now()
 );
 
 -- =========================================
