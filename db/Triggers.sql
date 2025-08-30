@@ -17,88 +17,137 @@
 -- =========================================
 -- 1. AUDIT LOGGING WITH DUAL USER TRACKING
 -- =========================================
+-- Logs INSERT, UPDATE, DELETE operations into audit_logs
+-- Handles dynamic primary key detection for tables with different PK names
 -- =========================================
--- CREATE OR REPLACE FUNCTION log_audit() 
--- RETURNS TRIGGER 
--- LANGUAGE plpgsql
--- SECURITY DEFINER
--- SET search_path = public
--- AS $$
--- DECLARE
---     affected_user_id UUID;
---     actor_user_id UUID;
--- BEGIN
---     -- Try to determine affected_user_id based on table
---     BEGIN
---         IF TG_OP = 'DELETE' THEN
---             -- If table has user_id
---             affected_user_id := OLD.user_id;
---         ELSE
---             affected_user_id := NEW.user_id;
---         END IF;
---     EXCEPTION WHEN undefined_column THEN
---         -- No direct user_id, resolve based on known FK patterns
---         IF TG_OP = 'DELETE' THEN
---             -- Look into OLD
---             IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = TG_TABLE_NAME AND column_name = 'account_id') THEN
---                 SELECT a.user_id INTO affected_user_id
---                 FROM accounts a WHERE a.id = OLD.account_id;
---             ELSIF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = TG_TABLE_NAME AND column_name = 'transaction_id') THEN
---                 SELECT t.user_id INTO affected_user_id
---                 FROM transactions t WHERE t.id = OLD.transaction_id;
---             ELSE
---                 affected_user_id := NULL;
---             END IF;
---         ELSE
---             -- Look into NEW
---             IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = TG_TABLE_NAME AND column_name = 'account_id') THEN
---                 SELECT a.user_id INTO affected_user_id
---                 FROM accounts a WHERE a.id = NEW.account_id;
---             ELSIF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = TG_TABLE_NAME AND column_name = 'transaction_id') THEN
---                 SELECT t.user_id INTO affected_user_id
---                 FROM transactions t WHERE t.id = NEW.transaction_id;
---             ELSE
---                 affected_user_id := NULL;
---             END IF;
---         END IF;
---     END;
 
---     -- Actor = current session user
---     actor_user_id := auth.uid();
---     IF actor_user_id IS NULL THEN
---         actor_user_id := affected_user_id;
---     END IF;
+CREATE OR REPLACE FUNCTION log_audit() 
+RETURNS TRIGGER 
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    affected_user_id UUID;
+    actor_user_id UUID;
+    record_id UUID;
+BEGIN
+    -- ==============================
+    -- Determine affected user
+    -- ==============================
+    BEGIN
+        IF TG_OP = 'DELETE' THEN
+            affected_user_id := OLD.user_id;
+        ELSE
+            affected_user_id := NEW.user_id;
+        END IF;
+    EXCEPTION WHEN undefined_column THEN
+        -- Recursive resolution for known FK patterns
+        IF TG_OP = 'DELETE' THEN
+            IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = TG_TABLE_NAME AND column_name = 'account_id') THEN
+                SELECT a.user_id INTO affected_user_id FROM accounts a WHERE a.id = OLD.account_id;
+            ELSIF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = TG_TABLE_NAME AND column_name = 'transaction_id') THEN
+                SELECT t.user_id INTO affected_user_id FROM transactions t WHERE t.id = OLD.transaction_id;
+            ELSIF TG_TABLE_NAME = 'expense_subcategories' THEN
+                SELECT ec.user_id INTO affected_user_id
+                FROM expense_categories ec WHERE ec.id = OLD.category_id;
+            ELSE
+                affected_user_id := NULL;
+            END IF;
+        ELSE
+            IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = TG_TABLE_NAME AND column_name = 'account_id') THEN
+                SELECT a.user_id INTO affected_user_id FROM accounts a WHERE a.id = NEW.account_id;
+            ELSIF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = TG_TABLE_NAME AND column_name = 'transaction_id') THEN
+                SELECT t.user_id INTO affected_user_id FROM transactions t WHERE t.id = NEW.transaction_id;
+            ELSIF TG_TABLE_NAME = 'expense_subcategories' THEN
+                SELECT ec.user_id INTO affected_user_id
+                FROM expense_categories ec WHERE ec.id = NEW.category_id;
+            ELSE
+                affected_user_id := NULL;
+            END IF;
+        END IF;
+    END;
 
---     -- Insert audit log
---     IF TG_OP = 'INSERT' THEN
---         INSERT INTO public.audit_logs(user_id, action_by, table_name, record_id, action, new_data)
---         VALUES (affected_user_id, actor_user_id, TG_TABLE_NAME, NEW.id, 'INSERT', row_to_json(NEW));
---     ELSIF TG_OP = 'UPDATE' THEN
---         INSERT INTO public.audit_logs(user_id, action_by, table_name, record_id, action, old_data, new_data)
---         VALUES (affected_user_id, actor_user_id, TG_TABLE_NAME, NEW.id, 'UPDATE', row_to_json(OLD), row_to_json(NEW));
---     ELSIF TG_OP = 'DELETE' THEN
---         INSERT INTO public.audit_logs(user_id, action_by, table_name, record_id, action, old_data)
---         VALUES (affected_user_id, actor_user_id, TG_TABLE_NAME, OLD.id, 'DELETE', row_to_json(OLD));
---     END IF;
+    -- Actor = current session user
+    actor_user_id := auth.uid();
+    IF actor_user_id IS NULL THEN
+        actor_user_id := affected_user_id;
+    END IF;
 
---     RETURN NULL;
--- END;
--- $$;
+    -- ==============================
+    -- Determine primary key for record
+    -- ==============================
+    IF TG_OP = 'DELETE' THEN
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = TG_TABLE_NAME AND column_name = 'id') THEN
+            record_id := OLD.id;
+        ELSIF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = TG_TABLE_NAME AND column_name = 'account_id') THEN
+            record_id := OLD.account_id;
+        ELSIF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = TG_TABLE_NAME AND column_name = 'transaction_id') THEN
+            record_id := OLD.transaction_id;
+        ELSE
+            record_id := NULL;
+        END IF;
+    ELSE
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = TG_TABLE_NAME AND column_name = 'id') THEN
+            record_id := NEW.id;
+        ELSIF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = TG_TABLE_NAME AND column_name = 'account_id') THEN
+            record_id := NEW.account_id;
+        ELSIF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = TG_TABLE_NAME AND column_name = 'transaction_id') THEN
+            record_id := NEW.transaction_id;
+        ELSE
+            record_id := NULL;
+        END IF;
+    END IF;
 
--- -- Create audit triggers for all major tables
--- DO $$
--- DECLARE 
---     t text;
--- BEGIN
---     FOR t IN 
---         SELECT tablename FROM pg_tables 
---         WHERE schemaname = 'public' 
---         AND tablename NOT IN ('audit_logs') 
---         AND tablename ~ '^(profiles|accounts|.*_accounts|transactions.*|expense_.*|income_sources|counterparties)$'
---     LOOP
---         EXECUTE format('CREATE TRIGGER trg_audit_%I AFTER INSERT OR UPDATE OR DELETE ON %I FOR EACH ROW EXECUTE FUNCTION log_audit();', t, t);
---     END LOOP;
--- END$$;
+    -- ==============================
+    -- Insert into audit_logs
+    -- ==============================
+    IF TG_OP = 'INSERT' THEN
+        INSERT INTO public.audit_logs(
+            user_id, action_by, table_name, record_id, action, new_data
+        )
+        VALUES (
+            affected_user_id, actor_user_id, TG_TABLE_NAME, record_id, 'INSERT', row_to_json(NEW)
+        );
+    ELSIF TG_OP = 'UPDATE' THEN
+        INSERT INTO public.audit_logs(
+            user_id, action_by, table_name, record_id, action, old_data, new_data
+        )
+        VALUES (
+            affected_user_id, actor_user_id, TG_TABLE_NAME, record_id, 'UPDATE', row_to_json(OLD), row_to_json(NEW)
+        );
+    ELSIF TG_OP = 'DELETE' THEN
+        INSERT INTO public.audit_logs(
+            user_id, action_by, table_name, record_id, action, old_data
+        )
+        VALUES (
+            affected_user_id, actor_user_id, TG_TABLE_NAME, record_id, 'DELETE', row_to_json(OLD)
+        );
+    END IF;
+
+    RETURN NULL;
+END;
+$$;
+
+-- =========================================
+-- Create audit triggers for all relevant tables
+-- =========================================
+DO $$
+DECLARE 
+    t text;
+BEGIN
+    FOR t IN 
+        SELECT tablename FROM pg_tables 
+        WHERE schemaname = 'public' 
+        AND tablename NOT IN ('audit_logs') 
+        AND tablename ~ '^(profiles|accounts|.*_accounts|transactions.*|expense_.*|income_sources|counterparties)$'
+    LOOP
+        EXECUTE format(
+            'CREATE TRIGGER trg_audit_%I AFTER INSERT OR UPDATE OR DELETE ON %I FOR EACH ROW EXECUTE FUNCTION log_audit();', 
+            t, t
+        );
+    END LOOP;
+END$$;
 
 -- =========================================
 -- 2. AUTO UPDATE updated_at TIMESTAMPS
