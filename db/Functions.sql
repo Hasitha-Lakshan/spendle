@@ -22,6 +22,7 @@ CREATE OR REPLACE FUNCTION insert_account_generic(
 RETURNS UUID
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = public, pg_catalog
 AS $$
 DECLARE
     v_account_id UUID;
