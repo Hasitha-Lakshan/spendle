@@ -18,61 +18,87 @@
 -- 1. AUDIT LOGGING WITH DUAL USER TRACKING
 -- =========================================
 -- =========================================
-CREATE OR REPLACE FUNCTION log_audit() 
-RETURNS TRIGGER 
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public
-AS $$
-DECLARE
-    affected_user_id UUID;
-    actor_user_id UUID;
-BEGIN
-    -- Get the affected user ID from the record
-    IF TG_OP = 'DELETE' THEN
-        affected_user_id := OLD.user_id;
-    ELSE
-        affected_user_id := NEW.user_id;
-    END IF;
-    
-    -- Get the actor (current authenticated user) - can be same or different from affected user
-    actor_user_id := auth.uid();
-    
-    -- If no authenticated user, use the affected user as fallback (for system operations)
-    IF actor_user_id IS NULL THEN
-        actor_user_id := affected_user_id;
-    END IF;
+-- CREATE OR REPLACE FUNCTION log_audit() 
+-- RETURNS TRIGGER 
+-- LANGUAGE plpgsql
+-- SECURITY DEFINER
+-- SET search_path = public
+-- AS $$
+-- DECLARE
+--     affected_user_id UUID;
+--     actor_user_id UUID;
+-- BEGIN
+--     -- Try to determine affected_user_id based on table
+--     BEGIN
+--         IF TG_OP = 'DELETE' THEN
+--             -- If table has user_id
+--             affected_user_id := OLD.user_id;
+--         ELSE
+--             affected_user_id := NEW.user_id;
+--         END IF;
+--     EXCEPTION WHEN undefined_column THEN
+--         -- No direct user_id, resolve based on known FK patterns
+--         IF TG_OP = 'DELETE' THEN
+--             -- Look into OLD
+--             IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = TG_TABLE_NAME AND column_name = 'account_id') THEN
+--                 SELECT a.user_id INTO affected_user_id
+--                 FROM accounts a WHERE a.id = OLD.account_id;
+--             ELSIF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = TG_TABLE_NAME AND column_name = 'transaction_id') THEN
+--                 SELECT t.user_id INTO affected_user_id
+--                 FROM transactions t WHERE t.id = OLD.transaction_id;
+--             ELSE
+--                 affected_user_id := NULL;
+--             END IF;
+--         ELSE
+--             -- Look into NEW
+--             IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = TG_TABLE_NAME AND column_name = 'account_id') THEN
+--                 SELECT a.user_id INTO affected_user_id
+--                 FROM accounts a WHERE a.id = NEW.account_id;
+--             ELSIF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = TG_TABLE_NAME AND column_name = 'transaction_id') THEN
+--                 SELECT t.user_id INTO affected_user_id
+--                 FROM transactions t WHERE t.id = NEW.transaction_id;
+--             ELSE
+--                 affected_user_id := NULL;
+--             END IF;
+--         END IF;
+--     END;
 
-    IF TG_OP = 'INSERT' THEN
-        INSERT INTO public.audit_logs(user_id, action_by, table_name, record_id, action, new_data)
-        VALUES (affected_user_id, actor_user_id, TG_TABLE_NAME, NEW.id, 'INSERT', row_to_json(NEW));
-    ELSIF TG_OP = 'UPDATE' THEN
-        INSERT INTO public.audit_logs(user_id, action_by, table_name, record_id, action, old_data, new_data)
-        VALUES (affected_user_id, actor_user_id, TG_TABLE_NAME, NEW.id, 'UPDATE', row_to_json(OLD), row_to_json(NEW));
-    ELSIF TG_OP = 'DELETE' THEN
-        INSERT INTO public.audit_logs(user_id, action_by, table_name, record_id, action, old_data)
-        VALUES (affected_user_id, actor_user_id, TG_TABLE_NAME, OLD.id, 'DELETE', row_to_json(OLD));
-    END IF;
+--     -- Actor = current session user
+--     actor_user_id := auth.uid();
+--     IF actor_user_id IS NULL THEN
+--         actor_user_id := affected_user_id;
+--     END IF;
 
-    RETURN NULL;
-END;
-$$;
+--     -- Insert audit log
+--     IF TG_OP = 'INSERT' THEN
+--         INSERT INTO public.audit_logs(user_id, action_by, table_name, record_id, action, new_data)
+--         VALUES (affected_user_id, actor_user_id, TG_TABLE_NAME, NEW.id, 'INSERT', row_to_json(NEW));
+--     ELSIF TG_OP = 'UPDATE' THEN
+--         INSERT INTO public.audit_logs(user_id, action_by, table_name, record_id, action, old_data, new_data)
+--         VALUES (affected_user_id, actor_user_id, TG_TABLE_NAME, NEW.id, 'UPDATE', row_to_json(OLD), row_to_json(NEW));
+--     ELSIF TG_OP = 'DELETE' THEN
+--         INSERT INTO public.audit_logs(user_id, action_by, table_name, record_id, action, old_data)
+--         VALUES (affected_user_id, actor_user_id, TG_TABLE_NAME, OLD.id, 'DELETE', row_to_json(OLD));
+--     END IF;
 
--- Create audit triggers for all major tables
-DO $$
-DECLARE 
-    t text;
-BEGIN
-    FOR t IN 
-        SELECT tablename FROM pg_tables 
-        WHERE schemaname = 'public' 
-        AND tablename NOT IN ('audit_logs') 
-        AND tablename ~ '^(profiles|accounts|.*_accounts|transactions.*|expense_.*|income_sources|counterparties)$'
-    LOOP
-        EXECUTE format('DROP TRIGGER IF EXISTS trg_audit_%I ON %I;', t, t);
-        EXECUTE format('CREATE TRIGGER trg_audit_%I AFTER INSERT OR UPDATE OR DELETE ON %I FOR EACH ROW EXECUTE FUNCTION log_audit();', t, t);
-    END LOOP;
-END$$;
+--     RETURN NULL;
+-- END;
+-- $$;
+
+-- -- Create audit triggers for all major tables
+-- DO $$
+-- DECLARE 
+--     t text;
+-- BEGIN
+--     FOR t IN 
+--         SELECT tablename FROM pg_tables 
+--         WHERE schemaname = 'public' 
+--         AND tablename NOT IN ('audit_logs') 
+--         AND tablename ~ '^(profiles|accounts|.*_accounts|transactions.*|expense_.*|income_sources|counterparties)$'
+--     LOOP
+--         EXECUTE format('CREATE TRIGGER trg_audit_%I AFTER INSERT OR UPDATE OR DELETE ON %I FOR EACH ROW EXECUTE FUNCTION log_audit();', t, t);
+--     END LOOP;
+-- END$$;
 
 -- =========================================
 -- 2. AUTO UPDATE updated_at TIMESTAMPS
@@ -104,113 +130,10 @@ BEGIN
             AND column_name = 'updated_at'
         )
     LOOP
-        EXECUTE format('DROP TRIGGER IF EXISTS trg_%I_updated ON %I;', t, t);
         EXECUTE format('CREATE TRIGGER trg_%I_updated BEFORE UPDATE ON %I FOR EACH ROW EXECUTE FUNCTION set_updated_at();', t, t);
     END LOOP;
 END$$;
 
--- =========================================
--- 3. DEFAULT SETUP FOR NEW PROFILES
--- =========================================
-CREATE OR REPLACE FUNCTION insert_profile_defaults() 
-RETURNS TRIGGER 
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public
-AS $$
-DECLARE
-    default_account_id UUID;
-    default_category_id UUID;
-    default_source_id UUID;
-BEGIN
-    -- Only insert defaults if not already inserted
-    IF NOT COALESCE(NEW.defaults_inserted, FALSE) THEN
-        -- Create default cash account
-        INSERT INTO accounts(user_id, account_name, type, currency)
-        VALUES (NEW.user_id, 'Cash Wallet', 'cash', 'USD')
-        RETURNING id INTO default_account_id;
-
-        -- Create default cash account details
-        INSERT INTO cash_accounts(account_id, location, balance, status, notes)
-        VALUES (default_account_id, 'Wallet', 0, 'active', 'Default cash account');
-
-        -- Create default expense category
-        INSERT INTO expense_categories(user_id, name) 
-        VALUES (NEW.user_id, 'General')
-        RETURNING id INTO default_category_id;
-        
-        -- Create default expense subcategory
-        INSERT INTO expense_subcategories(category_id, name)
-        VALUES (default_category_id, 'Miscellaneous');
-        
-        -- Create default income source
-        INSERT INTO income_sources(user_id, name) 
-        VALUES (NEW.user_id, 'Salary')
-        RETURNING id INTO default_source_id;
-
-        -- Mark defaults as inserted
-        UPDATE profiles 
-        SET defaults_inserted = TRUE,
-            updated_at = NOW()
-        WHERE user_id = NEW.user_id;
-    END IF;
-
-    RETURN NEW;
-END;
-$$;
-
-CREATE TRIGGER trg_insert_profile_defaults
-    AFTER INSERT ON profiles
-    FOR EACH ROW
-    WHEN (NEW.defaults_inserted IS FALSE OR NEW.defaults_inserted IS NULL)
-    EXECUTE FUNCTION insert_profile_defaults();
-
--- =========================================
--- 4. SPECIALIZED ACCOUNT SYNC WITH PROPER FIELD INITIALIZATION
--- =========================================
-CREATE OR REPLACE FUNCTION insert_specialized_account() 
-RETURNS TRIGGER 
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public
-AS $$
-BEGIN
-    CASE NEW.type
-        WHEN 'cash' THEN
-            INSERT INTO public.cash_accounts(account_id, balance, status, location, notes) 
-            VALUES (NEW.id, 0, 'active', 'Wallet', 'Default cash account');
-        WHEN 'bank' THEN
-            INSERT INTO public.bank_accounts(account_id, bank_name, account_no, balance, status, branch, account_holder_name, interest_rate, notes) 
-            VALUES (NEW.id, 'UNKNOWN', '0000', 0, 'active', NULL, NULL, NULL, 'Default bank account');
-        WHEN 'credit_card' THEN
-            INSERT INTO public.credit_card_accounts(account_id, card_number, current_balance, status, card_type, credit_limit, billing_cycle, interest_rate, notes) 
-            VALUES (NEW.id, '0000', 0, 'active', NULL, NULL, NULL, NULL, 'Default credit card');
-        WHEN 'loan' THEN
-            INSERT INTO public.loan_accounts(account_id, outstanding_amount, status, loan_type, principal_amount, interest_rate, term_months, start_date, end_date, notes) 
-            VALUES (NEW.id, 0, 'active', NULL, NULL, NULL, NULL, NULL, NULL, 'Default loan account');
-        WHEN 'investment' THEN
-            INSERT INTO public.investment_accounts(account_id, portfolio_value, status, investment_type, institution_name, account_no, notes) 
-            VALUES (NEW.id, 0, 'active', NULL, NULL, NULL, 'Default investment account');
-        WHEN 'crypto' THEN
-            INSERT INTO public.crypto_accounts(account_id, crypto_wallet_address, balance, status, exchange_name, notes) 
-            VALUES (NEW.id, 'pending', 0, 'active', NULL, 'Default crypto account');
-        WHEN 'wallet' THEN
-            INSERT INTO public.wallet_accounts(account_id, wallet_name, balance, status, provider, notes) 
-            VALUES (NEW.id, 'Default', 0, 'active', NULL, 'Default wallet account');
-        WHEN 'receivable' THEN
-            INSERT INTO public.receivable_accounts(account_id, amount_due, status, customer_name, invoice_no, principal_amount, due_date, notes) 
-            VALUES (NEW.id, 0, 'pending', NULL, NULL, NULL, NULL, 'Default receivable account');
-        ELSE
-            RAISE EXCEPTION 'Unknown account type: %', NEW.type;
-    END CASE;
-
-    RETURN NEW;
-END;
-$$;
-
-CREATE TRIGGER trg_insert_specialized_account
-    AFTER INSERT ON accounts
-    FOR EACH ROW EXECUTE FUNCTION insert_specialized_account();
 
 -- =========================================
 -- 5. COMPREHENSIVE ACCOUNT BALANCE UPDATES FOR ALL SPECIFIC FIELDS
@@ -556,7 +479,6 @@ BEGIN
 END;
 $$;
 
-DROP TRIGGER IF EXISTS trigger_apply_transfer_balances ON transactions_transfer;
 CREATE TRIGGER trigger_apply_transfer_balances
     AFTER INSERT ON transactions_transfer
     FOR EACH ROW 
@@ -1864,12 +1786,10 @@ END;
 $$;
 
 -- Add triggers for account validation
-DROP TRIGGER IF EXISTS trg_validate_account_update ON accounts;
 CREATE TRIGGER trg_validate_account_update
     BEFORE UPDATE ON accounts
     FOR EACH ROW EXECUTE FUNCTION validate_account_modification();
 
-DROP TRIGGER IF EXISTS trg_validate_account_delete ON accounts;
 CREATE TRIGGER trg_validate_account_delete
     BEFORE DELETE ON accounts
     FOR EACH ROW EXECUTE FUNCTION validate_account_modification();
@@ -1905,10 +1825,8 @@ CREATE TRIGGER trg_validate_account_delete
 -- =========================================
 
 -- Grant execute permissions to authenticated users for all functions
-GRANT EXECUTE ON FUNCTION log_audit() TO authenticated;
+-- GRANT EXECUTE ON FUNCTION log_audit() TO authenticated;
 GRANT EXECUTE ON FUNCTION set_updated_at() TO authenticated;
-GRANT EXECUTE ON FUNCTION insert_profile_defaults() TO authenticated;
-GRANT EXECUTE ON FUNCTION insert_specialized_account() TO authenticated;
 GRANT EXECUTE ON FUNCTION apply_transaction_balance() TO authenticated;
 GRANT EXECUTE ON FUNCTION apply_transfer_balances() TO authenticated;
 GRANT EXECUTE ON FUNCTION enforce_soft_delete() TO authenticated;
@@ -1933,7 +1851,7 @@ GRANT EXECUTE ON FUNCTION validate_account_modification() TO authenticated;
 -- COMMENTS AND DOCUMENTATION
 -- =========================================
 
-COMMENT ON FUNCTION log_audit() IS 'RLS-compliant audit logging with dual user tracking';
+-- COMMENT ON FUNCTION log_audit() IS 'RLS-compliant audit logging with dual user tracking';
 COMMENT ON FUNCTION apply_transaction_balance() IS 'RLS-compliant balance updates for transaction operations';
 COMMENT ON FUNCTION apply_transfer_balances() IS 'RLS-compliant balance updates for transfer operations';
 COMMENT ON FUNCTION process_recurring_transactions() IS 'RLS-compliant recurring transaction processing';

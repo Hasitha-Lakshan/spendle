@@ -395,6 +395,23 @@ CREATE TABLE IF NOT EXISTS api_rate_limits (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+
+-- =========================================
+-- CONSTRAINTS
+-- =========================================
+
+-- Add UNIQUE constraints needed for ON CONFLICT in default inserts
+ALTER TABLE expense_categories
+  ADD CONSTRAINT expense_categories_user_name_unique UNIQUE (user_id, name);
+
+ALTER TABLE expense_subcategories
+  ADD CONSTRAINT expense_subcategories_category_name_unique UNIQUE (category_id, name);
+
+-- Add UNIQUE constraint for income_sources
+ALTER TABLE income_sources
+  ADD CONSTRAINT income_sources_user_name_unique UNIQUE (user_id, name);
+
+
 -- =========================================
 -- Indexes (FKs, common filters, JSONB, partial soft-delete on key tables)
 -- =========================================

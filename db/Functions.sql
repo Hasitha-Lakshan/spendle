@@ -9,6 +9,217 @@
 -- - New recurring transaction system
 -- ================================
 
+-- =========================================
+-- 1. Insert Generic Account with Specialized Details
+-- =========================================
+CREATE OR REPLACE FUNCTION insert_account_generic(
+    p_user_id UUID,
+    p_account_name VARCHAR,
+    p_type account_type,
+    p_currency VARCHAR,
+    p_details JSONB DEFAULT '{}' -- contains specialized fields per account type
+)
+RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_account_id UUID;
+BEGIN
+    -- Insert into base accounts table
+    INSERT INTO accounts(user_id, account_name, type, currency)
+    VALUES (p_user_id, p_account_name, p_type, p_currency)
+    RETURNING id INTO v_account_id;
+
+    -- Insert into specialized account table based on type
+    CASE p_type
+        WHEN 'cash' THEN
+            INSERT INTO cash_accounts(account_id, location, balance, status, notes)
+            VALUES (
+                v_account_id,
+                COALESCE(p_details->>'location', 'Wallet'),
+                COALESCE((p_details->>'balance')::DECIMAL, 0),
+                COALESCE(p_details->>'status', 'active'),
+                COALESCE(p_details->>'notes', 'Default cash account')
+            );
+
+        WHEN 'bank' THEN
+            INSERT INTO bank_accounts(account_id, bank_name, account_no, branch, account_holder_name, balance, interest_rate, status, notes)
+            VALUES (
+                v_account_id,
+                COALESCE(p_details->>'bank_name', 'UNKNOWN'),
+                COALESCE(p_details->>'account_no', '0000'),
+                COALESCE(p_details->>'branch', 'Main'),
+                COALESCE(p_details->>'account_holder_name', 'User'),
+                COALESCE((p_details->>'balance')::DECIMAL, 0),
+                COALESCE((p_details->>'interest_rate')::DECIMAL, 0),
+                COALESCE(p_details->>'status', 'active'),
+                COALESCE(p_details->>'notes', 'Default bank account')
+            );
+
+        WHEN 'credit_card' THEN
+            INSERT INTO credit_card_accounts(account_id, card_number, card_type, credit_limit, current_balance, billing_cycle, interest_rate, status, notes)
+            VALUES (
+                v_account_id,
+                COALESCE(p_details->>'card_number', '0000'),
+                COALESCE(p_details->>'card_type', 'Standard'),
+                COALESCE((p_details->>'credit_limit')::DECIMAL, 0),
+                COALESCE((p_details->>'current_balance')::DECIMAL, 0),
+                COALESCE(p_details->>'billing_cycle', 'monthly'),
+                COALESCE((p_details->>'interest_rate')::DECIMAL, 0),
+                COALESCE(p_details->>'status', 'active'),
+                COALESCE(p_details->>'notes', 'Default credit card')
+            );
+
+        WHEN 'loan' THEN
+            INSERT INTO loan_accounts(account_id, loan_type, principal_amount, outstanding_amount, interest_rate, term_months, start_date, end_date, status, notes)
+            VALUES (
+                v_account_id,
+                COALESCE(p_details->>'loan_type', 'Personal'),
+                COALESCE((p_details->>'principal_amount')::DECIMAL, 0),
+                COALESCE((p_details->>'outstanding_amount')::DECIMAL, 0),
+                COALESCE((p_details->>'interest_rate')::DECIMAL, 0),
+                COALESCE((p_details->>'term_months')::INT, 12),
+                COALESCE((p_details->>'start_date')::DATE, CURRENT_DATE),
+                COALESCE((p_details->>'end_date')::DATE, CURRENT_DATE + INTERVAL '1 year'),
+                COALESCE(p_details->>'status', 'active'),
+                COALESCE(p_details->>'notes', 'Default loan account')
+            );
+
+        WHEN 'investment' THEN
+            INSERT INTO investment_accounts(account_id, investment_type, institution_name, account_no, portfolio_value, status, notes)
+            VALUES (
+                v_account_id,
+                COALESCE(p_details->>'investment_type', 'Stock'),
+                COALESCE(p_details->>'institution_name', 'Unknown'),
+                COALESCE(p_details->>'account_no', '0000'),
+                COALESCE((p_details->>'portfolio_value')::DECIMAL, 0),
+                COALESCE(p_details->>'status', 'active'),
+                COALESCE(p_details->>'notes', 'Default investment account')
+            );
+
+        WHEN 'crypto' THEN
+            INSERT INTO crypto_accounts(account_id, crypto_wallet_address, exchange_name, balance, status, notes)
+            VALUES (
+                v_account_id,
+                COALESCE(p_details->>'crypto_wallet_address', 'pending'),
+                COALESCE(p_details->>'exchange_name', 'Unknown'),
+                COALESCE((p_details->>'balance')::DECIMAL, 0),
+                COALESCE(p_details->>'status', 'active'),
+                COALESCE(p_details->>'notes', 'Default crypto account')
+            );
+
+        WHEN 'wallet' THEN
+            INSERT INTO wallet_accounts(account_id, wallet_name, provider, balance, status, notes)
+            VALUES (
+                v_account_id,
+                COALESCE(p_details->>'wallet_name', 'Default Wallet'),
+                COALESCE(p_details->>'provider', 'Generic'),
+                COALESCE((p_details->>'balance')::DECIMAL, 0),
+                COALESCE(p_details->>'status', 'active'),
+                COALESCE(p_details->>'notes', 'Default wallet account')
+            );
+
+        WHEN 'receivable' THEN
+            INSERT INTO receivable_accounts(account_id, customer_name, invoice_no, principal_amount, amount_due, due_date, status, notes)
+            VALUES (
+                v_account_id,
+                COALESCE(p_details->>'customer_name', 'Customer'),
+                COALESCE(p_details->>'invoice_no', 'INV000'),
+                COALESCE((p_details->>'principal_amount')::DECIMAL, 0),
+                COALESCE((p_details->>'amount_due')::DECIMAL, 0),
+                COALESCE((p_details->>'due_date')::DATE, CURRENT_DATE),
+                COALESCE(p_details->>'status', 'pending'),
+                COALESCE(p_details->>'notes', 'Default receivable account')
+            );
+
+        ELSE
+            RAISE EXCEPTION 'Unknown account type: %', p_type;
+    END CASE;
+
+    RETURN v_account_id;
+END;
+$$;
+
+
+-- =========================================
+-- Initialize User Defaults
+-- Inserts profile, default accounts, expense categories, and income sources
+-- Returns JSON for Supabase RPC
+-- =========================================
+CREATE OR REPLACE FUNCTION initialize_user_defaults(p_user_id UUID)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+VOLATILE
+AS $$
+DECLARE
+    profile_exists BOOLEAN;
+    defaults_flag BOOLEAN;
+    default_category_id UUID;
+BEGIN
+    -- Check if profile exists and whether defaults are already inserted
+    SELECT EXISTS(SELECT 1 FROM profiles WHERE user_id = p_user_id),
+           COALESCE((SELECT defaults_inserted FROM profiles WHERE user_id = p_user_id), FALSE)
+    INTO profile_exists, defaults_flag;
+
+    -- If profile does not exist, create it
+    IF NOT profile_exists THEN
+        INSERT INTO profiles(user_id, defaults_inserted)
+        VALUES (p_user_id, FALSE)
+        ON CONFLICT (user_id) DO NOTHING;
+
+        -- Re-fetch flags after insert
+        SELECT EXISTS(SELECT 1 FROM profiles WHERE user_id = p_user_id),
+               COALESCE((SELECT defaults_inserted FROM profiles WHERE user_id = p_user_id), FALSE)
+        INTO profile_exists, defaults_flag;
+    END IF;
+
+    -- If defaults not inserted, insert them
+    IF NOT defaults_flag THEN
+        -- Insert default accounts using insert_account_generic
+        PERFORM insert_account_generic(p_user_id, 'Cash Wallet', 'cash', 'USD', '{}'::jsonb);
+        PERFORM insert_account_generic(
+            p_user_id,
+            'Default Bank',
+            'bank',
+            'USD',
+            '{"bank_name":"Default Bank","account_no":"0000","branch":"Main","account_holder_name":"User","balance":0}'::jsonb
+        );
+
+        -- Insert default expense category and subcategory
+        INSERT INTO expense_categories(user_id, name)
+        VALUES (p_user_id, 'General')
+        ON CONFLICT (user_id, name) DO NOTHING
+        RETURNING id INTO default_category_id;
+
+        IF default_category_id IS NOT NULL THEN
+            INSERT INTO expense_subcategories(category_id, name)
+            VALUES (default_category_id, 'Miscellaneous')
+            ON CONFLICT (category_id, name) DO NOTHING;
+        END IF;
+
+        -- Insert default income source
+        INSERT INTO income_sources(user_id, name)
+        VALUES (p_user_id, 'Salary')
+        ON CONFLICT (user_id, name) DO NOTHING;
+
+        -- Mark defaults as inserted
+        UPDATE profiles
+        SET defaults_inserted = TRUE, updated_at = NOW()
+        WHERE user_id = p_user_id;
+    END IF;
+
+    -- Return JSON to Supabase
+    RETURN jsonb_build_object(
+        'user_id', p_user_id,
+        'defaults_inserted', TRUE
+    );
+END;
+$$;
+
+
 -- ================================
 -- 1. Transaction Analysis Functions
 -- ================================
@@ -708,50 +919,6 @@ BEGIN
     WHERE tr.deleted_at IS NULL
       AND t.deleted_at IS NULL
     ORDER BY tr.next_occurrence ASC;
-END;
-$$;
-
--- ================================
--- 5. User Setup and Helper Functions
--- ================================
-
--- Initialize User Defaults
--- Purpose: Trigger default account/category creation for new users
--- Parameters: user_id
--- Returns: void
--- Security: INVOKER (relies on existing trigger)
--- RLS: Profile insertion will trigger default creation via existing trigger
-CREATE OR REPLACE FUNCTION initialize_user_defaults(p_user_id UUID)
-RETURNS void
-LANGUAGE plpgsql
-SECURITY INVOKER
-SET search_path = pg_catalog, public
-VOLATILE
-AS $$
-DECLARE
-    profile_exists BOOLEAN;
-    current_defaults_inserted BOOLEAN;
-BEGIN
-    -- Check if profile exists and get defaults status
-    SELECT EXISTS(SELECT 1 FROM profiles WHERE user_id = p_user_id), 
-           COALESCE((SELECT defaults_inserted FROM profiles WHERE user_id = p_user_id), FALSE)
-    INTO profile_exists, current_defaults_inserted;
-    
-    IF profile_exists THEN
-        -- If profile exists but defaults not inserted, trigger them
-        IF NOT current_defaults_inserted THEN
-            UPDATE profiles 
-            SET defaults_inserted = FALSE,
-                updated_at = NOW()
-            WHERE user_id = p_user_id;
-            -- The trigger will fire and insert defaults
-        END IF;
-    ELSE
-        -- Insert new profile with defaults_inserted = FALSE
-        -- The AFTER INSERT trigger will automatically create defaults
-        INSERT INTO profiles (user_id, defaults_inserted)
-        VALUES (p_user_id, FALSE);
-    END IF;
 END;
 $$;
 
@@ -2285,6 +2452,7 @@ GRANT EXECUTE ON FUNCTION get_user_database_stats(UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION check_rate_limit(VARCHAR, INTEGER, INTEGER) TO authenticated;
 GRANT EXECUTE ON FUNCTION cleanup_old_audit_logs(INTEGER) TO authenticated;
 GRANT EXECUTE ON FUNCTION cleanup_old_rate_limits() TO authenticated;
+GRANT EXECUTE ON FUNCTION insert_account_generic(UUID, VARCHAR, account_type, VARCHAR, JSONB) TO authenticated;
 
 -- ================================
 -- Function Documentation
