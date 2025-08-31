@@ -34,7 +34,7 @@ CREATE POLICY insert_own_accounts ON accounts
 CREATE POLICY update_own_accounts ON accounts
     FOR UPDATE 
     USING (user_id = auth.uid() AND deleted_at IS NULL)
-    WITH CHECK (user_id = auth.uid());
+    WITH CHECK (user_id = auth.uid() AND deleted_at IS NULL);
 
 CREATE POLICY delete_own_accounts ON accounts
     FOR DELETE 
