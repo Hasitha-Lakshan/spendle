@@ -11,18 +11,17 @@
 ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY select_own_profiles ON profiles
-    FOR SELECT USING (user_id = auth.uid() AND deleted_at IS NULL);
+    FOR SELECT USING (user_id = (select auth.uid()) AND deleted_at IS NULL);
 CREATE POLICY insert_own_profiles ON profiles
-    FOR INSERT WITH CHECK (user_id = auth.uid());
+    FOR INSERT WITH CHECK (user_id = (select auth.uid()));
 CREATE POLICY update_own_profiles ON profiles
-    FOR UPDATE USING (user_id = auth.uid() AND deleted_at IS NULL)
-    WITH CHECK (user_id = auth.uid() AND deleted_at IS NULL);
-CREATE POLICY delete_own_profiles ON profiles
-    FOR DELETE USING (user_id = auth.uid() AND deleted_at IS NULL);
-CREATE POLICY delete_admin_profiles_soft ON profiles
-    FOR DELETE USING (public.check_admin_permissions() AND deleted_at IS NULL);
-CREATE POLICY delete_admin_profiles_hard ON profiles
-    FOR DELETE USING (public.check_admin_permissions() AND deleted_at IS NOT NULL);
+    FOR UPDATE USING (user_id = (select auth.uid()) AND deleted_at IS NULL)
+    WITH CHECK (user_id = (select auth.uid()) AND deleted_at IS NULL);
+CREATE POLICY delete_profiles_combined ON profiles
+    FOR DELETE USING (
+        (user_id = (select auth.uid()) AND deleted_at IS NULL)
+        OR public.check_admin_permissions()
+    );
 
 -- =========================================
 -- ACCOUNTS
@@ -30,21 +29,26 @@ CREATE POLICY delete_admin_profiles_hard ON profiles
 ALTER TABLE accounts ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY select_own_accounts ON accounts
-    FOR SELECT USING (user_id = auth.uid() AND deleted_at IS NULL);
+    FOR SELECT USING (user_id = (select auth.uid()) AND deleted_at IS NULL);
 CREATE POLICY insert_own_accounts ON accounts
-    FOR INSERT WITH CHECK (user_id = auth.uid());
-CREATE POLICY update_own_accounts ON accounts
-    FOR UPDATE USING (user_id = auth.uid() AND deleted_at IS NULL)
-    WITH CHECK (user_id = auth.uid() AND deleted_at IS NULL);
-CREATE POLICY soft_delete_own_accounts ON accounts
-    FOR UPDATE USING (user_id = auth.uid() AND deleted_at IS NULL)
-    WITH CHECK (user_id = auth.uid());
-CREATE POLICY delete_own_accounts ON accounts
-    FOR DELETE USING (user_id = auth.uid() AND deleted_at IS NULL);
-CREATE POLICY delete_admin_accounts_soft ON accounts
-    FOR DELETE USING (public.check_admin_permissions() AND deleted_at IS NULL);
-CREATE POLICY delete_admin_accounts_hard ON accounts
-    FOR DELETE USING (public.check_admin_permissions() AND deleted_at IS NOT NULL);
+    FOR INSERT WITH CHECK (user_id = (select auth.uid()));
+CREATE POLICY update_accounts_combined ON accounts
+    FOR UPDATE
+    USING (
+        (user_id = (SELECT auth.uid()) AND deleted_at IS NULL)  -- normal update
+        OR
+        (user_id = (SELECT auth.uid()))  -- soft-delete update
+    )
+    WITH CHECK (
+        (user_id = (SELECT auth.uid()) AND deleted_at IS NULL)  -- normal update check
+        OR
+        (user_id = (SELECT auth.uid()))  -- soft-delete check
+    );
+CREATE POLICY delete_accounts_combined ON accounts
+    FOR DELETE USING (
+        (user_id = (select auth.uid()) AND deleted_at IS NULL)
+        OR public.check_admin_permissions()
+    );
 
 -- =========================================
 -- SPECIALIZED ACCOUNTS
@@ -77,7 +81,7 @@ BEGIN
                 EXISTS (
                     SELECT 1 FROM accounts a
                     WHERE a.id = %1$I.account_id
-                    AND a.user_id = auth.uid()
+                    AND a.user_id = (select auth.uid())
                     AND a.deleted_at IS NULL
                 )
             );
@@ -90,7 +94,7 @@ BEGIN
                 EXISTS (
                     SELECT 1 FROM accounts a
                     WHERE a.id = %1$I.account_id
-                    AND a.user_id = auth.uid()
+                    AND a.user_id = (select auth.uid())
                     AND a.deleted_at IS NULL
                 )
             );
@@ -103,7 +107,7 @@ BEGIN
                 EXISTS (
                     SELECT 1 FROM accounts a
                     WHERE a.id = %1$I.account_id
-                    AND a.user_id = auth.uid()
+                    AND a.user_id = (select auth.uid())
                     AND a.deleted_at IS NULL
                 )
             );
@@ -111,26 +115,16 @@ BEGIN
 
         -- Create DELETE policy with soft-delete safeguard
         EXECUTE format($f$
-            CREATE POLICY delete_own_%1$I ON %1$I
+            CREATE POLICY delete_%1$I_combined ON %1$I
             FOR DELETE USING (
                 EXISTS (
                     SELECT 1 FROM accounts a
                     WHERE a.id = %1$I.account_id
-                    AND a.user_id = auth.uid()
+                    AND a.user_id = (select auth.uid())
                     AND a.deleted_at IS NULL
                 )
-                AND %1$I.deleted_at IS NULL
+                OR public.check_admin_permissions()
             );
-        $f$, tbl);
-
-        EXECUTE format($f$
-            CREATE POLICY delete_admin_%1$I_soft ON %1$I
-            FOR DELETE USING (public.check_admin_permissions() AND %1$I.deleted_at IS NULL);
-        $f$, tbl);
-
-        EXECUTE format($f$
-            CREATE POLICY delete_admin_%1$I_hard ON %1$I
-            FOR DELETE USING (public.check_admin_permissions() AND %1$I.deleted_at IS NOT NULL);
         $f$, tbl);
     END LOOP;
 END;
@@ -143,31 +137,34 @@ ALTER TABLE expense_categories ENABLE ROW LEVEL SECURITY;
 ALTER TABLE expense_subcategories ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY select_own_expense_categories ON expense_categories
-    FOR SELECT USING (user_id = auth.uid() AND deleted_at IS NULL);
+    FOR SELECT USING (user_id = (select auth.uid()) AND deleted_at IS NULL);
 CREATE POLICY insert_own_expense_categories ON expense_categories
-    FOR INSERT WITH CHECK (user_id = auth.uid());
+    FOR INSERT WITH CHECK (user_id = (select auth.uid()));
 CREATE POLICY update_own_expense_categories ON expense_categories
-    FOR UPDATE USING (user_id = auth.uid() AND deleted_at IS NULL)
-    WITH CHECK (user_id = auth.uid() AND deleted_at IS NULL);
-CREATE POLICY delete_own_expense_categories ON expense_categories
-    FOR DELETE USING (user_id = auth.uid() AND deleted_at IS NULL);
-CREATE POLICY delete_admin_expense_categories_soft ON expense_categories
-    FOR DELETE USING (public.check_admin_permissions() AND deleted_at IS NULL);
-CREATE POLICY delete_admin_expense_categories_hard ON expense_categories
-    FOR DELETE USING (public.check_admin_permissions() AND deleted_at IS NOT NULL);
+    FOR UPDATE USING (user_id = (select auth.uid()) AND deleted_at IS NULL)
+    WITH CHECK (user_id = (select auth.uid()) AND deleted_at IS NULL);
+CREATE POLICY delete_expense_categories_combined ON expense_categories
+    FOR DELETE USING (
+        (user_id = (select auth.uid()) AND deleted_at IS NULL)
+        OR public.check_admin_permissions()
+    );
 
 CREATE POLICY select_own_expense_subcategories ON expense_subcategories
-    FOR SELECT USING (EXISTS (SELECT 1 FROM expense_categories ec WHERE ec.id = expense_subcategories.category_id AND ec.user_id = auth.uid() AND ec.deleted_at IS NULL));
+    FOR SELECT USING (EXISTS (SELECT 1 FROM expense_categories ec WHERE ec.id = expense_subcategories.category_id AND ec.user_id = (select auth.uid()) AND ec.deleted_at IS NULL));
 CREATE POLICY insert_own_expense_subcategories ON expense_subcategories
-    FOR INSERT WITH CHECK (EXISTS (SELECT 1 FROM expense_categories ec WHERE ec.id = expense_subcategories.category_id AND ec.user_id = auth.uid() AND ec.deleted_at IS NULL));
+    FOR INSERT WITH CHECK (EXISTS (SELECT 1 FROM expense_categories ec WHERE ec.id = expense_subcategories.category_id AND ec.user_id = (select auth.uid()) AND ec.deleted_at IS NULL));
 CREATE POLICY update_own_expense_subcategories ON expense_subcategories
-    FOR UPDATE USING (EXISTS (SELECT 1 FROM expense_categories ec WHERE ec.id = expense_subcategories.category_id AND ec.user_id = auth.uid() AND ec.deleted_at IS NULL));
-CREATE POLICY delete_own_expense_subcategories ON expense_subcategories
-    FOR DELETE USING (EXISTS (SELECT 1 FROM expense_categories ec WHERE ec.id = expense_subcategories.category_id AND ec.user_id = auth.uid() AND ec.deleted_at IS NULL) AND expense_subcategories.deleted_at IS NULL);
-CREATE POLICY delete_admin_expense_subcategories_soft ON expense_subcategories
-    FOR DELETE USING (public.check_admin_permissions() AND expense_subcategories.deleted_at IS NULL);
-CREATE POLICY delete_admin_expense_subcategories_hard ON expense_subcategories
-    FOR DELETE USING (public.check_admin_permissions() AND expense_subcategories.deleted_at IS NOT NULL);
+    FOR UPDATE USING (EXISTS (SELECT 1 FROM expense_categories ec WHERE ec.id = expense_subcategories.category_id AND ec.user_id = (select auth.uid()) AND ec.deleted_at IS NULL));
+CREATE POLICY delete_expense_subcategories_combined ON expense_subcategories
+    FOR DELETE USING (
+        EXISTS (
+            SELECT 1 FROM expense_categories ec
+            WHERE ec.id = expense_subcategories.category_id
+              AND ec.user_id = (select auth.uid())
+              AND ec.deleted_at IS NULL
+        )
+        OR public.check_admin_permissions()
+    );
 
 -- =========================================
 -- INCOME SOURCES
@@ -175,18 +172,17 @@ CREATE POLICY delete_admin_expense_subcategories_hard ON expense_subcategories
 ALTER TABLE income_sources ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY select_own_income_sources ON income_sources
-    FOR SELECT USING (user_id = auth.uid() AND deleted_at IS NULL);
+    FOR SELECT USING (user_id = (select auth.uid()) AND deleted_at IS NULL);
 CREATE POLICY insert_own_income_sources ON income_sources
-    FOR INSERT WITH CHECK (user_id = auth.uid());
+    FOR INSERT WITH CHECK (user_id = (select auth.uid()));
 CREATE POLICY update_own_income_sources ON income_sources
-    FOR UPDATE USING (user_id = auth.uid() AND deleted_at IS NULL)
-    WITH CHECK (user_id = auth.uid() AND deleted_at IS NULL);
-CREATE POLICY delete_own_income_sources ON income_sources
-    FOR DELETE USING (user_id = auth.uid() AND deleted_at IS NULL);
-CREATE POLICY delete_admin_income_sources_soft ON income_sources
-    FOR DELETE USING (public.check_admin_permissions() AND deleted_at IS NULL);
-CREATE POLICY delete_admin_income_sources_hard ON income_sources
-    FOR DELETE USING (public.check_admin_permissions() AND deleted_at IS NOT NULL);
+    FOR UPDATE USING (user_id = (select auth.uid()) AND deleted_at IS NULL)
+    WITH CHECK (user_id = (select auth.uid()) AND deleted_at IS NULL);
+CREATE POLICY delete_income_sources_combined ON income_sources
+    FOR DELETE USING (
+        (user_id = (select auth.uid()) AND deleted_at IS NULL)
+        OR public.check_admin_permissions()
+    );
 
 -- =========================================
 -- COUNTERPARTIES
@@ -194,18 +190,17 @@ CREATE POLICY delete_admin_income_sources_hard ON income_sources
 ALTER TABLE counterparties ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY select_own_counterparties ON counterparties
-    FOR SELECT USING (user_id = auth.uid() AND deleted_at IS NULL);
+    FOR SELECT USING (user_id = (select auth.uid()) AND deleted_at IS NULL);
 CREATE POLICY insert_own_counterparties ON counterparties
-    FOR INSERT WITH CHECK (user_id = auth.uid());
+    FOR INSERT WITH CHECK (user_id = (select auth.uid()));
 CREATE POLICY update_own_counterparties ON counterparties
-    FOR UPDATE USING (user_id = auth.uid() AND deleted_at IS NULL)
-    WITH CHECK (user_id = auth.uid() AND deleted_at IS NULL);
-CREATE POLICY delete_own_counterparties ON counterparties
-    FOR DELETE USING (user_id = auth.uid() AND deleted_at IS NULL);
-CREATE POLICY delete_admin_counterparties_soft ON counterparties
-    FOR DELETE USING (public.check_admin_permissions() AND deleted_at IS NULL);
-CREATE POLICY delete_admin_counterparties_hard ON counterparties
-    FOR DELETE USING (public.check_admin_permissions() AND deleted_at IS NOT NULL);
+    FOR UPDATE USING (user_id = (select auth.uid()) AND deleted_at IS NULL)
+    WITH CHECK (user_id = (select auth.uid()) AND deleted_at IS NULL);
+CREATE POLICY delete_counterparties_combined ON counterparties
+    FOR DELETE USING (
+        (user_id = (select auth.uid()) AND deleted_at IS NULL)
+        OR public.check_admin_permissions()
+    );
 
 -- =========================================
 -- TRANSACTIONS
@@ -213,18 +208,17 @@ CREATE POLICY delete_admin_counterparties_hard ON counterparties
 ALTER TABLE transactions ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY select_own_transactions ON transactions
-    FOR SELECT USING (user_id = auth.uid() AND deleted_at IS NULL);
+    FOR SELECT USING (user_id = (select auth.uid()) AND deleted_at IS NULL);
 CREATE POLICY insert_own_transactions ON transactions
-    FOR INSERT WITH CHECK (user_id = auth.uid());
+    FOR INSERT WITH CHECK (user_id = (select auth.uid()));
 CREATE POLICY update_own_transactions ON transactions
-    FOR UPDATE USING (user_id = auth.uid() AND deleted_at IS NULL)
-    WITH CHECK (user_id = auth.uid() AND deleted_at IS NULL);
-CREATE POLICY delete_own_transactions ON transactions
-    FOR DELETE USING (user_id = auth.uid() AND deleted_at IS NULL);
-CREATE POLICY delete_admin_transactions_soft ON transactions
-    FOR DELETE USING (public.check_admin_permissions() AND deleted_at IS NULL);
-CREATE POLICY delete_admin_transactions_hard ON transactions
-    FOR DELETE USING (public.check_admin_permissions() AND deleted_at IS NOT NULL);
+    FOR UPDATE USING (user_id = (select auth.uid()) AND deleted_at IS NULL)
+    WITH CHECK (user_id = (select auth.uid()) AND deleted_at IS NULL);
+CREATE POLICY delete_transactions_combined ON transactions
+    FOR DELETE USING (
+        (user_id = (select auth.uid()) AND deleted_at IS NULL)
+        OR public.check_admin_permissions()
+    );
 
 -- =========================================
 -- TRANSACTION DETAIL TABLES
@@ -256,7 +250,7 @@ BEGIN
                 EXISTS (
                     SELECT 1 FROM transactions t
                     WHERE t.id = %1$I.transaction_id
-                    AND t.user_id = auth.uid()
+                    AND t.user_id = (select auth.uid())
                     AND t.deleted_at IS NULL
                 )
             );
@@ -269,7 +263,7 @@ BEGIN
                 EXISTS (
                     SELECT 1 FROM transactions t
                     WHERE t.id = %1$I.transaction_id
-                    AND t.user_id = auth.uid()
+                    AND t.user_id = (select auth.uid())
                     AND t.deleted_at IS NULL
                 )
             );
@@ -282,7 +276,7 @@ BEGIN
                 EXISTS (
                     SELECT 1 FROM transactions t
                     WHERE t.id = %1$I.transaction_id
-                    AND t.user_id = auth.uid()
+                    AND t.user_id = (select auth.uid())
                     AND t.deleted_at IS NULL
                 )
             );
@@ -290,28 +284,17 @@ BEGIN
 
         -- Create DELETE policy with soft-delete safeguard
         EXECUTE format($f$
-            CREATE POLICY delete_own_%1$I ON %1$I
+            CREATE POLICY delete_%1$I_combined ON %1$I
             FOR DELETE USING (
                 EXISTS (
                     SELECT 1 FROM transactions t
                     WHERE t.id = %1$I.transaction_id
-                    AND t.user_id = auth.uid()
+                    AND t.user_id = (select auth.uid())
                     AND t.deleted_at IS NULL
                 )
-                AND %1$I.deleted_at IS NULL
+                OR public.check_admin_permissions()
             );
         $f$, tbl);
-
-        EXECUTE format($f$
-            CREATE POLICY delete_admin_%1$I_soft ON %1$I
-            FOR DELETE USING (public.check_admin_permissions() AND %1$I.deleted_at IS NULL);
-        $f$, tbl);
-
-        EXECUTE format($f$
-            CREATE POLICY delete_admin_%1$I_hard ON %1$I
-            FOR DELETE USING (public.check_admin_permissions() AND %1$I.deleted_at IS NOT NULL);
-        $f$, tbl);
-
     END LOOP;
 END;
 $$;
@@ -322,18 +305,17 @@ $$;
 ALTER TABLE transactions_recurring ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY select_own_transactions_recurring ON transactions_recurring
-    FOR SELECT USING (user_id = auth.uid() AND deleted_at IS NULL);
+    FOR SELECT USING (user_id = (select auth.uid()) AND deleted_at IS NULL);
 CREATE POLICY insert_own_transactions_recurring ON transactions_recurring
-    FOR INSERT WITH CHECK (user_id = auth.uid());
+    FOR INSERT WITH CHECK (user_id = (select auth.uid()));
 CREATE POLICY update_own_transactions_recurring ON transactions_recurring
-    FOR UPDATE USING (user_id = auth.uid() AND deleted_at IS NULL)
-    WITH CHECK (user_id = auth.uid() AND deleted_at IS NULL);
-CREATE POLICY delete_own_transactions_recurring ON transactions_recurring
-    FOR DELETE USING (user_id = auth.uid() AND deleted_at IS NULL);
-CREATE POLICY delete_admin_transactions_recurring_soft ON transactions_recurring
-    FOR DELETE USING (public.check_admin_permissions() AND deleted_at IS NULL);
-CREATE POLICY delete_admin_transactions_recurring_hard ON transactions_recurring
-    FOR DELETE USING (public.check_admin_permissions() AND deleted_at IS NOT NULL);
+    FOR UPDATE USING (user_id = (select auth.uid()) AND deleted_at IS NULL)
+    WITH CHECK (user_id = (select auth.uid()) AND deleted_at IS NULL);
+CREATE POLICY delete_transactions_recurring_combined ON transactions_recurring
+    FOR DELETE USING (
+        (user_id = (select auth.uid()) AND deleted_at IS NULL)
+        OR public.check_admin_permissions()
+    );
 
 -- =========================================
 -- AUDIT LOGS
@@ -359,17 +341,17 @@ ALTER TABLE api_rate_limits ENABLE ROW LEVEL SECURITY;
 
 -- Users can only select their own rows
 CREATE POLICY select_own_api_rate_limits ON api_rate_limits
-    FOR SELECT USING (user_id = auth.uid());
+    FOR SELECT USING (user_id = (select auth.uid()));
 
 -- Users can only insert rows for themselves
 CREATE POLICY insert_own_api_rate_limits ON api_rate_limits
-    FOR INSERT WITH CHECK (user_id = auth.uid());
+    FOR INSERT WITH CHECK (user_id = (select auth.uid()));
     
 -- Users can only update their own rows
 CREATE POLICY update_own_api_rate_limits ON api_rate_limits
-    FOR UPDATE USING (user_id = auth.uid())
-    WITH CHECK (user_id = auth.uid());
+    FOR UPDATE USING (user_id = (select auth.uid()))
+    WITH CHECK (user_id = (select auth.uid()));
     
 -- Users can only delete their own rows
 CREATE POLICY delete_own_api_rate_limits ON api_rate_limits
-    FOR DELETE USING (user_id = auth.uid());
+    FOR DELETE USING (user_id = (select auth.uid()));
