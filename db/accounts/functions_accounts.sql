@@ -1,5 +1,53 @@
 -- =========================================
--- 01. Function: create_account
+-- 01. Function: validate_account_ownership
+-- =========================================
+-- Purpose:
+--   Validates that a given account belongs to the current user (or a
+--   specified user if provided) and is not soft-deleted.
+--   Ensures ownership checks before performing account operations.
+--
+-- Parameters:
+--   p_account_id UUID       - The account to validate
+--   p_user_id UUID DEFAULT NULL
+--       - Optional explicit user ID
+--       - If NULL, defaults to auth.uid() (current session user)
+--
+-- Returns:
+--   BOOLEAN
+--   - TRUE if the account belongs to the user and is active
+--   - FALSE otherwise
+--
+-- Notes:
+--   - Uses soft delete check (deleted_at IS NULL)
+--   - Safe to call from other functions, triggers, or policies
+--   - Helps enforce account-level access control consistently
+-- =========================================
+CREATE OR REPLACE FUNCTION validate_account_ownership(p_account_id UUID, p_user_id UUID DEFAULT NULL)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = pg_catalog, public
+STABLE
+AS $$
+DECLARE
+    v_user_id UUID;
+    v_exists BOOLEAN;
+BEGIN
+    v_user_id := COALESCE(p_user_id, auth.uid());
+    
+    SELECT EXISTS(
+        SELECT 1 FROM accounts 
+        WHERE id = p_account_id 
+        AND user_id = v_user_id 
+        AND deleted_at IS NULL
+    ) INTO v_exists;
+    
+    RETURN v_exists;
+END;
+$$;
+
+-- =========================================
+-- 02. Function: create_account
 -- =========================================
 -- Purpose:
 --   Creates a new account with base details and inserts into the corresponding
@@ -35,6 +83,12 @@ AS $$
 DECLARE
     v_account_id UUID;
 BEGIN
+    -- Ensure caller is creating account only for themselves
+    IF p_user_id IS DISTINCT FROM auth.uid() THEN
+        RAISE EXCEPTION 'Permission denied: cannot create account for another user'
+            USING ERRCODE = '42501';
+    END IF;
+
     -- Insert into base accounts table
     INSERT INTO accounts(user_id, account_name, type, currency)
     VALUES (p_user_id, p_account_name, p_type, p_currency)
@@ -168,7 +222,6 @@ $$;
 --   - Safe for repeated calls; respects account ownership via RLS
 --   - LEFT JOIN ensures accounts without specialized rows are still included
 -- =========================================
-
 CREATE OR REPLACE FUNCTION get_all_accounts()
 RETURNS TABLE(
     account_id UUID,
@@ -179,7 +232,7 @@ RETURNS TABLE(
     status VARCHAR
 )
 LANGUAGE plpgsql
-SECURITY INVOKER
+SECURITY DEFINER
 SET search_path = pg_catalog, public
 STABLE
 AS $$
@@ -222,6 +275,7 @@ BEGIN
     LEFT JOIN wallet_accounts wa ON a.id = wa.account_id AND wa.deleted_at IS NULL
     LEFT JOIN receivable_accounts ra ON a.id = ra.account_id AND ra.deleted_at IS NULL
     WHERE a.deleted_at IS NULL
+      AND a.user_id = auth.uid()
     ORDER BY a.account_name;
 END;
 $$;
@@ -244,7 +298,6 @@ $$;
 --   - Specialized fields are fetched based on account type
 --   - Safe for repeated calls; accounts without specialized rows return base info only
 -- =========================================
-
 CREATE OR REPLACE FUNCTION get_account_details(p_account_id UUID)
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -335,7 +388,6 @@ BEGIN
     RETURN v_base || COALESCE(v_details, '{}'::jsonb);
 END;
 $$;
-
 
 -- =========================================
 -- 05. Function: get_accounts_by_type
@@ -466,10 +518,24 @@ SET search_path = pg_catalog, public
 VOLATILE
 AS $$
 DECLARE
+    v_max_requests INTEGER := 100;
+    v_window_minutes INTEGER := 60;
     v_account_type account_type;
     v_base JSONB;
     v_details JSONB;
 BEGIN
+    -- Enforce rate limit for this endpoint
+    IF NOT check_rate_limit('update_account', v_max_requests, v_window_minutes) THEN
+        RAISE EXCEPTION 'Rate limit exceeded: max % requests per % minutes', 
+            v_max_requests, v_window_minutes;
+    END IF;
+
+    -- Validate ownership
+    IF NOT validate_account_ownership(p_account_id, auth.uid()) THEN
+        RAISE EXCEPTION 'Permission denied: cannot update this account'
+            USING ERRCODE = '42501';
+    END IF;
+
     -- Fetch base account info (RLS ensures ownership)
     SELECT jsonb_build_object(
         'id', a.id,
@@ -622,12 +688,19 @@ CREATE OR REPLACE FUNCTION soft_delete_account(p_account_id UUID)
 RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = pg_catalog, public
 AS $$
 DECLARE
     v_exists BOOLEAN;
 BEGIN
+    -- Ownership check
+    IF NOT public.validate_account_ownership(p_account_id, auth.uid()) THEN
+        RAISE EXCEPTION 'Permission denied: cannot delete this account'
+            USING ERRCODE = '42501';
+    END IF;
+
     -- Update accounts (soft delete)
-    UPDATE accounts
+    UPDATE public.accounts
     SET deleted_at = NOW(),
         updated_at = NOW()
     WHERE id = p_account_id
@@ -645,6 +718,93 @@ BEGIN
 END;
 $$;
 
+-- =========================================
+-- 08. Function: hard_delete_account
+-- =========================================
+-- Purpose:
+--   Permanently deletes an account and all associated data from the database.
+--   This includes:
+--     - Specialized account table entries
+--     - Transactions referencing the account
+--     - The main account record
+--
+-- Parameters:
+--   account_id UUID  - The ID of the account to be hard deleted.
+--
+-- Returns:
+--   BOOLEAN
+--   - TRUE if the account and all related data were successfully deleted.
+--
+-- Notes:
+--   - Requires the user to be authenticated.
+--   - Only the account owner or a user with admin permissions can perform this operation.
+--   - Deletes all associated transaction records to maintain referential integrity.
+--   - Use with caution: this action is irreversible.
+-- =========================================
+CREATE OR REPLACE FUNCTION public.hard_delete_account(p_account_id UUID)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+    current_user_id UUID;
+    account_owner UUID;
+    account_type public.account_type;
+    is_admin BOOLEAN;
+BEGIN
+    current_user_id := auth.uid();
+
+    IF current_user_id IS NULL THEN
+        RAISE EXCEPTION 'Not authenticated';
+    END IF;
+
+    -- Check if current user is admin
+    is_admin := public.check_admin_permissions();
+    IF NOT is_admin THEN
+        RAISE EXCEPTION 'Permission denied: only admins can hard delete';
+    END IF;
+
+    -- Enable hard delete bypass for this session
+    PERFORM set_config('app.hard_delete', 'on', true);
+
+    -- Get account details
+    SELECT user_id, type INTO account_owner, account_type
+    FROM public.accounts
+    WHERE id = p_account_id;
+
+    IF account_owner IS NULL THEN
+        RAISE EXCEPTION 'Account not found';
+    END IF;
+
+    -- Delete from specialized account table first
+    CASE account_type
+        WHEN 'cash'       THEN DELETE FROM public.cash_accounts        WHERE account_id = p_account_id;
+        WHEN 'bank'       THEN DELETE FROM public.bank_accounts        WHERE account_id = p_account_id;
+        WHEN 'credit_card' THEN DELETE FROM public.credit_card_accounts WHERE account_id = p_account_id;
+        WHEN 'loan'       THEN DELETE FROM public.loan_accounts        WHERE account_id = p_account_id;
+        WHEN 'investment' THEN DELETE FROM public.investment_accounts  WHERE account_id = p_account_id;
+        WHEN 'crypto'     THEN DELETE FROM public.crypto_accounts      WHERE account_id = p_account_id;
+        WHEN 'wallet'     THEN DELETE FROM public.wallet_accounts      WHERE account_id = p_account_id;
+        WHEN 'receivable' THEN DELETE FROM public.receivable_accounts  WHERE account_id = p_account_id;
+    END CASE;
+
+    -- Delete transaction details that reference this account
+    DELETE FROM public.transactions_income      WHERE account_id = p_account_id;
+    DELETE FROM public.transactions_expense     WHERE account_id = p_account_id;
+    DELETE FROM public.transactions_investment  WHERE account_id = p_account_id;
+    DELETE FROM public.transactions_borrow      WHERE account_id = p_account_id;
+    DELETE FROM public.transactions_lend        WHERE account_id = p_account_id;
+    DELETE FROM public.transactions_adjustment  WHERE account_id = p_account_id;
+    DELETE FROM public.transactions_transfer    WHERE from_account = p_account_id OR to_account = p_account_id;
+
+    -- Delete only soft-deleted records
+    DELETE FROM public.accounts WHERE id = p_account_id AND deleted_at IS NOT NULL;
+
+    RETURN TRUE;
+END;
+$$;
+
 
 -- ================================
 -- Grant Permissions
@@ -655,6 +815,7 @@ GRANT EXECUTE ON FUNCTION get_account_details(UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION get_accounts_by_type(account_type) TO authenticated;
 GRANT EXECUTE ON FUNCTION update_account(UUID, JSONB) TO authenticated;
 GRANT EXECUTE ON FUNCTION soft_delete_account(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION validate_account_ownership(UUID, UUID) TO authenticated;
 
 
 -- ================================
@@ -662,5 +823,4 @@ GRANT EXECUTE ON FUNCTION soft_delete_account(UUID) TO authenticated;
 -- ================================
 COMMENT ON FUNCTION get_account_details(UUID) IS
 'RLS-compliant function to return full account details as JSON, including base and specialized fields, excluding soft-deleted records';
-
-
+COMMENT ON FUNCTION validate_account_ownership(UUID, UUID) IS 'Validate user owns specified account';

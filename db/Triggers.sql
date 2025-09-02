@@ -1144,40 +1144,7 @@ CREATE TRIGGER trg_validate_expense_category
     BEFORE INSERT OR UPDATE ON transactions_expense
     FOR EACH ROW EXECUTE FUNCTION validate_subcategory_ownership();
 
--- =========================================
--- 19. ADMIN PRIVILEGES LOGGING
--- =========================================
-CREATE OR REPLACE FUNCTION log_admin_changes() 
-RETURNS TRIGGER 
-LANGUAGE plpgsql
-SECURITY INVOKER
-SET search_path = pg_catalog, public
-AS $$
-BEGIN
-    -- Log when admin privileges are granted or revoked
-    IF OLD.is_admin IS DISTINCT FROM NEW.is_admin THEN
-        INSERT INTO public.audit_logs(user_id, action_by, table_name, record_id, action, old_data, new_data)
-        VALUES (
-            NEW.user_id,
-            COALESCE(auth.uid(), NEW.user_id),
-            'profiles',
-            NEW.id,
-            'ADMIN_PRIVILEGE_CHANGE',
-            jsonb_build_object('is_admin', OLD.is_admin),
-            jsonb_build_object('is_admin', NEW.is_admin)
-        );
 
-        RAISE NOTICE 'Admin privilege changed for user % from % to %', 
-            NEW.user_id, OLD.is_admin, NEW.is_admin;
-    END IF;
-
-    RETURN NEW;
-END;
-$$;
-
-CREATE TRIGGER trg_log_admin_changes
-    AFTER UPDATE ON profiles
-    FOR EACH ROW EXECUTE FUNCTION log_admin_changes();
 
 -- =========================================
 -- 20. TRANSACTIONS GENERATED COLUMNS TRIGGERS
@@ -1280,7 +1247,6 @@ GRANT EXECUTE ON FUNCTION enforce_counterparty_unique() TO authenticated;
 GRANT EXECUTE ON FUNCTION setup_recurring_transaction() TO authenticated;
 GRANT EXECUTE ON FUNCTION process_recurring_transactions() TO authenticated;
 GRANT EXECUTE ON FUNCTION validate_subcategory_ownership() TO authenticated;
-GRANT EXECUTE ON FUNCTION log_admin_changes() TO authenticated;
 
 -- =========================================
 -- COMMENTS AND DOCUMENTATION

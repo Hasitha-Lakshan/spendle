@@ -1,0 +1,462 @@
+-- -- =================
+-- -- UTILITY FUNCTIONS
+-- -- =================
+-- -- =========================================
+-- -- 09. Function: recalculate_account_balance
+-- -- =========================================
+-- -- Purpose:
+-- --   Computes the current balance of a specific account by aggregating 
+-- --   all relevant transactions according to the account type.
+-- --   Ensures accurate, up-to-date balances for dashboards, reports, 
+-- --   and financial calculations.
+-- --
+-- -- Parameters:
+-- --   p_account_id UUID  - The ID of the account whose balance is to be recalculated.
+-- --
+-- -- Returns:
+-- --   DECIMAL(36,18)
+-- --   - The recalculated balance based on all applicable transactions.
+-- --
+-- -- Notes:
+-- --   - Supports all account types: cash, bank, wallet, crypto, credit_card, loan, investment, receivable.
+-- --   - Only includes transactions that belong to the current authenticated user and are not soft-deleted.
+-- --   - Transfers, income, expense, adjustments, borrow/lend, and investment transactions are handled according to account type rules.
+-- --   - Raises an exception if the account does not exist or access is denied.
+-- --   - Stable within a transaction; reflects current committed data.
+-- -- =========================================
+-- CREATE OR REPLACE FUNCTION recalculate_account_balance(p_account_id UUID)
+-- RETURNS DECIMAL(36,18) 
+-- LANGUAGE plpgsql
+-- SECURITY INVOKER
+-- SET search_path = pg_catalog, public
+-- AS $$
+-- DECLARE
+--     calculated_balance DECIMAL(36,18) := 0;
+--     acc_type public.account_type;
+--     acc_currency TEXT;
+--     v_current_user UUID;
+-- BEGIN
+--     v_current_user := auth.uid();
+    
+--     -- Get account info
+--     SELECT type, currency INTO acc_type, acc_currency 
+--     FROM public.accounts 
+--     WHERE id = p_account_id 
+--       AND user_id = v_current_user
+--       AND deleted_at IS NULL;
+
+--     IF NOT FOUND THEN
+--         RAISE EXCEPTION 'Account not found or access denied';
+--     END IF;
+
+--     -- Calculate balance based on transaction history for specific account types
+--     CASE acc_type
+--         WHEN 'cash', 'bank', 'wallet', 'crypto' THEN
+--             -- For standard balance accounts: income(+), expense(-), adjustment(+/-)
+--             SELECT COALESCE(SUM(
+--                 CASE 
+--                     WHEN t.type = 'income' THEN t.amount
+--                     WHEN t.type = 'expense' THEN -t.amount
+--                     WHEN t.type = 'adjustment' THEN t.amount
+--                     ELSE 0
+--                 END), 0)
+--             INTO calculated_balance
+--             FROM public.transactions t
+--             LEFT JOIN public.transactions_income ti 
+--                    ON t.id = ti.transaction_id AND ti.account_id = p_account_id
+--             LEFT JOIN public.transactions_expense te 
+--                    ON t.id = te.transaction_id AND te.account_id = p_account_id
+--             LEFT JOIN public.transactions_adjustment ta 
+--                    ON t.id = ta.transaction_id AND ta.account_id = p_account_id
+--             WHERE (ti.account_id = p_account_id OR te.account_id = p_account_id OR ta.account_id = p_account_id)
+--               AND t.user_id = v_current_user
+--               AND t.deleted_at IS NULL
+--               AND t.currency = acc_currency;
+
+--             -- Add transfer effects
+--             SELECT calculated_balance + COALESCE(SUM(
+--                 CASE 
+--                     WHEN tt.from_account = p_account_id THEN -(t.amount + tt.fees)
+--                     WHEN tt.to_account = p_account_id THEN t.amount
+--                     ELSE 0
+--                 END), 0)
+--             INTO calculated_balance
+--             FROM public.transactions t
+--             JOIN public.transactions_transfer tt 
+--                  ON t.id = tt.transaction_id
+--             WHERE (tt.from_account = p_account_id OR tt.to_account = p_account_id)
+--               AND t.user_id = v_current_user
+--               AND t.deleted_at IS NULL;
+
+--         WHEN 'credit_card' THEN
+--             -- For credit cards: expense(+), payment/adjustment(-) 
+--             SELECT COALESCE(SUM(
+--                 CASE 
+--                     WHEN t.type = 'expense' THEN t.amount
+--                     WHEN t.type = 'adjustment' THEN -t.amount
+--                     ELSE 0
+--                 END), 0)
+--             INTO calculated_balance
+--             FROM public.transactions t
+--             LEFT JOIN public.transactions_expense te 
+--                    ON t.id = te.transaction_id AND te.account_id = p_account_id
+--             LEFT JOIN public.transactions_adjustment ta 
+--                    ON t.id = ta.transaction_id AND ta.account_id = p_account_id
+--             WHERE (te.account_id = p_account_id OR ta.account_id = p_account_id)
+--               AND t.user_id = v_current_user
+--               AND t.deleted_at IS NULL;
+
+--         WHEN 'loan' THEN
+--             -- For loans: borrow(+), repayment(-)
+--             SELECT COALESCE(SUM(
+--                 CASE 
+--                     WHEN t.type = 'borrow' THEN t.amount
+--                     WHEN t.type = 'adjustment' THEN -t.amount
+--                     ELSE 0
+--                 END), 0)
+--             INTO calculated_balance
+--             FROM public.transactions t
+--             LEFT JOIN public.transactions_borrow tb 
+--                    ON t.id = tb.transaction_id AND tb.account_id = p_account_id
+--             LEFT JOIN public.transactions_adjustment ta 
+--                    ON t.id = ta.transaction_id AND ta.account_id = p_account_id
+--             WHERE (tb.account_id = p_account_id OR ta.account_id = p_account_id)
+--               AND t.user_id = v_current_user
+--               AND t.deleted_at IS NULL;
+
+--         WHEN 'investment' THEN
+--             -- For investments: investment(+), income(+), adjustment(+/-)
+--             SELECT COALESCE(SUM(
+--                 CASE 
+--                     WHEN t.type = 'investment' THEN t.amount
+--                     WHEN t.type = 'income' THEN t.amount
+--                     WHEN t.type = 'adjustment' THEN t.amount
+--                     ELSE 0
+--                 END), 0)
+--             INTO calculated_balance
+--             FROM public.transactions t
+--             LEFT JOIN public.transactions_investment ti 
+--                    ON t.id = ti.transaction_id AND ti.account_id = p_account_id
+--             LEFT JOIN public.transactions_income tin 
+--                    ON t.id = tin.transaction_id AND tin.account_id = p_account_id
+--             LEFT JOIN public.transactions_adjustment ta 
+--                    ON t.id = ta.transaction_id AND ta.account_id = p_account_id
+--             WHERE (ti.account_id = p_account_id OR tin.account_id = p_account_id OR ta.account_id = p_account_id)
+--               AND t.user_id = v_current_user
+--               AND t.deleted_at IS NULL;
+
+--         WHEN 'receivable' THEN
+--             -- For receivables: lend(+), payment(-), adjustment(+/-)
+--             SELECT COALESCE(SUM(
+--                 CASE 
+--                     WHEN t.type = 'lend' THEN t.amount
+--                     WHEN t.type = 'adjustment' THEN t.amount
+--                     ELSE 0
+--                 END), 0)
+--             INTO calculated_balance
+--             FROM public.transactions t
+--             LEFT JOIN public.transactions_lend tl 
+--                    ON t.id = tl.transaction_id AND tl.account_id = p_account_id
+--             LEFT JOIN public.transactions_adjustment ta 
+--                    ON t.id = ta.transaction_id AND ta.account_id = p_account_id
+--             WHERE (tl.account_id = p_account_id OR ta.account_id = p_account_id)
+--               AND t.user_id = v_current_user
+--               AND t.deleted_at IS NULL;
+--     END CASE;
+
+--     RETURN calculated_balance;
+-- END;
+-- $$;
+
+-- -- =========================================
+-- -- 10. Function: check_balance_integrity
+-- -- =========================================
+-- -- Purpose:
+-- --   Compares the stored balance of accounts with the recalculated balance 
+-- --   based on transaction history to identify discrepancies.
+-- --   Helps ensure data integrity and detect accounts that may require correction.
+-- --
+-- -- Parameters:
+-- --   p_account_id UUID (optional) - If provided, checks only the specified account; 
+-- --                                  otherwise, checks all accounts for the current user.
+-- --
+-- -- Returns:
+-- --   TABLE with columns:
+-- --     account_id        - UUID of the account
+-- --     account_name      - Name of the account
+-- --     account_type      - Type of the account
+-- --     current_balance   - Stored balance in the database
+-- --     calculated_balance- Balance computed from transaction history
+-- --     difference        - Numeric difference between stored and calculated balances
+-- --     needs_correction  - TRUE if the difference exceeds 0.01, FALSE otherwise
+-- --
+-- -- Notes:
+-- --   - Only considers accounts owned by the current authenticated user and not soft-deleted.
+-- --   - Utilizes the recalculate_account_balance() function for accurate computation.
+-- --   - Orders results by the largest discrepancy first for easy identification of problematic accounts.
+-- -- =========================================
+-- CREATE OR REPLACE FUNCTION check_balance_integrity(p_account_id UUID DEFAULT NULL)
+-- RETURNS TABLE(
+--     account_id UUID,
+--     account_name TEXT,
+--     account_type account_type,
+--     current_balance DECIMAL(36,18),
+--     calculated_balance DECIMAL(36,18),
+--     difference DECIMAL(36,18),
+--     needs_correction BOOLEAN
+-- ) 
+-- LANGUAGE plpgsql
+-- SECURITY INVOKER
+-- SET search_path = pg_catalog, public
+-- AS $$
+-- DECLARE
+--     v_current_user UUID;
+-- BEGIN
+--     v_current_user := auth.uid();
+    
+--     RETURN QUERY
+--     SELECT 
+--         a.id AS account_id,
+--         a.account_name::TEXT,
+--         a.type AS account_type,
+--         vab.current_balance,
+--         recalculate_account_balance(a.id) AS calculated_balance,
+--         (vab.current_balance - recalculate_account_balance(a.id)) AS difference,
+--         (ABS(vab.current_balance - recalculate_account_balance(a.id)) > 0.01) AS needs_correction
+--     FROM accounts a
+--     JOIN v_account_balances vab ON a.id = vab.account_id
+--     WHERE a.deleted_at IS NULL
+--       AND a.user_id = v_current_user
+--       AND (p_account_id IS NULL OR a.id = p_account_id)
+--     ORDER BY ABS(vab.current_balance - recalculate_account_balance(a.id)) DESC;
+-- END;
+-- $$;
+
+-- -- =========================================
+-- -- 11. Function: update_account_balance_field
+-- -- =========================================
+-- -- Purpose:
+-- --   Updates the stored balance of a specific account in its respective 
+-- --   specialized account table according to the account type.
+-- --   Ensures the main account record is timestamped for tracking.
+-- --
+-- -- Parameters:
+-- --   p_account_id   UUID               - The ID of the account to update.
+-- --   p_new_balance  DECIMAL(36,18)     - The new balance to set for the account.
+-- --
+-- -- Returns:
+-- --   BOOLEAN
+-- --   - TRUE if the balance was successfully updated.
+-- --   - FALSE if the account was not found or the account type was unrecognized.
+-- --
+-- -- Notes:
+-- --   - Only updates accounts belonging to the current authenticated user and not soft-deleted.
+-- --   - Handles all account types: cash, bank, wallet, crypto, credit_card, loan, investment, receivable.
+-- --   - Updates the main account's updated_at timestamp to reflect the change.
+-- --   - Safe to call repeatedly; idempotent per account.
+-- -- =========================================
+-- CREATE OR REPLACE FUNCTION update_account_balance_field(
+--     p_account_id UUID,
+--     p_new_balance DECIMAL(36,18)
+-- )
+-- RETURNS BOOLEAN 
+-- LANGUAGE plpgsql
+-- SECURITY INVOKER
+-- SET search_path = pg_catalog, public
+-- AS $$
+-- DECLARE
+--     acc_type account_type;
+--     updated_rows INTEGER;
+--     v_current_user UUID;
+-- BEGIN
+--     v_current_user := auth.uid();
+
+--     -- Ownership check
+--     IF NOT validate_account_ownership(p_account_id, v_current_user) THEN
+--         RAISE EXCEPTION 'Permission denied: cannot update balance for this account'
+--             USING ERRCODE = '42501';
+--     END IF;
+
+--     -- Get account type
+--     SELECT type INTO acc_type 
+--     FROM accounts 
+--     WHERE id = p_account_id 
+--       AND user_id = v_current_user
+--       AND deleted_at IS NULL;
+
+--     IF NOT FOUND THEN
+--         RETURN FALSE;
+--     END IF;
+
+--     -- Update the appropriate balance field based on account type
+--     CASE acc_type
+--         WHEN 'cash' THEN
+--             UPDATE cash_accounts 
+--             SET balance = p_new_balance, updated_at = NOW() 
+--             WHERE account_id = p_account_id;
+--             GET DIAGNOSTICS updated_rows = ROW_COUNT;
+
+--         WHEN 'bank' THEN
+--             UPDATE bank_accounts 
+--             SET balance = p_new_balance, updated_at = NOW() 
+--             WHERE account_id = p_account_id;
+--             GET DIAGNOSTICS updated_rows = ROW_COUNT;
+
+--         WHEN 'wallet' THEN
+--             UPDATE wallet_accounts 
+--             SET balance = p_new_balance, updated_at = NOW() 
+--             WHERE account_id = p_account_id;
+--             GET DIAGNOSTICS updated_rows = ROW_COUNT;
+
+--         WHEN 'crypto' THEN
+--             UPDATE crypto_accounts 
+--             SET balance = p_new_balance, updated_at = NOW() 
+--             WHERE account_id = p_account_id;
+--             GET DIAGNOSTICS updated_rows = ROW_COUNT;
+
+--         WHEN 'credit_card' THEN
+--             UPDATE credit_card_accounts 
+--             SET current_balance = p_new_balance, updated_at = NOW() 
+--             WHERE account_id = p_account_id;
+--             GET DIAGNOSTICS updated_rows = ROW_COUNT;
+
+--         WHEN 'loan' THEN
+--             UPDATE loan_accounts 
+--             SET outstanding_amount = p_new_balance, updated_at = NOW() 
+--             WHERE account_id = p_account_id;
+--             GET DIAGNOSTICS updated_rows = ROW_COUNT;
+
+--         WHEN 'investment' THEN
+--             UPDATE investment_accounts 
+--             SET portfolio_value = p_new_balance, updated_at = NOW() 
+--             WHERE account_id = p_account_id;
+--             GET DIAGNOSTICS updated_rows = ROW_COUNT;
+
+--         WHEN 'receivable' THEN
+--             UPDATE receivable_accounts 
+--             SET amount_due = p_new_balance, updated_at = NOW() 
+--             WHERE account_id = p_account_id;
+--             GET DIAGNOSTICS updated_rows = ROW_COUNT;
+
+--         ELSE
+--             RETURN FALSE;
+--     END CASE;
+
+--     -- Update main account timestamp
+--     UPDATE accounts 
+--     SET updated_at = NOW() 
+--     WHERE id = p_account_id;
+
+--     RETURN updated_rows > 0;
+-- END;
+-- $$;
+
+-- -- =========================================
+-- -- 12. Function: fix_balance_discrepancies
+-- -- =========================================
+-- -- Purpose:
+-- --   Identifies accounts where the stored balance differs from the 
+-- --   recalculated balance and automatically corrects them.
+-- --   Helps maintain financial data integrity by syncing balances with transaction history.
+-- --
+-- -- Parameters:
+-- --   p_account_id UUID (optional) - If provided, corrects only the specified account; 
+-- --                                  otherwise, processes all accounts for the current user.
+-- --
+-- -- Returns:
+-- --   TABLE with columns:
+-- --     account_id  - UUID of the account corrected
+-- --     old_balance - Previously stored balance
+-- --     new_balance - Recalculated balance applied
+-- --     corrected   - TRUE if the update was successfully applied, FALSE otherwise
+-- --
+-- -- Notes:
+-- --   - Uses check_balance_integrity() to identify discrepancies.
+-- --   - Calls update_account_balance_field() to update the balances safely.
+-- --   - Only affects accounts owned by the current authenticated user and not soft-deleted.
+-- --   - Useful for batch reconciliation and automated data correction.
+-- -- =========================================
+-- CREATE OR REPLACE FUNCTION public.fix_balance_discrepancies(p_account_id UUID DEFAULT NULL)
+-- RETURNS TABLE(
+--     account_id UUID,
+--     old_balance DECIMAL(36,18),
+--     new_balance DECIMAL(36,18),
+--     corrected BOOLEAN
+-- ) 
+-- LANGUAGE plpgsql
+-- SECURITY INVOKER
+-- SET search_path = public, pg_catalog
+-- AS $$
+-- DECLARE
+--     acc_record RECORD;
+-- BEGIN
+--     FOR acc_record IN
+--         SELECT * 
+--         FROM public.check_balance_integrity(p_account_id)
+--         WHERE needs_correction = TRUE
+--     LOOP
+--         RETURN QUERY
+--         SELECT 
+--             acc_record.account_id,
+--             acc_record.current_balance AS old_balance,
+--             acc_record.calculated_balance AS new_balance,
+--             public.update_account_balance_field(acc_record.account_id, acc_record.calculated_balance) AS corrected;
+--     END LOOP;
+-- END;
+-- $$;
+
+-- -- =========================================
+-- -- 13. Function: run_fix_balance_discrepancies
+-- -- =========================================
+-- -- Purpose:
+-- --   Wrapper function to execute the fix_balance_discrepancies workflow 
+-- --   for all accounts. Designed to be run by an automated scheduler (e.g., pg_cron) 
+-- --   without returning any result.
+-- --
+-- -- Parameters:
+-- --   None
+-- --
+-- -- Returns:
+-- --   void
+-- --
+-- -- Notes:
+-- --   - Calls fix_balance_discrepancies(NULL) internally to process all accounts.
+-- --   - SECURITY DEFINER ensures the function runs with the privileges of the owner, 
+-- --     allowing the scheduler role to execute it without direct table access.
+-- --   - Intended to be scheduled for automated daily reconciliation of account balances.
+-- --   - Reduces manual intervention and helps maintain financial data integrity.
+-- -- =========================================
+-- CREATE OR REPLACE FUNCTION public.run_fix_balance_discrepancies()
+-- RETURNS void
+-- LANGUAGE plpgsql
+-- SECURITY DEFINER
+-- AS $$
+-- BEGIN
+--     -- Call the main function for all accounts (NULL = all accounts)
+--     PERFORM public.fix_balance_discrepancies(NULL);
+-- END;
+-- $$;
+
+-- -- Schedule to run every day at midnight
+-- SELECT cron.schedule(
+--     'daily_balance_fix',         -- job name
+--     '0 0 * * *',                 -- cron syntax for midnight every day
+--     'SELECT public.run_fix_balance_discrepancies();',  -- the function to run
+--     scheduled_job_role  -- specify the role here
+-- );
+
+
+-- ================================
+-- Grant Permissions
+-- ================================
+-- GRANT EXECUTE ON FUNCTION recalculate_account_balance(UUID) TO scheduled_job_role;
+-- GRANT EXECUTE ON FUNCTION check_balance_integrity(UUID) TO scheduled_job_role;
+-- GRANT EXECUTE ON FUNCTION update_account_balance_field(UUID, DECIMAL) TO scheduled_job_role;
+-- GRANT EXECUTE ON FUNCTION fix_balance_discrepancies(UUID) TO scheduled_job_role;
+-- GRANT EXECUTE ON FUNCTION public.run_fix_balance_discrepancies() TO scheduled_job_role;
+
+-- ================================
+-- Function Documentation
+-- ================================
+-- COMMENT ON FUNCTION recalculate_account_balance(UUID) IS'RLS-compliant balance recalculation from transaction history';
+-- COMMENT ON FUNCTION check_balance_integrity(UUID) IS 'RLS-compliant balance integrity verification';

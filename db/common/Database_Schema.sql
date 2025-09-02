@@ -377,7 +377,7 @@ CREATE TABLE audit_logs (
   action_by UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE, -- who performed the action
   table_name TEXT NOT NULL,
   record_id UUID NOT NULL,
-  action TEXT NOT NULL CHECK (action IN ('INSERT','UPDATE','DELETE','SOFT_DELETE')),
+  action TEXT NOT NULL CHECK (action IN ('INSERT','UPDATE','DELETE','SOFT_DELETE', 'ADMIN_PRIVILEGE_CHANGE')),
   old_data JSONB,
   new_data JSONB,
   created_at timestamptz DEFAULT now()
@@ -395,6 +395,8 @@ CREATE TABLE IF NOT EXISTS api_rate_limits (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+ALTER TABLE public.api_rate_limits
+ADD CONSTRAINT api_rate_limits_user_endpoint_unique UNIQUE (user_id, endpoint);
 
 -- =========================================
 -- CONSTRAINTS
@@ -505,3 +507,7 @@ ON counterparties(user_id, deleted_at) WHERE deleted_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_transactions_recurring_user_deleted 
 ON transactions_recurring(user_id, deleted_at) WHERE deleted_at IS NULL;
+
+
+-- Create a role for running scheduled jobs
+-- CREATE ROLE scheduled_job_role LOGIN PASSWORD 'strong_password_here';

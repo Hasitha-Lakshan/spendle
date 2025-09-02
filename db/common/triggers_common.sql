@@ -227,6 +227,11 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 BEGIN
+    -- Skip soft delete if bypass flag is set
+    IF current_setting('app.hard_delete', true) = 'on' THEN
+        RETURN OLD; -- allow actual delete to proceed
+    END IF;
+
     -- Update the deleted_at timestamp instead of hard delete
     EXECUTE format(
         'UPDATE %I SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1',
@@ -332,18 +337,75 @@ CREATE TRIGGER trg_transactions_adjustment_no_delete
     BEFORE DELETE ON transactions_adjustment
     FOR EACH ROW EXECUTE FUNCTION enforce_soft_delete();
 
+-- =========================================
+-- 04. Function: log_admin_changes
+-- =========================================
+-- Purpose:
+--   Logs changes to the `is_admin` field in the `profiles` table.
+--   Tracks both the affected user and the actor performing the privilege change.
+--
+-- Behavior:
+--   - Trigger fires AFTER UPDATE on the `profiles` table
+--   - Checks if `is_admin` has changed
+--   - Inserts a record into `audit_logs` with old and new values of `is_admin`
+--   - Raises a notice with the affected user and the privilege change
+--
+-- Parameters:
+--   OLD - Previous row version (before update)
+--   NEW - New row version (after update)
+--
+-- Returns:
+--   NEW - Returns the updated row to complete the trigger operation
+--
+-- Notes:
+--   - SECURITY INVOKER allows the function to respect the session user's permissions
+--   - Only fires when `is_admin` is actually changed, preventing unnecessary audit entries
+--   - Uses `COALESCE(auth.uid(), NEW.user_id)` to ensure `action_by` is always populated
+--   - Requires `audit_logs` to allow the 'ADMIN_PRIVILEGE_CHANGE' action in its check constraint
+-- =========================================
+CREATE OR REPLACE FUNCTION log_admin_changes() 
+RETURNS TRIGGER 
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+    -- Log when admin privileges are granted or revoked
+    IF OLD.is_admin IS DISTINCT FROM NEW.is_admin THEN
+        INSERT INTO public.audit_logs(user_id, action_by, table_name, record_id, action, old_data, new_data)
+        VALUES (
+            NEW.user_id,
+            COALESCE(auth.uid(), NEW.user_id),
+            'profiles',
+            NEW.id,
+            'ADMIN_PRIVILEGE_CHANGE',
+            jsonb_build_object('is_admin', OLD.is_admin),
+            jsonb_build_object('is_admin', NEW.is_admin)
+        );
+
+        RAISE NOTICE 'Admin privilege changed for user % from % to %', 
+            NEW.user_id, OLD.is_admin, NEW.is_admin;
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_log_admin_changes
+    AFTER UPDATE ON profiles
+    FOR EACH ROW EXECUTE FUNCTION log_admin_changes();
+
 
 -- =========================================
 -- GRANT PERMISSIONS FOR RLS FUNCTIONS
 -- =========================================
-
 GRANT EXECUTE ON FUNCTION log_audit() TO authenticated;
 GRANT EXECUTE ON FUNCTION set_updated_at() TO authenticated;
 GRANT EXECUTE ON FUNCTION enforce_soft_delete() TO authenticated;
+GRANT EXECUTE ON FUNCTION log_admin_changes() TO authenticated;
 
 
 -- =========================================
 -- COMMENTS AND DOCUMENTATION
 -- =========================================
-
 COMMENT ON FUNCTION log_audit() IS 'RLS-compliant audit logging with dual user tracking';
