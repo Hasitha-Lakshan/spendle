@@ -205,7 +205,10 @@ END;
 $$;
 
 -- =========================================
--- 01. Function: hard_delete_record
+-- CLEAN-UP FUNCTIONS
+-- =========================================
+-- =========================================
+-- 04. Function: hard_delete_record
 -- =========================================
 -- Purpose:
 --   Permanently deletes a record from a specified table, handling dependencies
@@ -377,9 +380,6 @@ END;
 $$;
 
 -- =========================================
--- CLEAN-UP FUNCTIONS
--- =========================================
--- =========================================
 -- 05. Function: cleanup_old_audit_logs
 -- =========================================
 -- Purpose:
@@ -409,6 +409,10 @@ AS $$
 DECLARE
     v_deleted_count INTEGER;
 BEGIN
+    IF NOT check_admin_permissions() THEN
+        RAISE EXCEPTION 'Access denied: only admins can run cleanup_old_audit_logs';
+    END IF;
+
     DELETE FROM public.audit_logs 
     WHERE created_at < (CURRENT_DATE - (p_days_to_keep || ' days')::INTERVAL);
     
@@ -416,6 +420,12 @@ BEGIN
     RETURN v_deleted_count;
 END;
 $$;
+
+SELECT cron.schedule(
+  'cleanup_audit_logs_daily',
+  '0 2 * * *',
+  $$ SELECT cleanup_old_audit_logs(90); $$
+);
 
 -- =========================================
 -- 06. Function: cleanup_old_rate_limits
@@ -438,7 +448,7 @@ $$;
 --   - Should be scheduled periodically to prevent stale rate limit data
 --   - Helps ensure accurate rate limiting without table bloat
 -- =========================================
-CREATE OR REPLACE FUNCTION cleanup_old_rate_limits()
+CREATE OR REPLACE FUNCTION cleanup_old_rate_limits(p_hours_to_keep INTEGER DEFAULT 24)
 RETURNS INTEGER
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -447,39 +457,53 @@ AS $$
 DECLARE
     v_deleted_count INTEGER;
 BEGIN
+    -- Protect: only admins can run this cleanup
+    IF NOT check_admin_permissions() THEN
+        RAISE EXCEPTION 'Access denied: only admins can run cleanup_old_rate_limits';
+    END IF;
+
     DELETE FROM public.api_rate_limits
-    WHERE created_at < (NOW() - INTERVAL '24 hours');
-    
+    WHERE created_at < (NOW() - (p_hours_to_keep || ' hours')::INTERVAL);
+
     GET DIAGNOSTICS v_deleted_count = ROW_COUNT;
     RETURN v_deleted_count;
 END;
 $$;
 
+-- Run cleanup every night at midnight
+SELECT cron.schedule(
+  'cleanup_api_rate_limits_daily',
+  '0 0 * * *',
+  $$ SELECT cleanup_old_rate_limits(); $$
+);
+
 -- =========================================
 -- 07. Function: cleanup_soft_deleted_records
 -- =========================================
 -- Purpose:
---   Batch deletes records that were soft-deleted older than a specified number of days.
---   Intended for periodic cleanup by admins only.
+--   Permanently deletes soft-deleted records from key tables that are older than a specified number of days.
 --
 -- Behavior:
 --   - SECURITY DEFINER allows execution even with RLS enabled
---   - Confirms current user is admin; raises exception if not
---   - Iterates over a predefined list of tables to clean up
---   - Deletes rows where deleted_at is set and older than the cutoff date
---   - Returns a table of table names and the number of rows deleted per table
+--   - Iterates through predefined tables (transactions, accounts, expense_categories, etc.)
+--   - For each soft-deleted record older than `older_than_days`, calls `hard_delete_record` to remove it
+--   - Returns a summary of how many records were deleted per table
 --
 -- Parameters:
---   older_than_days INTEGER DEFAULT 90 - Only delete records older than this many days
+--   older_than_days INTEGER DEFAULT 90
+--     - Number of days after which soft-deleted records should be permanently removed
 --
 -- Returns:
---   TABLE(table_name TEXT, deleted_count BIGINT) - Number of rows deleted per table
+--   TABLE (table_name TEXT, deleted_count BIGINT)
+--     - table_name: name of the table processed
+--     - deleted_count: number of records permanently deleted from that table
 --
 -- Notes:
---   - Only admins can execute this function
---   - Helps maintain database size and prevent accumulation of old soft-deleted data
+--   - Should only be run by admins; checks `check_admin_permissions`
+--   - Can be scheduled via pg_cron to run automatically, e.g., nightly
+--   - Uses `hard_delete_record` to handle dependencies and ensure safe deletion
 -- =========================================
-CREATE OR REPLACE FUNCTION cleanup_soft_deleted_records(
+CREATE OR REPLACE FUNCTION public.cleanup_soft_deleted_records(
     older_than_days INTEGER DEFAULT 90
 )
 RETURNS TABLE(
@@ -497,27 +521,41 @@ DECLARE
         'income_sources', 'counterparties', 'transactions_recurring'
     ];
     tbl TEXT;
-    deleted_rows BIGINT;
+    rec RECORD;
+    deleted_counter BIGINT;
 BEGIN
     -- Only admins can run this
     IF NOT check_admin_permissions() THEN
         RAISE EXCEPTION 'Admin permissions required';
     END IF;
-    
+
     cutoff_date := NOW() - (older_than_days || ' days')::INTERVAL;
-    
+
     FOREACH tbl IN ARRAY tables_to_clean LOOP
-        EXECUTE format(
-            'DELETE FROM %I WHERE deleted_at IS NOT NULL AND deleted_at < $1',
+        deleted_counter := 0;
+
+        FOR rec IN EXECUTE format(
+            'SELECT id FROM %I WHERE deleted_at IS NOT NULL AND deleted_at < $1',
             tbl
-        ) USING cutoff_date;
-        
-        GET DIAGNOSTICS deleted_rows = ROW_COUNT;
-        
-        RETURN QUERY SELECT tbl, deleted_rows;
+        ) USING cutoff_date
+        LOOP
+            -- Call the existing hard_delete_record function
+            PERFORM public.hard_delete_record(tbl, rec.id);
+            deleted_counter := deleted_counter + 1;
+        END LOOP;
+
+        -- Return the results for this table
+        RETURN QUERY SELECT tbl, deleted_counter;
     END LOOP;
 END;
 $$;
+
+-- Schedule the cleanup to run every night at 2:00 AM
+SELECT cron.schedule(
+  'cleanup_soft_deleted_records_nightly',  -- job name
+  '0 2 * * *',                            -- cron expression (2:00 AM daily)
+  $$ SELECT public.cleanup_soft_deleted_records(90); $$
+);
 
 
 -- ================================
