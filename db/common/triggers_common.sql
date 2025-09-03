@@ -164,7 +164,7 @@ END$$;
 -- Notes:
 --   - SECURITY DEFINER allows this function to execute even with RLS policies
 --   - Trigger creation is dynamic for all public tables containing an `updated_at` column
---   - Ensures consistent timestamping without requiring manual updates
+--   - Ensures consistent time stamping without requiring manual updates
 -- =========================================
 CREATE OR REPLACE FUNCTION set_updated_at() 
 RETURNS TRIGGER 
