@@ -1,3 +1,25 @@
+-- =========================================
+-- 01. Function: create_expense_subcategory
+-- =========================================
+-- Purpose:
+--   Creates a new expense subcategory under a specified expense category.
+--   Associates the subcategory with the given category ID. Audit logging
+--   is handled separately by an AFTER INSERT trigger.
+--
+-- Parameters:
+--   p_category_id UUID - The ID of the parent expense category
+--   p_name TEXT        - The name of the subcategory to create
+--
+-- Returns:
+--   UUID - The unique ID of the newly created expense subcategory
+--
+-- Notes:
+--   - SECURITY INVOKER is used so that row-level security (RLS) policies
+--     on expense_subcategories are respected
+--   - Audit logging for creation is automatically handled by triggers
+--   - Safe to call multiple times; duplicate handling should be managed
+--     at the application or RLS level if needed
+-- =========================================
 CREATE OR REPLACE FUNCTION public.create_expense_subcategory(
     p_category_id UUID,
     p_name TEXT
@@ -18,6 +40,27 @@ BEGIN
 END;
 $$;
 
+-- =========================================
+-- 02. Function: update_expense_subcategory
+-- =========================================
+-- Purpose:
+--   Updates the name of an existing, non-deleted expense subcategory.
+--   Audit logging is handled separately by an AFTER UPDATE trigger.
+--
+-- Parameters:
+--   p_subcategory_id UUID - The ID of the expense subcategory to update
+--   p_new_name TEXT       - The new name to assign to the subcategory
+--
+-- Returns:
+--   BOOLEAN - TRUE if the subcategory was updated, FALSE if no matching
+--             non-deleted subcategory was found
+--
+-- Notes:
+--   - SECURITY INVOKER is used so that row-level security (RLS) policies
+--     on expense_subcategories are respected
+--   - Soft-deleted subcategories (deleted_at IS NOT NULL) cannot be updated
+--   - Audit logging is handled by an AFTER UPDATE trigger
+-- =========================================
 CREATE OR REPLACE FUNCTION public.update_expense_subcategory(
     p_subcategory_id UUID,
     p_new_name TEXT
@@ -38,6 +81,27 @@ BEGIN
 END;
 $$;
 
+-- =========================================
+-- 03. Function: soft_delete_expense_subcategory
+-- =========================================
+-- Purpose:
+--   Soft deletes an expense subcategory by setting deleted_at and
+--   updated_at timestamps. Audit logging is handled separately by a
+--   trigger.
+--
+-- Parameters:
+--   p_subcategory_id UUID - The ID of the expense subcategory to soft delete
+--
+-- Returns:
+--   BOOLEAN - TRUE if the subcategory was successfully soft deleted,
+--             FALSE if it was already deleted or not found
+--
+-- Notes:
+--   - SECURITY INVOKER is used so that row-level security (RLS) policies
+--     on expense_subcategories are respected
+--   - Only subcategories that are not already soft deleted are updated
+--   - Audit logging is handled by an AFTER DELETE trigger
+-- =========================================
 CREATE OR REPLACE FUNCTION public.soft_delete_expense_subcategory(
     p_subcategory_id UUID
 )
@@ -58,6 +122,28 @@ BEGIN
 END;
 $$;
 
+-- =========================================
+-- 04. Function: hard_delete_expense_subcategory
+-- =========================================
+-- Purpose:
+--   Permanently deletes a soft-deleted expense subcategory. Only admins
+--   are allowed to perform this operation.
+--
+-- Parameters:
+--   p_subcategory_id UUID - The ID of the soft-deleted subcategory to permanently delete
+--
+-- Returns:
+--   BOOLEAN - TRUE if the subcategory was successfully hard deleted
+--
+-- Notes:
+--   - SECURITY DEFINER is used to allow admin-only deletion
+--   - Admin privileges are verified using check_admin_permissions()
+--   - Sets app.hard_delete flag ON to enable triggers or logic that
+--     depend on hard delete mode, and resets it OFF afterwards
+--   - Only soft-deleted subcategories (deleted_at IS NOT NULL) are eligible
+--     for permanent deletion
+--   - Raises an exception if the subcategory was not found or not soft-deleted
+-- =========================================
 CREATE OR REPLACE FUNCTION public.hard_delete_expense_subcategory(
     p_subcategory_id UUID
 )

@@ -1,3 +1,27 @@
+-- =========================================
+-- 01. Trigger Function: cleanup_expense_subcategories
+-- =========================================
+-- Purpose:
+--   Automatically soft deletes all subcategories of an expense category
+--   when the parent category is soft deleted. Ensures only the category
+--   owner or an admin can trigger this operation.
+--
+-- Parameters:
+--   Triggered automatically BEFORE UPDATE on expense_categories
+--   OLD - The existing row before update
+--   NEW - The updated row
+--
+-- Returns:
+--   NEW - The updated expense category row
+--
+-- Notes:
+--   - SECURITY DEFINER is used to allow proper permission checks for
+--     admins and owners
+--   - Only executes when a category is transitioning from not deleted
+--     to soft deleted (OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL)
+--   - Updates deleted_at and updated_at for all non-deleted subcategories
+--   - Ensures RLS and ownership rules are respected
+-- =========================================
 CREATE OR REPLACE FUNCTION cleanup_expense_subcategories()
 RETURNS TRIGGER
 LANGUAGE plpgsql
