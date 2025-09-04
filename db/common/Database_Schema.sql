@@ -189,7 +189,8 @@ CREATE TABLE expense_categories (
   user_id UUID NOT NULL REFERENCES profiles(user_id) ON DELETE CASCADE,
   name VARCHAR(100) NOT NULL,
   deleted_at timestamptz NULL DEFAULT NULL,
-  created_at timestamptz DEFAULT now()
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now()
 );
 
 CREATE TABLE expense_subcategories (
@@ -197,7 +198,8 @@ CREATE TABLE expense_subcategories (
   category_id UUID NOT NULL REFERENCES expense_categories(id) ON DELETE CASCADE,
   name VARCHAR(100) NOT NULL,
   deleted_at timestamptz NULL DEFAULT NULL,
-  created_at timestamptz DEFAULT now()
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now()
 );
 
 -- =========================================
@@ -208,7 +210,8 @@ CREATE TABLE income_sources (
   user_id UUID NOT NULL REFERENCES profiles(user_id) ON DELETE CASCADE,
   name VARCHAR(100) NOT NULL,
   deleted_at timestamptz NULL DEFAULT NULL,
-  created_at timestamptz DEFAULT now()
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now()
 );
 
 -- =========================================
