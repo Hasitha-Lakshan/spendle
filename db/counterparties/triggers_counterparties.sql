@@ -31,6 +31,6 @@ END;
 $$ LANGUAGE plpgsql;
 
 CREATE TRIGGER trg_prevent_invalid_counterparty_hard_delete
-BEFORE DELETE ON counterparties
-FOR EACH ROW
-EXECUTE FUNCTION prevent_invalid_counterparty_delete();
+  BEFORE DELETE ON counterparties
+  FOR EACH ROW
+  EXECUTE FUNCTION prevent_invalid_counterparty_hard_delete();
