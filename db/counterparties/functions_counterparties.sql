@@ -27,6 +27,7 @@ CREATE OR REPLACE FUNCTION public.create_counterparty(
 RETURNS UUID
 LANGUAGE plpgsql
 SECURITY INVOKER
+SET search_path = public, pg_temp
 AS $$
 DECLARE
     v_counterparty_id UUID;
@@ -64,6 +65,7 @@ CREATE OR REPLACE FUNCTION public.get_counterparties()
 RETURNS JSONB
 LANGUAGE sql
 SECURITY INVOKER
+SET search_path = public, pg_temp
 AS $$
     SELECT jsonb_agg(
         jsonb_build_object(
@@ -111,6 +113,7 @@ CREATE OR REPLACE FUNCTION public.update_counterparty(
 RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY INVOKER
+SET search_path = public, pg_temp
 AS $$
 BEGIN
     -- Only update counterparties that are not soft deleted
@@ -282,11 +285,12 @@ CREATE OR REPLACE FUNCTION public.get_counterparty_summary()
 RETURNS JSONB
 LANGUAGE sql
 SECURITY INVOKER
+SET search_path = public, pg_temp
 AS $$
     SELECT jsonb_object_agg(type, count)::jsonb
     FROM (
         SELECT type::text, COUNT(*) AS count
-        FROM counterparties
+        FROM public.counterparties
         WHERE deleted_at IS NULL
         GROUP BY type
     ) t;

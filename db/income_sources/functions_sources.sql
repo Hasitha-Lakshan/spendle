@@ -262,7 +262,7 @@ END;
 $$;
 
 -- =========================================
--- 06. Function: get_income_summary
+-- 06. Function: get_income_sources_summary
 -- =========================================
 -- Purpose:
 --   Returns a JSONB summary of active income sources.
