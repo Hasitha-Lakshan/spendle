@@ -24,11 +24,12 @@ CREATE OR REPLACE FUNCTION public.create_income_source(
 RETURNS UUID
 LANGUAGE plpgsql
 SECURITY INVOKER
+SET search_path = public, pg_temp
 AS $$
 DECLARE
     v_source_id UUID;
 BEGIN
-    INSERT INTO income_sources (user_id, name)
+    INSERT INTO public.income_sources (user_id, name)
     VALUES (auth.uid(), p_name)
     RETURNING id INTO v_source_id;
 
@@ -60,6 +61,7 @@ CREATE OR REPLACE FUNCTION public.get_income_sources()
 RETURNS JSONB
 LANGUAGE sql
 SECURITY INVOKER
+SET search_path = public, pg_temp
 AS $$
     SELECT jsonb_agg(
         jsonb_build_object(
@@ -103,10 +105,11 @@ CREATE OR REPLACE FUNCTION public.update_income_source(
 RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY INVOKER
+SET search_path = public, pg_temp
 AS $$
 BEGIN
     -- Only update sources that are not soft deleted
-    UPDATE income_sources
+    UPDATE public.income_sources
     SET name = COALESCE(p_new_name, name)
     WHERE id = p_source_id
       AND deleted_at IS NULL;
@@ -146,6 +149,7 @@ CREATE OR REPLACE FUNCTION public.soft_delete_income_source(
 RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = public, pg_temp
 AS $$
 DECLARE
     v_user_id UUID := auth.uid();
@@ -155,7 +159,7 @@ BEGIN
     IF NOT (
         EXISTS (
             SELECT 1
-            FROM income_sources
+            FROM public.income_sources
             WHERE id = p_source_id
               AND user_id = v_user_id
               AND deleted_at IS NULL
@@ -169,7 +173,7 @@ BEGIN
     -- Check for related transactions
     IF EXISTS (
         SELECT 1
-        FROM transactions_income
+        FROM public.transactions_income
         WHERE source_id = p_source_id
           AND deleted_at IS NULL
     ) THEN
@@ -179,12 +183,12 @@ BEGIN
 
     -- Check if source exists and is not already soft deleted
     SELECT true INTO v_exists
-    FROM income_sources
+    FROM public.income_sources
     WHERE id = p_source_id
       AND deleted_at IS NULL;
 
     -- Perform soft delete
-    DELETE FROM income_sources
+    DELETE FROM public.income_sources
     WHERE id = p_source_id
       AND deleted_at IS NULL;
 
@@ -285,8 +289,9 @@ CREATE OR REPLACE FUNCTION public.get_income_sources_summary()
 RETURNS JSONB
 LANGUAGE sql
 SECURITY INVOKER
+SET search_path = public, pg_temp
 AS $$
     SELECT jsonb_build_object(
-        'active_income_sources', (SELECT COUNT(*) FROM income_sources WHERE deleted_at IS NULL)
+        'active_income_sources', (SELECT COUNT(*) FROM public.income_sources WHERE deleted_at IS NULL)
     );
 $$;

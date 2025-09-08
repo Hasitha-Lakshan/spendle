@@ -22,19 +22,23 @@
 --   - ERRCODE 45000 is used for generic user-defined exceptions.
 -- =========================================
 CREATE OR REPLACE FUNCTION prevent_invalid_income_source_hard_delete()
-RETURNS trigger AS $$
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = public, pg_temp
+AS $$
 BEGIN
   -- Block hard delete if income source has related transactions
-  IF EXISTS (SELECT 1 FROM transactions_income WHERE source_id = OLD.id) THEN
+  IF EXISTS (SELECT 1 FROM public.transactions_income WHERE source_id = OLD.id) THEN
     RAISE EXCEPTION 'Income source % has related transactions and can only be soft-deleted', OLD.id
       USING ERRCODE = '45000';
   END IF;
 
   RETURN OLD;
 END;
-$$ LANGUAGE plpgsql;
+$$;
 
 CREATE TRIGGER trg_prevent_invalid_income_source_hard_delete
-  BEFORE DELETE ON income_sources
+  BEFORE DELETE ON public.income_sources
   FOR EACH ROW
   EXECUTE FUNCTION prevent_invalid_income_source_hard_delete();
