@@ -26,11 +26,12 @@ CREATE OR REPLACE FUNCTION public.create_expense_category(
 RETURNS UUID
 LANGUAGE plpgsql
 SECURITY INVOKER  -- relies on RLS
+SET search_path = public, pg_temp
 AS $$
 DECLARE
     v_category_id UUID;
 BEGIN
-    INSERT INTO expense_categories (user_id, name)
+    INSERT INTO public.expense_categories (user_id, name)
     VALUES (auth.uid(), p_name)
     RETURNING id INTO v_category_id;
 
@@ -66,6 +67,7 @@ CREATE OR REPLACE FUNCTION public.get_expense_categories_with_subcategories()
 RETURNS JSONB
 LANGUAGE sql
 SECURITY INVOKER  -- respects RLS
+SET search_path = public, pg_temp
 AS $$
     SELECT jsonb_agg(
         jsonb_build_object(
@@ -126,10 +128,11 @@ CREATE OR REPLACE FUNCTION public.update_expense_category(
 RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY INVOKER  -- relies on RLS
+SET search_path = public, pg_temp
 AS $$
 BEGIN
     -- Only update categories that are not soft deleted
-    UPDATE expense_categories
+    UPDATE public.expense_categories
     SET name = COALESCE(p_new_name, name)
     WHERE id = p_category_id
       AND deleted_at IS NULL;
@@ -313,9 +316,10 @@ CREATE OR REPLACE FUNCTION public.get_expense_types_summary()
 RETURNS JSONB
 LANGUAGE sql
 SECURITY INVOKER  -- respects RLS
+SET search_path = public, pg_temp
 AS $$
     SELECT jsonb_build_object(
-        'active_categories', (SELECT COUNT(*) FROM expense_categories WHERE deleted_at IS NULL),
-        'active_subcategories', (SELECT COUNT(*) FROM expense_subcategories WHERE deleted_at IS NULL)
+        'active_categories', (SELECT COUNT(*) FROM public.expense_categories WHERE deleted_at IS NULL),
+        'active_subcategories', (SELECT COUNT(*) FROM public.expense_subcategories WHERE deleted_at IS NULL)
     );
 $$;

@@ -27,11 +27,12 @@ CREATE OR REPLACE FUNCTION public.create_expense_subcategory(
 RETURNS UUID
 LANGUAGE plpgsql
 SECURITY INVOKER
+SET search_path = public, pg_temp
 AS $$
 DECLARE
     v_subcategory_id UUID;
 BEGIN
-    INSERT INTO expense_subcategories (category_id, name)
+    INSERT INTO public.expense_subcategories (category_id, name)
     VALUES (p_category_id, p_name)
     RETURNING id INTO v_subcategory_id;
 
@@ -68,10 +69,11 @@ CREATE OR REPLACE FUNCTION public.update_expense_subcategory(
 RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY INVOKER
+SET search_path = public, pg_temp
 AS $$
 BEGIN
     -- Only update subcategories that are not soft deleted
-    UPDATE expense_subcategories
+    UPDATE public.expense_subcategories
     SET name = COALESCE(p_new_name, name)
     WHERE id = p_subcategory_id
       AND deleted_at IS NULL;
@@ -108,10 +110,11 @@ CREATE OR REPLACE FUNCTION public.soft_delete_expense_subcategory(
 RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY INVOKER
+SET search_path = public, pg_temp
 AS $$
 BEGIN
     -- Only soft delete subcategory that is not already deleted
-    UPDATE expense_subcategories
+    UPDATE public.expense_subcategories
     SET deleted_at = NOW(),
         updated_at = NOW()
     WHERE id = p_subcategory_id
