@@ -1,3 +1,198 @@
+-- =========================================
+-- 01. Function: create_income_transaction
+-- =========================================
+-- Create Income Transaction
+-- Purpose: Create a new income transaction with validation
+-- Parameters: account_id, amount, currency, source_id, notes
+-- Returns: UUID of created transaction
+-- Security: INVOKER (relies on RLS and triggers for validation)
+-- RLS: Account and source ownership validated by RLS, transaction created with proper user_id
+CREATE OR REPLACE FUNCTION create_income_transaction(
+    p_account_id UUID,
+    p_amount DECIMAL,
+    p_currency VARCHAR DEFAULT 'USD',
+    p_source_id UUID DEFAULT NULL,
+    p_notes TEXT DEFAULT NULL
+)
+RETURNS UUID
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = pg_catalog, public
+VOLATILE
+AS $$
+DECLARE
+    v_transaction_id UUID;
+    v_user_id UUID;
+BEGIN
+    -- Get current user (will be validated by RLS)
+    v_user_id := auth.uid();
+    IF v_user_id IS NULL THEN
+        RAISE EXCEPTION 'No authenticated user found';
+    END IF;
+    
+    -- Validate amount is positive
+    IF p_amount <= 0 THEN
+        RAISE EXCEPTION 'Income amount must be positive';
+    END IF;
+    
+    -- Create base transaction (triggers will validate RLS and currency matching)
+    INSERT INTO transactions (user_id, type, amount, currency, notes)
+    VALUES (v_user_id, 'income', p_amount, p_currency, p_notes)
+    RETURNING id INTO v_transaction_id;
+    
+    -- Create income details (triggers will validate account/source ownership and apply balances)
+    INSERT INTO transactions_income (
+        transaction_id,
+        account_id,
+        source_id,
+        notes
+    )
+    VALUES (
+        v_transaction_id,
+        p_account_id,
+        p_source_id,
+        'Income transaction'
+    );
+    
+    RETURN v_transaction_id;
+END;
+$$;
+
+-- =========================================
+-- 02. Function: create_expense_transaction
+-- =========================================
+-- Create Expense Transaction
+-- Purpose: Create a new expense transaction with validation
+-- Parameters: account_id, amount, currency, category_id (subcategory), payment_method, notes
+-- Returns: UUID of created transaction
+-- Security: INVOKER (relies on RLS and triggers for validation)
+-- RLS: Account and category ownership validated by RLS, transaction created with proper user_id
+CREATE OR REPLACE FUNCTION create_expense_transaction(
+    p_account_id UUID,
+    p_amount DECIMAL,
+    p_currency VARCHAR DEFAULT 'USD',
+    p_category_id UUID DEFAULT NULL,
+    p_payment_method payment_method DEFAULT 'other',
+    p_notes TEXT DEFAULT NULL
+)
+RETURNS UUID
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = pg_catalog, public
+VOLATILE
+AS $$
+DECLARE
+    v_transaction_id UUID;
+    v_user_id UUID;
+BEGIN
+    -- Get current user (will be validated by RLS)
+    v_user_id := auth.uid();
+    IF v_user_id IS NULL THEN
+        RAISE EXCEPTION 'No authenticated user found';
+    END IF;
+    
+    -- Validate amount is positive
+    IF p_amount <= 0 THEN
+        RAISE EXCEPTION 'Expense amount must be positive';
+    END IF;
+    
+    -- Create base transaction (triggers will validate RLS and currency matching)
+    INSERT INTO transactions (user_id, type, amount, currency, notes)
+    VALUES (v_user_id, 'expense', p_amount, p_currency, p_notes)
+    RETURNING id INTO v_transaction_id;
+    
+    -- Create expense details (triggers will validate account/category ownership and apply balances)
+    INSERT INTO transactions_expense (
+        transaction_id,
+        account_id,
+        category_id,
+        payment_method
+    )
+    VALUES (
+        v_transaction_id,
+        p_account_id,
+        p_category_id,
+        p_payment_method
+    );
+    
+    RETURN v_transaction_id;
+END;
+$$;
+
+-- =========================================
+-- 03. Function: execute_transfer
+-- =========================================
+-- Atomic Transfer Between Accounts
+-- Purpose: Safely transfer funds between two accounts with validation
+-- Parameters: from_account, to_account, amount, currency, optional notes and fees
+-- Returns: UUID of created transaction
+-- Security: INVOKER (relies on RLS and triggers for validation)
+-- RLS: Account ownership validated by RLS, transaction details created with proper user_id
+-- NOTE: Uses new transactions_transfer table instead of dual transactions
+CREATE OR REPLACE FUNCTION execute_transfer(
+    p_from_account UUID,
+    p_to_account UUID,
+    p_amount DECIMAL,
+    p_currency VARCHAR DEFAULT 'USD',
+    p_transfer_method transfer_method DEFAULT 'other',
+    p_fees DECIMAL DEFAULT 0,
+    p_notes TEXT DEFAULT NULL
+)
+RETURNS UUID
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = pg_catalog, public
+VOLATILE
+AS $$
+DECLARE
+    v_transaction_id UUID;
+    v_user_id UUID;
+BEGIN
+    -- Get current user (will be validated by RLS)
+    v_user_id := auth.uid();
+    IF v_user_id IS NULL THEN
+        RAISE EXCEPTION 'No authenticated user found';
+    END IF;
+    
+    -- Validate amount is positive
+    IF p_amount <= 0 THEN
+        RAISE EXCEPTION 'Transfer amount must be positive';
+    END IF;
+    
+    -- Validate accounts are different
+    IF p_from_account = p_to_account THEN
+        RAISE EXCEPTION 'Cannot transfer from account to itself';
+    END IF;
+    
+    -- Create base transaction (triggers will validate RLS and currency matching)
+    INSERT INTO transactions (user_id, type, amount, currency, notes)
+    VALUES (v_user_id, 'transfer', p_amount, p_currency, 
+            COALESCE(p_notes, 'Transfer between accounts'))
+    RETURNING id INTO v_transaction_id;
+    
+    -- Create transfer details (triggers will validate account ownership and apply balances)
+    INSERT INTO transactions_transfer (
+        transaction_id, 
+        from_account, 
+        to_account, 
+        transfer_method, 
+        fees
+    )
+    VALUES (
+        v_transaction_id,
+        p_from_account,
+        p_to_account,
+        p_transfer_method,
+        COALESCE(p_fees, 0)
+    );
+    
+    RETURN v_transaction_id;
+END;
+$$;
+
+-- =========================================
+-- 04. Function: hard_delete_transaction
+-- =========================================
 -- Hard delete transaction (and all related data)
 CREATE OR REPLACE FUNCTION hard_delete_transaction(transaction_id UUID)
 RETURNS BOOLEAN
@@ -48,6 +243,9 @@ BEGIN
 END;
 $$;
 
+-- =========================================
+-- 05. Function: hard_delete_recurring_transaction
+-- =========================================
 -- Hard delete recurring transaction template
 CREATE OR REPLACE FUNCTION hard_delete_recurring_transaction(recurring_id UUID)
 RETURNS BOOLEAN
@@ -95,37 +293,99 @@ BEGIN
 END;
 $$;
 
--- Get Transaction Count for User
-CREATE OR REPLACE FUNCTION get_user_transaction_count(
-    p_user_id UUID DEFAULT NULL,
-    p_transaction_type transaction_type DEFAULT NULL,
-    p_start_date DATE DEFAULT NULL,
+-- =========================================
+-- 06. Function: create_recurring_schedule
+-- =========================================
+-- Create Recurring Transaction Schedule
+-- Purpose: Set up a recurring transaction based on a template
+-- Parameters: template_transaction_id, frequency details, date range
+-- Returns: UUID of recurring schedule
+-- Security: INVOKER (relies on RLS)
+-- RLS: Template transaction ownership validated by RLS
+CREATE OR REPLACE FUNCTION create_recurring_schedule(
+    p_template_transaction_id UUID,
+    p_frequency recurrence_frequency,
+    p_interval INTEGER DEFAULT 1,
+    p_start_date DATE DEFAULT CURRENT_DATE,
     p_end_date DATE DEFAULT NULL
 )
-RETURNS INTEGER
+RETURNS UUID
 LANGUAGE plpgsql
 SECURITY INVOKER
 SET search_path = pg_catalog, public
-STABLE
+VOLATILE
 AS $$
 DECLARE
+    v_recurring_id UUID;
     v_user_id UUID;
-    v_count INTEGER;
+    v_next_occurrence timestamptz;
 BEGIN
-    v_user_id := COALESCE(p_user_id, auth.uid());
+    -- Get current user
+    v_user_id := auth.uid();
+    IF v_user_id IS NULL THEN
+        RAISE EXCEPTION 'No authenticated user found';
+    END IF;
     
-    SELECT COUNT(*)::INTEGER INTO v_count
-    FROM transactions
-    WHERE user_id = v_user_id
-      AND deleted_at IS NULL
-      AND (p_transaction_type IS NULL OR type = p_transaction_type)
-      AND (p_start_date IS NULL OR created_at::DATE >= p_start_date)
-      AND (p_end_date IS NULL OR created_at::DATE <= p_end_date);
-      
-    RETURN v_count;
+    -- Validate interval
+    IF p_interval <= 0 THEN
+        RAISE EXCEPTION 'Interval must be positive';
+    END IF;
+    
+    -- Calculate next occurrence
+    v_next_occurrence := p_start_date::timestamptz;
+    
+    -- Create recurring schedule (trigger will validate template exists and set action_by)
+    INSERT INTO transactions_recurring (
+        transaction_template_id,
+        frequency,
+        interval,
+        start_date,
+        end_date,
+        next_occurrence,
+        user_id
+    )
+    VALUES (
+        p_template_transaction_id,
+        p_frequency,
+        p_interval,
+        p_start_date,
+        p_end_date,
+        v_next_occurrence,
+        v_user_id
+    )
+    RETURNING id INTO v_recurring_id;
+    
+    RETURN v_recurring_id;
 END;
 $$;
 
+-- =========================================
+-- 07. Function: execute_due_recurring_transactions
+-- =========================================
+-- Process Due Recurring Transactions
+-- Purpose: Execute recurring transactions that are due (client-callable wrapper)
+-- Parameters: optional limit on number to process
+-- Returns: TABLE with count and created transaction IDs
+-- Security: INVOKER (relies on RLS and existing process_recurring_transactions trigger function)
+-- RLS: Only processes recurring transactions owned by current user
+CREATE OR REPLACE FUNCTION execute_due_recurring_transactions(
+    p_limit INTEGER DEFAULT NULL
+)
+RETURNS TABLE(processed_count INTEGER, new_transaction_ids UUID[])
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = pg_catalog, public
+VOLATILE
+AS $$
+BEGIN
+    -- Call the existing trigger function that handles RLS properly
+    RETURN QUERY SELECT * FROM process_recurring_transactions();
+END;
+$$;
+
+-- =========================================
+-- 08. Function: schedule_recurring_processing
+-- =========================================
 -- Schedule Recurring Transaction Processing
 -- Purpose: Run all due recurring transactions and log audit trail.
 -- Parameters: None
@@ -175,6 +435,9 @@ $$;
 -- Note: Uncomment the following line if pg_cron extension is available
 SELECT cron.schedule('process-recurring', '0 0 * * *', 'SELECT schedule_recurring_processing();');
 
+-- =========================================
+-- 09. Function: get_recent_transactions
+-- =========================================
 -- Get Recent Transactions
 -- Purpose: Retrieve most recent transactions for dashboard/overview display.
 -- Parameters:
@@ -243,6 +506,9 @@ BEGIN
 END;
 $$;
 
+-- =========================================
+-- 10. Function: get_user_transactions
+-- =========================================
 -- Get User Transaction History (with pagination)
 -- Purpose: Retrieve paginated transaction history for user dashboard
 -- Parameters: limit, offset, date filters
@@ -328,38 +594,43 @@ BEGIN
 END;
 $$;
 
--- Get Transaction Direction
--- Purpose: Compute transaction direction based on type and amount
--- Parameters: transaction_type, amount
--- Returns: transaction_direction enum
--- Security: INVOKER (pure computation)
--- RLS: N/A (no data access)
-CREATE OR REPLACE FUNCTION compute_transaction_direction(
-    p_type transaction_type, 
-    p_amount DECIMAL
+-- =========================================
+-- 11. Function: get_user_transaction_count
+-- =========================================
+-- Get Transaction Count for User
+CREATE OR REPLACE FUNCTION get_user_transaction_count(
+    p_user_id UUID DEFAULT NULL,
+    p_transaction_type transaction_type DEFAULT NULL,
+    p_start_date DATE DEFAULT NULL,
+    p_end_date DATE DEFAULT NULL
 )
-RETURNS transaction_direction
-LANGUAGE sql
-IMMUTABLE
+RETURNS INTEGER
+LANGUAGE plpgsql
 SECURITY INVOKER
 SET search_path = pg_catalog, public
+STABLE
 AS $$
-    SELECT CASE
-        WHEN p_type = 'income' THEN 'inflow'::transaction_direction
-        WHEN p_type = 'expense' THEN 'outflow'::transaction_direction
-        WHEN p_type = 'borrow' AND p_amount >= 0 THEN 'inflow'::transaction_direction
-        WHEN p_type = 'borrow' AND p_amount < 0 THEN 'outflow'::transaction_direction
-        WHEN p_type = 'lend' AND p_amount >= 0 THEN 'outflow'::transaction_direction
-        WHEN p_type = 'lend' AND p_amount < 0 THEN 'inflow'::transaction_direction
-        WHEN p_type = 'investment' AND p_amount >= 0 THEN 'outflow'::transaction_direction
-        WHEN p_type = 'investment' AND p_amount < 0 THEN 'inflow'::transaction_direction
-        WHEN p_type = 'adjustment' AND p_amount >= 0 THEN 'inflow'::transaction_direction
-        WHEN p_type = 'adjustment' AND p_amount < 0 THEN 'outflow'::transaction_direction
-        WHEN p_type = 'transfer' THEN 'neutral'::transaction_direction
-        ELSE 'unknown'::transaction_direction
-    END;
+DECLARE
+    v_user_id UUID;
+    v_count INTEGER;
+BEGIN
+    v_user_id := COALESCE(p_user_id, auth.uid());
+    
+    SELECT COUNT(*)::INTEGER INTO v_count
+    FROM transactions
+    WHERE user_id = v_user_id
+      AND deleted_at IS NULL
+      AND (p_transaction_type IS NULL OR type = p_transaction_type)
+      AND (p_start_date IS NULL OR created_at::DATE >= p_start_date)
+      AND (p_end_date IS NULL OR created_at::DATE <= p_end_date);
+      
+    RETURN v_count;
+END;
 $$;
 
+-- =========================================
+-- 12. Function: get_recurring_schedules
+-- =========================================
 -- Get User's Recurring Schedules
 -- Purpose: List all active recurring transaction schedules for user
 -- Parameters: user_id (implicit via RLS)
@@ -405,273 +676,9 @@ BEGIN
 END;
 $$;
 
--- Process Due Recurring Transactions
--- Purpose: Execute recurring transactions that are due (client-callable wrapper)
--- Parameters: optional limit on number to process
--- Returns: TABLE with count and created transaction IDs
--- Security: INVOKER (relies on RLS and existing process_recurring_transactions trigger function)
--- RLS: Only processes recurring transactions owned by current user
-CREATE OR REPLACE FUNCTION execute_due_recurring_transactions(
-    p_limit INTEGER DEFAULT NULL
-)
-RETURNS TABLE(processed_count INTEGER, new_transaction_ids UUID[])
-LANGUAGE plpgsql
-SECURITY INVOKER
-SET search_path = pg_catalog, public
-VOLATILE
-AS $$
-BEGIN
-    -- Call the existing trigger function that handles RLS properly
-    RETURN QUERY SELECT * FROM process_recurring_transactions();
-END;
-$$;
-
--- Create Recurring Transaction Schedule
--- Purpose: Set up a recurring transaction based on a template
--- Parameters: template_transaction_id, frequency details, date range
--- Returns: UUID of recurring schedule
--- Security: INVOKER (relies on RLS)
--- RLS: Template transaction ownership validated by RLS
-CREATE OR REPLACE FUNCTION create_recurring_schedule(
-    p_template_transaction_id UUID,
-    p_frequency recurrence_frequency,
-    p_interval INTEGER DEFAULT 1,
-    p_start_date DATE DEFAULT CURRENT_DATE,
-    p_end_date DATE DEFAULT NULL
-)
-RETURNS UUID
-LANGUAGE plpgsql
-SECURITY INVOKER
-SET search_path = pg_catalog, public
-VOLATILE
-AS $$
-DECLARE
-    v_recurring_id UUID;
-    v_user_id UUID;
-    v_next_occurrence timestamptz;
-BEGIN
-    -- Get current user
-    v_user_id := auth.uid();
-    IF v_user_id IS NULL THEN
-        RAISE EXCEPTION 'No authenticated user found';
-    END IF;
-    
-    -- Validate interval
-    IF p_interval <= 0 THEN
-        RAISE EXCEPTION 'Interval must be positive';
-    END IF;
-    
-    -- Calculate next occurrence
-    v_next_occurrence := p_start_date::timestamptz;
-    
-    -- Create recurring schedule (trigger will validate template exists and set action_by)
-    INSERT INTO transactions_recurring (
-        transaction_template_id,
-        frequency,
-        interval,
-        start_date,
-        end_date,
-        next_occurrence,
-        user_id
-    )
-    VALUES (
-        p_template_transaction_id,
-        p_frequency,
-        p_interval,
-        p_start_date,
-        p_end_date,
-        v_next_occurrence,
-        v_user_id
-    )
-    RETURNING id INTO v_recurring_id;
-    
-    RETURN v_recurring_id;
-END;
-$$;
-
--- Atomic Transfer Between Accounts
--- Purpose: Safely transfer funds between two accounts with validation
--- Parameters: from_account, to_account, amount, currency, optional notes and fees
--- Returns: UUID of created transaction
--- Security: INVOKER (relies on RLS and triggers for validation)
--- RLS: Account ownership validated by RLS, transaction details created with proper user_id
--- NOTE: Uses new transactions_transfer table instead of dual transactions
-CREATE OR REPLACE FUNCTION execute_transfer(
-    p_from_account UUID,
-    p_to_account UUID,
-    p_amount DECIMAL,
-    p_currency VARCHAR DEFAULT 'USD',
-    p_transfer_method transfer_method DEFAULT 'other',
-    p_fees DECIMAL DEFAULT 0,
-    p_notes TEXT DEFAULT NULL
-)
-RETURNS UUID
-LANGUAGE plpgsql
-SECURITY INVOKER
-SET search_path = pg_catalog, public
-VOLATILE
-AS $$
-DECLARE
-    v_transaction_id UUID;
-    v_user_id UUID;
-BEGIN
-    -- Get current user (will be validated by RLS)
-    v_user_id := auth.uid();
-    IF v_user_id IS NULL THEN
-        RAISE EXCEPTION 'No authenticated user found';
-    END IF;
-    
-    -- Validate amount is positive
-    IF p_amount <= 0 THEN
-        RAISE EXCEPTION 'Transfer amount must be positive';
-    END IF;
-    
-    -- Validate accounts are different
-    IF p_from_account = p_to_account THEN
-        RAISE EXCEPTION 'Cannot transfer from account to itself';
-    END IF;
-    
-    -- Create base transaction (triggers will validate RLS and currency matching)
-    INSERT INTO transactions (user_id, type, amount, currency, notes)
-    VALUES (v_user_id, 'transfer', p_amount, p_currency, 
-            COALESCE(p_notes, 'Transfer between accounts'))
-    RETURNING id INTO v_transaction_id;
-    
-    -- Create transfer details (triggers will validate account ownership and apply balances)
-    INSERT INTO transactions_transfer (
-        transaction_id, 
-        from_account, 
-        to_account, 
-        transfer_method, 
-        fees
-    )
-    VALUES (
-        v_transaction_id,
-        p_from_account,
-        p_to_account,
-        p_transfer_method,
-        COALESCE(p_fees, 0)
-    );
-    
-    RETURN v_transaction_id;
-END;
-$$;
-
--- Create Expense Transaction
--- Purpose: Create a new expense transaction with validation
--- Parameters: account_id, amount, currency, category_id (subcategory), payment_method, notes
--- Returns: UUID of created transaction
--- Security: INVOKER (relies on RLS and triggers for validation)
--- RLS: Account and category ownership validated by RLS, transaction created with proper user_id
-CREATE OR REPLACE FUNCTION create_expense_transaction(
-    p_account_id UUID,
-    p_amount DECIMAL,
-    p_currency VARCHAR DEFAULT 'USD',
-    p_category_id UUID DEFAULT NULL,
-    p_payment_method payment_method DEFAULT 'other',
-    p_notes TEXT DEFAULT NULL
-)
-RETURNS UUID
-LANGUAGE plpgsql
-SECURITY INVOKER
-SET search_path = pg_catalog, public
-VOLATILE
-AS $$
-DECLARE
-    v_transaction_id UUID;
-    v_user_id UUID;
-BEGIN
-    -- Get current user (will be validated by RLS)
-    v_user_id := auth.uid();
-    IF v_user_id IS NULL THEN
-        RAISE EXCEPTION 'No authenticated user found';
-    END IF;
-    
-    -- Validate amount is positive
-    IF p_amount <= 0 THEN
-        RAISE EXCEPTION 'Expense amount must be positive';
-    END IF;
-    
-    -- Create base transaction (triggers will validate RLS and currency matching)
-    INSERT INTO transactions (user_id, type, amount, currency, notes)
-    VALUES (v_user_id, 'expense', p_amount, p_currency, p_notes)
-    RETURNING id INTO v_transaction_id;
-    
-    -- Create expense details (triggers will validate account/category ownership and apply balances)
-    INSERT INTO transactions_expense (
-        transaction_id,
-        account_id,
-        category_id,
-        payment_method
-    )
-    VALUES (
-        v_transaction_id,
-        p_account_id,
-        p_category_id,
-        p_payment_method
-    );
-    
-    RETURN v_transaction_id;
-END;
-$$;
-
--- Create Income Transaction
--- Purpose: Create a new income transaction with validation
--- Parameters: account_id, amount, currency, source_id, notes
--- Returns: UUID of created transaction
--- Security: INVOKER (relies on RLS and triggers for validation)
--- RLS: Account and source ownership validated by RLS, transaction created with proper user_id
-CREATE OR REPLACE FUNCTION create_income_transaction(
-    p_account_id UUID,
-    p_amount DECIMAL,
-    p_currency VARCHAR DEFAULT 'USD',
-    p_source_id UUID DEFAULT NULL,
-    p_notes TEXT DEFAULT NULL
-)
-RETURNS UUID
-LANGUAGE plpgsql
-SECURITY INVOKER
-SET search_path = pg_catalog, public
-VOLATILE
-AS $$
-DECLARE
-    v_transaction_id UUID;
-    v_user_id UUID;
-BEGIN
-    -- Get current user (will be validated by RLS)
-    v_user_id := auth.uid();
-    IF v_user_id IS NULL THEN
-        RAISE EXCEPTION 'No authenticated user found';
-    END IF;
-    
-    -- Validate amount is positive
-    IF p_amount <= 0 THEN
-        RAISE EXCEPTION 'Income amount must be positive';
-    END IF;
-    
-    -- Create base transaction (triggers will validate RLS and currency matching)
-    INSERT INTO transactions (user_id, type, amount, currency, notes)
-    VALUES (v_user_id, 'income', p_amount, p_currency, p_notes)
-    RETURNING id INTO v_transaction_id;
-    
-    -- Create income details (triggers will validate account/source ownership and apply balances)
-    INSERT INTO transactions_income (
-        transaction_id,
-        account_id,
-        source_id,
-        notes
-    )
-    VALUES (
-        v_transaction_id,
-        p_account_id,
-        p_source_id,
-        'Income transaction'
-    );
-    
-    RETURN v_transaction_id;
-END;
-$$;
-
+-- =========================================
+-- 13. Function: get_income_summary
+-- =========================================
 -- Income Summary by Source and Account
 -- Purpose: Aggregate income transactions for reporting/analytics
 -- Parameters: user_id, date range
@@ -717,6 +724,9 @@ BEGIN
 END;
 $$;
 
+-- =========================================
+-- 14. Function: get_expense_summary
+-- =========================================
 -- Expense Summary by Category and Account
 -- Purpose: Aggregate expense transactions for reporting/analytics
 -- Parameters: user_id (implicit via RLS), date range
@@ -767,6 +777,9 @@ BEGIN
 END;
 $$;
 
+-- =========================================
+-- 15. Function: get_investment_summary
+-- =========================================
 -- Investment Summary by Asset Type
 -- Purpose: Aggregate investment transactions for portfolio analysis
 -- Parameters: user_id (implicit via RLS), date range
@@ -815,6 +828,9 @@ BEGIN
 END;
 $$;
 
+-- =========================================
+-- 16. Function: get_borrow_lend_summary
+-- =========================================
 -- Borrowing and Lending Summary
 -- Purpose: Get overview of outstanding loans and receivables
 -- Parameters: user_id (implicit via RLS)
@@ -876,7 +892,45 @@ BEGIN
 END;
 $$;
 
+-- =========================================
+-- 17. Function: compute_transaction_direction
+-- =========================================
+-- Get Transaction Direction
+-- Purpose: Compute transaction direction based on type and amount
+-- Parameters: transaction_type, amount
+-- Returns: transaction_direction enum
+-- Security: INVOKER (pure computation)
+-- RLS: N/A (no data access)
+CREATE OR REPLACE FUNCTION compute_transaction_direction(
+    p_type transaction_type, 
+    p_amount DECIMAL
+)
+RETURNS transaction_direction
+LANGUAGE sql
+IMMUTABLE
+SECURITY INVOKER
+SET search_path = pg_catalog, public
+AS $$
+    SELECT CASE
+        WHEN p_type = 'income' THEN 'inflow'::transaction_direction
+        WHEN p_type = 'expense' THEN 'outflow'::transaction_direction
+        WHEN p_type = 'borrow' AND p_amount >= 0 THEN 'inflow'::transaction_direction
+        WHEN p_type = 'borrow' AND p_amount < 0 THEN 'outflow'::transaction_direction
+        WHEN p_type = 'lend' AND p_amount >= 0 THEN 'outflow'::transaction_direction
+        WHEN p_type = 'lend' AND p_amount < 0 THEN 'inflow'::transaction_direction
+        WHEN p_type = 'investment' AND p_amount >= 0 THEN 'outflow'::transaction_direction
+        WHEN p_type = 'investment' AND p_amount < 0 THEN 'inflow'::transaction_direction
+        WHEN p_type = 'adjustment' AND p_amount >= 0 THEN 'inflow'::transaction_direction
+        WHEN p_type = 'adjustment' AND p_amount < 0 THEN 'outflow'::transaction_direction
+        WHEN p_type = 'transfer' THEN 'neutral'::transaction_direction
+        ELSE 'unknown'::transaction_direction
+    END;
+$$;
 
+
+-- ================================
+-- Grant Permissions
+-- ================================
 GRANT EXECUTE ON FUNCTION get_user_transaction_count(UUID, transaction_type, DATE, DATE) TO authenticated;
 GRANT EXECUTE ON FUNCTION schedule_recurring_processing() TO authenticated;
 GRANT EXECUTE ON FUNCTION get_recent_transactions(INTEGER) TO authenticated;
@@ -894,7 +948,9 @@ GRANT EXECUTE ON FUNCTION get_investment_summary(timestamptz, timestamptz) TO au
 GRANT EXECUTE ON FUNCTION get_borrow_lend_summary() TO authenticated;
 
 
-
+-- ================================
+-- Function Documentation
+-- ================================
 COMMENT ON FUNCTION get_recent_transactions(INTEGER) IS 'RLS-compliant recent transactions query';
 COMMENT ON FUNCTION create_recurring_schedule(UUID, recurrence_frequency, INTEGER, DATE, DATE) IS 
 'RLS-compliant function to create recurring transaction schedules';
