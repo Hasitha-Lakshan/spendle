@@ -207,17 +207,37 @@ CREATE POLICY delete_counterparties_combined ON counterparties
 -- =========================================
 ALTER TABLE transactions ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY select_own_transactions ON transactions
-    FOR SELECT USING (user_id = (select auth.uid()) AND deleted_at IS NULL);
-CREATE POLICY insert_own_transactions ON transactions
-    FOR INSERT WITH CHECK (user_id = (select auth.uid()));
-CREATE POLICY update_own_transactions ON transactions
-    FOR UPDATE USING (user_id = (select auth.uid()) AND deleted_at IS NULL)
-    WITH CHECK (user_id = (select auth.uid()) AND deleted_at IS NULL);
-CREATE POLICY delete_transactions_combined ON transactions
-    FOR DELETE USING (
+-- SELECT
+CREATE POLICY select_transactions_combined ON transactions
+    FOR SELECT USING (
         (user_id = (select auth.uid()) AND deleted_at IS NULL)
         OR public.check_admin_permissions()
+    );
+
+-- INSERT
+CREATE POLICY insert_transactions_combined ON transactions
+    FOR INSERT WITH CHECK (
+        user_id = (select auth.uid())
+        OR public.check_admin_permissions()
+    );
+
+-- UPDATE (normal update for active, soft-delete allowed, admin override)
+CREATE POLICY update_transactions_combined ON transactions
+    FOR UPDATE
+    USING (
+        (user_id = (select auth.uid()) AND deleted_at IS NULL)  -- normal update
+        OR public.check_admin_permissions()                     -- admin override
+    )
+    WITH CHECK (
+        (user_id = (select auth.uid()) AND deleted_at IS NULL)  -- normal update
+        OR (user_id = (select auth.uid()))                      -- soft-delete (owner can set deleted_at)
+        OR public.check_admin_permissions()                     -- admin override
+    );
+
+-- DELETE (only admins, only if soft-deleted)
+CREATE POLICY delete_transactions_combined ON transactions
+    FOR DELETE USING (
+        public.check_admin_permissions() AND deleted_at IS NOT NULL
     );
 
 -- =========================================
@@ -232,60 +252,19 @@ DECLARE
     tbl TEXT;
 BEGIN
     FOREACH tbl IN ARRAY trans_details LOOP
-        -- Enable RLS on the table
+        -- Enable RLS
         EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY;', tbl);
 
-        -- Drop existing policies to allow safe re-runs
-        EXECUTE format('DROP POLICY IF EXISTS select_own_%1$I ON %1$I;', tbl);
-        EXECUTE format('DROP POLICY IF EXISTS insert_own_%1$I ON %1$I;', tbl);
-        EXECUTE format('DROP POLICY IF EXISTS update_own_%1$I ON %1$I;', tbl);
-        EXECUTE format('DROP POLICY IF EXISTS delete_own_%1$I ON %1$I;', tbl);
-        EXECUTE format('DROP POLICY IF EXISTS delete_admin_%1$I_soft ON %1$I;', tbl);
-        EXECUTE format('DROP POLICY IF EXISTS delete_admin_%1$I_hard ON %1$I;', tbl);
+        -- Drop old policies
+        EXECUTE format('DROP POLICY IF EXISTS select_%1$I_combined ON %1$I;', tbl);
+        EXECUTE format('DROP POLICY IF EXISTS insert_%1$I_combined ON %1$I;', tbl);
+        EXECUTE format('DROP POLICY IF EXISTS update_%1$I_combined ON %1$I;', tbl);
+        EXECUTE format('DROP POLICY IF EXISTS delete_%1$I_combined ON %1$I;', tbl);
 
-        -- Create SELECT policy
+        -- SELECT
         EXECUTE format($f$
-            CREATE POLICY select_own_%1$I ON %1$I
+            CREATE POLICY select_%1$I_combined ON %1$I
             FOR SELECT USING (
-                EXISTS (
-                    SELECT 1 FROM transactions t
-                    WHERE t.id = %1$I.transaction_id
-                    AND t.user_id = (select auth.uid())
-                    AND t.deleted_at IS NULL
-                )
-            );
-        $f$, tbl);
-
-        -- Create INSERT policy
-        EXECUTE format($f$
-            CREATE POLICY insert_own_%1$I ON %1$I
-            FOR INSERT WITH CHECK (
-                EXISTS (
-                    SELECT 1 FROM transactions t
-                    WHERE t.id = %1$I.transaction_id
-                    AND t.user_id = (select auth.uid())
-                    AND t.deleted_at IS NULL
-                )
-            );
-        $f$, tbl);
-
-        -- Create UPDATE policy
-        EXECUTE format($f$
-            CREATE POLICY update_own_%1$I ON %1$I
-            FOR UPDATE USING (
-                EXISTS (
-                    SELECT 1 FROM transactions t
-                    WHERE t.id = %1$I.transaction_id
-                    AND t.user_id = (select auth.uid())
-                    AND t.deleted_at IS NULL
-                )
-            );
-        $f$, tbl);
-
-        -- Create DELETE policy with soft-delete safeguard
-        EXECUTE format($f$
-            CREATE POLICY delete_%1$I_combined ON %1$I
-            FOR DELETE USING (
                 EXISTS (
                     SELECT 1 FROM transactions t
                     WHERE t.id = %1$I.transaction_id
@@ -295,26 +274,97 @@ BEGIN
                 OR public.check_admin_permissions()
             );
         $f$, tbl);
+
+        -- INSERT
+        EXECUTE format($f$
+            CREATE POLICY insert_%1$I_combined ON %1$I
+            FOR INSERT WITH CHECK (
+                EXISTS (
+                    SELECT 1 FROM transactions t
+                    WHERE t.id = %1$I.transaction_id
+                    AND t.user_id = (select auth.uid())
+                    AND t.deleted_at IS NULL
+                )
+                OR public.check_admin_permissions()
+            );
+        $f$, tbl);
+
+        -- UPDATE
+        EXECUTE format($f$
+            CREATE POLICY update_%1$I_combined ON %1$I
+            FOR UPDATE
+            USING (
+                EXISTS (
+                    SELECT 1 FROM transactions t
+                    WHERE t.id = %1$I.transaction_id
+                    AND t.user_id = (select auth.uid())
+                    AND t.deleted_at IS NULL
+                )
+                OR public.check_admin_permissions()
+            )
+            WITH CHECK (
+                EXISTS (
+                    SELECT 1 FROM transactions t
+                    WHERE t.id = %1$I.transaction_id
+                    AND t.user_id = (select auth.uid())
+                    AND t.deleted_at IS NULL
+                )
+                OR public.check_admin_permissions()
+            );
+        $f$, tbl);
+
+        -- DELETE (only admins, only if parent transaction is soft deleted)
+        EXECUTE format($f$
+            CREATE POLICY delete_%1$I_combined ON %1$I
+            FOR DELETE USING (
+                EXISTS (
+                    SELECT 1 FROM transactions t
+                    WHERE t.id = %1$I.transaction_id
+                    AND t.deleted_at IS NOT NULL
+                )
+                AND public.check_admin_permissions()
+            );
+        $f$, tbl);
     END LOOP;
 END;
 $$;
 
 -- =========================================
--- RECURRING TRANSACTIONS
+-- TRANSACTIONS_RECURRING
 -- =========================================
 ALTER TABLE transactions_recurring ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY select_own_transactions_recurring ON transactions_recurring
-    FOR SELECT USING (user_id = (select auth.uid()) AND deleted_at IS NULL);
-CREATE POLICY insert_own_transactions_recurring ON transactions_recurring
-    FOR INSERT WITH CHECK (user_id = (select auth.uid()));
-CREATE POLICY update_own_transactions_recurring ON transactions_recurring
-    FOR UPDATE USING (user_id = (select auth.uid()) AND deleted_at IS NULL)
-    WITH CHECK (user_id = (select auth.uid()) AND deleted_at IS NULL);
-CREATE POLICY delete_transactions_recurring_combined ON transactions_recurring
-    FOR DELETE USING (
+-- SELECT
+CREATE POLICY select_transactions_recurring_combined ON transactions_recurring
+    FOR SELECT USING (
         (user_id = (select auth.uid()) AND deleted_at IS NULL)
         OR public.check_admin_permissions()
+    );
+
+-- INSERT
+CREATE POLICY insert_transactions_recurring_combined ON transactions_recurring
+    FOR INSERT WITH CHECK (
+        user_id = (select auth.uid())
+        OR public.check_admin_permissions()
+    );
+
+-- UPDATE
+CREATE POLICY update_transactions_recurring_combined ON transactions_recurring
+    FOR UPDATE
+    USING (
+        (user_id = (select auth.uid()) AND deleted_at IS NULL) -- normal updates only
+        OR public.check_admin_permissions()
+    )
+    WITH CHECK (
+        (user_id = (select auth.uid()) AND deleted_at IS NULL) -- normal updates only
+        OR (user_id = (select auth.uid()))                     -- soft-delete allowed
+        OR public.check_admin_permissions()
+    );
+
+-- DELETE (only admins, only if soft-deleted)
+CREATE POLICY delete_transactions_recurring_combined ON transactions_recurring
+    FOR DELETE USING (
+        public.check_admin_permissions() AND deleted_at IS NOT NULL
     );
 
 -- =========================================

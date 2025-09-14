@@ -474,7 +474,7 @@ $$;
 SELECT cron.schedule(
   'cleanup_api_rate_limits_daily',
   '0 0 * * *',
-  $$ SELECT cleanup_old_rate_limits(); $$
+  $$ SELECT cleanup_old_rate_limits(24); $$  -- explicitly pass 24 hours
 );
 
 -- =========================================
@@ -564,7 +564,6 @@ SELECT cron.schedule(
 GRANT EXECUTE ON FUNCTION initialize_user_defaults(UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION check_rate_limit(VARCHAR, INTEGER, INTEGER) TO authenticated;
 GRANT EXECUTE ON FUNCTION check_admin_permissions() TO authenticated;
-GRANT EXECUTE ON FUNCTION cleanup_old_rate_limits() TO authenticated;
 
 
 -- ================================
