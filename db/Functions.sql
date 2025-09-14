@@ -275,11 +275,9 @@ $$;
 
 -- Grant execute permissions to authenticated users for client-facing functions
 GRANT EXECUTE ON FUNCTION get_user_account_summary() TO authenticated;
-GRANT EXECUTE ON FUNCTION check_admin_permissions() TO authenticated;
 GRANT EXECUTE ON FUNCTION get_user_default_currency(UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION format_currency_amount(DECIMAL, VARCHAR) TO authenticated;
 GRANT EXECUTE ON FUNCTION get_user_database_stats(UUID) TO authenticated;
-GRANT EXECUTE ON FUNCTION cleanup_old_rate_limits() TO authenticated;
 
 -- ================================
 -- Function Documentation

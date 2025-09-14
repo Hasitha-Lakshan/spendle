@@ -563,6 +563,8 @@ SELECT cron.schedule(
 -- ================================
 GRANT EXECUTE ON FUNCTION initialize_user_defaults(UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION check_rate_limit(VARCHAR, INTEGER, INTEGER) TO authenticated;
+GRANT EXECUTE ON FUNCTION check_admin_permissions() TO authenticated;
+GRANT EXECUTE ON FUNCTION cleanup_old_rate_limits() TO authenticated;
 
 
 -- ================================
