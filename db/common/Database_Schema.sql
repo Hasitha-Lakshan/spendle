@@ -106,7 +106,11 @@ CREATE TABLE credit_card_accounts (
   notes TEXT,
   created_at timestamptz DEFAULT now(),
   updated_at timestamptz DEFAULT now(),
-  deleted_at timestamptz NULL DEFAULT NULL
+  deleted_at timestamptz NULL DEFAULT NULL,
+
+  CONSTRAINT chk_credit_limit CHECK (
+    credit_limit IS NULL OR current_balance <= credit_limit
+  )
 );
 
 -- Loan Accounts

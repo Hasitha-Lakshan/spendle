@@ -219,42 +219,50 @@ CREATE TRIGGER trg_currency_match_transfer
 -- 04. Function: validate_credit_limit
 -- =========================================
 -- Purpose:
---   Ensures that credit card accounts do not exceed their assigned credit limit.
---   Issues a WARNING if the current balance exceeds the credit limit.
+--   Enforces that credit card account balances never exceed their credit limits.
 --
 -- Behavior:
---   - Triggered BEFORE INSERT OR UPDATE on credit_card_accounts.
---   - Does not prevent the operation; only raises a warning for awareness.
+--   - Trigger fires BEFORE INSERT or UPDATE on public.credit_card_accounts
+--   - Compares NEW.current_balance against NEW.credit_limit
+--   - Raises an exception with a descriptive, formatted error message if the balance exceeds the limit
 --
 -- Parameters:
---   NEW (trigger record) - The credit card account row being inserted or updated
+--   - Implicit NEW record (trigger variable) representing the row being inserted or updated
 --
 -- Returns:
---   NEW - The row being processed, unchanged
+--   - NEW record if valid
+--   - Exception if NEW.current_balance > NEW.credit_limit
 --
 -- Notes:
---   - Uses SECURITY DEFINER to bypass RLS for validation
---   - Helps monitor potential over-limit situations without blocking updates
--- =========================================
-CREATE OR REPLACE FUNCTION validate_credit_limit() 
-RETURNS TRIGGER 
+--   - Uses SECURITY DEFINER to bypass potential RLS restrictions
+--   - Locks search_path to public to avoid role-mutable schema resolution issues
+--   - Uses TO_CHAR formatting for numeric values in the error message
+--   - Schema-qualified references (public.credit_card_accounts) ensure predictable table resolution
+CREATE OR REPLACE FUNCTION public.validate_credit_limit()
+RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public
 AS $$
 BEGIN
-    -- Warn if current balance exceeds credit limit
-    IF NEW.credit_limit IS NOT NULL AND NEW.current_balance > NEW.credit_limit THEN
-        RAISE WARNING 'Credit card balance (%) exceeds credit limit (%) for account %', 
-            NEW.current_balance, NEW.credit_limit, NEW.account_id;
+    IF NEW.current_balance > NEW.credit_limit THEN
+        RAISE EXCEPTION
+            USING MESSAGE = FORMAT(
+                'Credit card balance (%s) exceeds credit limit (%s) for account %s',
+                TO_CHAR(NEW.current_balance, 'FM999999999.00'),
+                TO_CHAR(NEW.credit_limit, 'FM999999999.00'),
+                NEW.account_id
+            ),
+            ERRCODE = 'check_violation';
     END IF;
     RETURN NEW;
 END;
 $$;
 
 CREATE TRIGGER trg_validate_credit_limit
-    BEFORE INSERT OR UPDATE ON credit_card_accounts
-    FOR EACH ROW EXECUTE FUNCTION validate_credit_limit();
+BEFORE INSERT OR UPDATE ON public.credit_card_accounts
+FOR EACH ROW
+EXECUTE FUNCTION public.validate_credit_limit();
 
 -- =========================================
 -- 05. Function: validate_account_balance
