@@ -135,7 +135,7 @@ BEGIN
             );
 
         WHEN 'loan' THEN
-            INSERT INTO loan_accounts(account_id, loan_type, principal_amount, outstanding_amount, interest_rate, term_months, start_date, end_date, status, notes)
+            INSERT INTO loan_accounts(account_id, loan_type, principal_amount, outstanding_amount, interest_rate, term_months, start_date, end_date, status, notes, counterparty_id, collateral)
             VALUES (
                 v_account_id,
                 COALESCE(p_details->>'loan_type', 'Personal'),
@@ -146,7 +146,9 @@ BEGIN
                 COALESCE((p_details->>'start_date')::DATE, CURRENT_DATE),
                 COALESCE((p_details->>'end_date')::DATE, CURRENT_DATE + INTERVAL '1 year'),
                 COALESCE(p_details->>'status', 'active'),
-                COALESCE(p_details->>'notes', 'Default loan account')
+                COALESCE(p_details->>'notes', 'Default loan account'),
+                (p_details->>'counterparty_id')::UUID,
+                p_details->>'collateral'
             );
 
         WHEN 'investment' THEN
@@ -637,7 +639,9 @@ BEGIN
                 term_months = COALESCE((p_update_data->>'term_months')::INT, term_months),
                 start_date = COALESCE((p_update_data->>'start_date')::DATE, start_date),
                 end_date = COALESCE((p_update_data->>'end_date')::DATE, end_date),
-                notes = COALESCE(p_update_data->>'notes', notes)
+                notes = COALESCE(p_update_data->>'notes', notes),
+                counterparty_id = COALESCE((p_update_data->>'counterparty_id')::UUID, counterparty_id),
+                collateral = COALESCE(p_update_data->>'collateral', collateral)
             WHERE account_id = p_account_id AND deleted_at IS NULL
             RETURNING to_jsonb(loan_accounts) - 'account_id' INTO v_details;
 

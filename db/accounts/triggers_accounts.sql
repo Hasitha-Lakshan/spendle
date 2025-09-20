@@ -137,51 +137,154 @@ BEGIN
         RAISE EXCEPTION 'Transaction not found or access denied';
     END IF;
 
-    -- For transfer transactions, check both accounts
-    IF TG_TABLE_NAME = 'transactions_transfer' THEN
-        SELECT currency INTO v_account_currency 
-        FROM public.accounts 
-        WHERE id = NEW.from_account 
-          AND user_id = auth.uid()
-          AND deleted_at IS NULL;
-        
-        IF v_account_currency IS NULL THEN
-            RAISE EXCEPTION 'From account not found or access denied';
-        END IF;
-        
-        IF v_tx_currency <> v_account_currency THEN
-            RAISE EXCEPTION 'Transaction currency (%) must match from_account currency (%)', v_tx_currency, v_account_currency;
-        END IF;
-        
-        SELECT currency INTO v_account_currency 
-        FROM public.accounts 
-        WHERE id = NEW.to_account 
-          AND user_id = auth.uid()
-          AND deleted_at IS NULL;
-        
-        IF v_account_currency IS NULL THEN
-            RAISE EXCEPTION 'To account not found or access denied';
-        END IF;
-        
-        IF v_tx_currency <> v_account_currency THEN
-            RAISE EXCEPTION 'Transaction currency (%) must match to_account currency (%)', v_tx_currency, v_account_currency;
-        END IF;
-    ELSE
-        -- For other transaction types, check the account
-        SELECT currency INTO v_account_currency 
-        FROM public.accounts 
-        WHERE id = NEW.account_id 
-          AND user_id = auth.uid()
-          AND deleted_at IS NULL;
-        
-        IF v_account_currency IS NULL THEN
-            RAISE EXCEPTION 'Account not found or access denied';
-        END IF;
-        
-        IF v_tx_currency <> v_account_currency THEN
-            RAISE EXCEPTION 'Transaction currency (%) must match account currency (%)', v_tx_currency, v_account_currency;
-        END IF;
-    END IF;
+    -- Handle account validation per transaction type
+    CASE TG_TABLE_NAME
+        WHEN 'transactions_transfer' THEN
+            -- From account
+            SELECT currency INTO v_account_currency 
+            FROM public.accounts 
+            WHERE id = NEW.from_account
+              AND user_id = auth.uid()
+              AND deleted_at IS NULL;
+
+            IF v_account_currency IS NULL THEN
+                RAISE EXCEPTION 'From account not found or access denied';
+            END IF;
+
+            IF v_tx_currency <> v_account_currency THEN
+                RAISE EXCEPTION 'Transaction currency (%) must match from_account currency (%)', v_tx_currency, v_account_currency;
+            END IF;
+
+            -- To account
+            SELECT currency INTO v_account_currency 
+            FROM public.accounts 
+            WHERE id = NEW.to_account
+              AND user_id = auth.uid()
+              AND deleted_at IS NULL;
+
+            IF v_account_currency IS NULL THEN
+                RAISE EXCEPTION 'To account not found or access denied';
+            END IF;
+
+            IF v_tx_currency <> v_account_currency THEN
+                RAISE EXCEPTION 'Transaction currency (%) must match to_account currency (%)', v_tx_currency, v_account_currency;
+            END IF;
+
+        WHEN 'transactions_borrow' THEN
+            -- Loan account
+            SELECT currency INTO v_account_currency
+            FROM public.accounts
+            WHERE id = NEW.loan_account_id
+              AND user_id = auth.uid()
+              AND deleted_at IS NULL;
+
+            IF v_account_currency IS NULL THEN
+                RAISE EXCEPTION 'Loan account not found or access denied';
+            END IF;
+
+            IF v_tx_currency <> v_account_currency THEN
+                RAISE EXCEPTION 'Transaction currency (%) must match loan_account currency (%)',
+                    v_tx_currency, v_account_currency;
+            END IF;
+
+            -- Disbursement account
+            SELECT currency INTO v_account_currency
+            FROM public.accounts
+            WHERE id = NEW.disbursement_account_id
+              AND user_id = auth.uid()
+              AND deleted_at IS NULL;
+
+            IF v_account_currency IS NULL THEN
+                RAISE EXCEPTION 'Disbursement account not found or access denied';
+            END IF;
+
+            IF v_tx_currency <> v_account_currency THEN
+                RAISE EXCEPTION 'Transaction currency (%) must match disbursement_account currency (%)',
+                    v_tx_currency, v_account_currency;
+            END IF;
+
+        WHEN 'transactions_lend' THEN
+            -- Receivable account
+            SELECT currency INTO v_account_currency
+            FROM public.accounts
+            WHERE id = NEW.receivable_account_id
+              AND user_id = auth.uid()
+              AND deleted_at IS NULL;
+
+            IF v_account_currency IS NULL THEN
+                RAISE EXCEPTION 'Receivable account not found or access denied';
+            END IF;
+
+            IF v_tx_currency <> v_account_currency THEN
+                RAISE EXCEPTION 'Transaction currency (%) must match receivable_account currency (%)',
+                    v_tx_currency, v_account_currency;
+            END IF;
+
+            -- Funding account
+            SELECT currency INTO v_account_currency
+            FROM public.accounts
+            WHERE id = NEW.funding_account_id
+              AND user_id = auth.uid()
+              AND deleted_at IS NULL;
+
+            IF v_account_currency IS NULL THEN
+                RAISE EXCEPTION 'Funding account not found or access denied';
+            END IF;
+
+            IF v_tx_currency <> v_account_currency THEN
+                RAISE EXCEPTION 'Transaction currency (%) must match funding_account currency (%)',
+                    v_tx_currency, v_account_currency;
+            END IF;
+
+        WHEN 'transactions_investment' THEN
+            -- Investment account
+            SELECT currency INTO v_account_currency
+            FROM public.accounts
+            WHERE id = NEW.investment_account_id
+              AND user_id = auth.uid()
+              AND deleted_at IS NULL;
+
+            IF v_account_currency IS NULL THEN
+                RAISE EXCEPTION 'Investment account not found or access denied';
+            END IF;
+
+            IF v_tx_currency <> v_account_currency THEN
+                RAISE EXCEPTION 'Transaction currency (%) must match investment_account currency (%)',
+                    v_tx_currency, v_account_currency;
+            END IF;
+
+            -- Funding account
+            SELECT currency INTO v_account_currency
+            FROM public.accounts
+            WHERE id = NEW.funding_account_id
+              AND user_id = auth.uid()
+              AND deleted_at IS NULL;
+
+            IF v_account_currency IS NULL THEN
+                RAISE EXCEPTION 'Funding account not found or access denied';
+            END IF;
+
+            IF v_tx_currency <> v_account_currency THEN
+                RAISE EXCEPTION 'Transaction currency (%) must match funding_account currency (%)',
+                    v_tx_currency, v_account_currency;
+            END IF;
+
+        ELSE
+            -- Default case: single account_id field (income, expense, adjustment)
+            SELECT currency INTO v_account_currency 
+            FROM public.accounts 
+            WHERE id = NEW.account_id
+              AND user_id = auth.uid()
+              AND deleted_at IS NULL;
+
+            IF v_account_currency IS NULL THEN
+                RAISE EXCEPTION 'Account not found or access denied';
+            END IF;
+
+            IF v_tx_currency <> v_account_currency THEN
+                RAISE EXCEPTION 'Transaction currency (%) must match account currency (%)', v_tx_currency, v_account_currency;
+            END IF;
+    END CASE;
     
     RETURN NEW;
 END;
@@ -368,11 +471,20 @@ BEGIN
         (
             t.id IN (SELECT transaction_id FROM transactions_income WHERE account_id = OLD.id AND deleted_at IS NULL) OR
             t.id IN (SELECT transaction_id FROM transactions_expense WHERE account_id = OLD.id AND deleted_at IS NULL) OR
-            t.id IN (SELECT transaction_id FROM transactions_investment WHERE account_id = OLD.id AND deleted_at IS NULL) OR
-            t.id IN (SELECT transaction_id FROM transactions_borrow WHERE account_id = OLD.id AND deleted_at IS NULL) OR
-            t.id IN (SELECT transaction_id FROM transactions_lend WHERE account_id = OLD.id AND deleted_at IS NULL) OR
-            t.id IN (SELECT transaction_id FROM transactions_transfer WHERE (from_account = OLD.id OR to_account = OLD.id) AND deleted_at IS NULL) OR
-            t.id IN (SELECT transaction_id FROM transactions_adjustment WHERE account_id = OLD.id AND deleted_at IS NULL)
+            t.id IN (SELECT transaction_id FROM transactions_investment 
+                     WHERE (investment_account_id = OLD.id OR funding_account_id = OLD.id) 
+                       AND deleted_at IS NULL) OR
+            t.id IN (SELECT transaction_id FROM transactions_borrow 
+                     WHERE (loan_account_id = OLD.id OR disbursement_account_id = OLD.id) 
+                       AND deleted_at IS NULL) OR
+            t.id IN (SELECT transaction_id FROM transactions_lend 
+                     WHERE (receivable_account_id = OLD.id OR funding_account_id = OLD.id) 
+                       AND deleted_at IS NULL) OR
+            t.id IN (SELECT transaction_id FROM transactions_transfer 
+                     WHERE (from_account = OLD.id OR to_account = OLD.id) 
+                       AND deleted_at IS NULL) OR
+            t.id IN (SELECT transaction_id FROM transactions_adjustment 
+                     WHERE account_id = OLD.id AND deleted_at IS NULL)
         )
     ) THEN
         IF TG_OP = 'UPDATE' AND (OLD.type != NEW.type OR OLD.currency != NEW.currency) THEN

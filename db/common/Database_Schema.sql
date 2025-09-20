@@ -124,6 +124,8 @@ CREATE TABLE loan_accounts (
   start_date DATE,
   end_date DATE,
   status VARCHAR(20) DEFAULT 'active', -- active, closed, defaulted
+  counterparty_id UUID REFERENCES counterparties(id),  -- lender
+  collateral TEXT,                                     -- pledged collateral
   notes TEXT,
   created_at timestamptz DEFAULT now(),
   updated_at timestamptz DEFAULT now(),
@@ -284,11 +286,15 @@ CREATE TABLE transactions_expense (
 CREATE TABLE transactions_investment (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   transaction_id UUID NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
-  account_id UUID NOT NULL REFERENCES accounts(id),
-  asset_type VARCHAR(50),           -- stock, bond, crypto, etc.
+  -- The account used to fund the investment (cash, bank, wallet)
+  funding_account_id UUID NOT NULL REFERENCES accounts(id),
+  -- The destination investment account (stocks, bonds, crypto, etc.)
+  investment_account_id UUID NOT NULL REFERENCES accounts(id),
+  asset_type VARCHAR(50),         -- stock, bond, crypto, etc.
   asset_symbol VARCHAR(50),
   platform VARCHAR(100),
   risk_level risk_level DEFAULT 'medium',
+
   created_at timestamptz DEFAULT now(),
   updated_at timestamptz DEFAULT now(),
   deleted_at timestamptz NULL DEFAULT NULL
@@ -298,11 +304,11 @@ CREATE TABLE transactions_investment (
 CREATE TABLE transactions_borrow (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   transaction_id UUID NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
-  account_id UUID NOT NULL REFERENCES accounts(id),
-  counterparty_id UUID REFERENCES counterparties(id), -- lender
-  interest_rate DECIMAL(5,2),
-  due_date DATE,
-  collateral TEXT,
+  -- The loan liability account (what you owe)
+  loan_account_id UUID NOT NULL REFERENCES accounts(id),
+  -- Where the borrowed funds are deposited (cash, bank, wallet)
+  disbursement_account_id UUID NOT NULL REFERENCES accounts(id),
+
   created_at timestamptz DEFAULT now(),
   updated_at timestamptz DEFAULT now(),
   deleted_at timestamptz NULL DEFAULT NULL
@@ -312,11 +318,15 @@ CREATE TABLE transactions_borrow (
 CREATE TABLE transactions_lend (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   transaction_id UUID NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
-  account_id UUID NOT NULL REFERENCES accounts(id),
-  counterparty_id UUID REFERENCES counterparties(id), -- borrower
+  -- The account you use to lend out money (cash, bank, wallet)
+  funding_account_id UUID NOT NULL REFERENCES accounts(id),
+  -- The receivable account representing what’s owed to you
+  receivable_account_id UUID NOT NULL REFERENCES accounts(id),
+  counterparty_id UUID REFERENCES counterparties(id),
   interest_rate DECIMAL(5,2),
   due_date DATE,
   collateral TEXT,
+
   created_at timestamptz DEFAULT now(),
   updated_at timestamptz DEFAULT now(),
   deleted_at timestamptz NULL DEFAULT NULL
