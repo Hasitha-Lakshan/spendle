@@ -120,6 +120,348 @@ END;
 $$;
 
 -- =========================================
+-- 03. Function: create_investment_transaction
+-- =========================================
+-- Create Expense Transaction
+-- Purpose: Create a new expense transaction with validation
+-- Parameters: account_id, amount, currency, category_id (subcategory), payment_method, notes
+-- Returns: UUID of created transaction
+-- Security: INVOKER (relies on RLS and triggers for validation)
+-- RLS: Account and category ownership validated by RLS, transaction created with proper user_id
+CREATE OR REPLACE FUNCTION create_investment_transaction(
+    p_funding_account_id UUID,              -- account providing the funds (cash, bank, wallet)
+    p_investment_account_id UUID,           -- account receiving the investment (investment/crypto/etc.)
+    p_amount DECIMAL,
+    p_currency VARCHAR DEFAULT 'USD',
+    p_asset_type VARCHAR DEFAULT NULL,
+    p_asset_symbol VARCHAR DEFAULT NULL,
+    p_platform VARCHAR DEFAULT NULL,
+    p_risk_level risk_level DEFAULT 'medium',
+    p_notes TEXT DEFAULT NULL
+)
+RETURNS UUID
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = pg_catalog, public
+VOLATILE
+AS $$
+DECLARE
+    v_transaction_id UUID;
+    v_user_id UUID;
+BEGIN
+    -- Get current user (validated by RLS)
+    v_user_id := auth.uid();
+    IF v_user_id IS NULL THEN
+        RAISE EXCEPTION 'No authenticated user found';
+    END IF;
+
+    -- Validate amount is positive
+    IF p_amount <= 0 THEN
+        RAISE EXCEPTION 'Investment amount must be positive';
+    END IF;
+
+    -- Create base transaction
+    INSERT INTO transactions (user_id, type, amount, currency, notes)
+    VALUES (v_user_id, 'investment', p_amount, p_currency, p_notes)
+    RETURNING id INTO v_transaction_id;
+
+    -- Create investment transaction details
+    INSERT INTO transactions_investment (
+        transaction_id,
+        funding_account_id,
+        investment_account_id,
+        asset_type,
+        asset_symbol,
+        platform,
+        risk_level,
+        created_at,
+        updated_at
+    )
+    VALUES (
+        v_transaction_id,
+        p_funding_account_id,
+        p_investment_account_id,
+        p_asset_type,
+        p_asset_symbol,
+        p_platform,
+        COALESCE(p_risk_level, 'medium'),
+        now(),
+        now()
+    );
+
+    RETURN v_transaction_id;
+END;
+$$;
+
+-- =========================================
+-- 04. Function: create_borrow_transaction
+-- =========================================
+-- Create Expense Transaction
+-- Purpose: Create a new expense transaction with validation
+-- Parameters: account_id, amount, currency, category_id (subcategory), payment_method, notes
+-- Returns: UUID of created transaction
+-- Security: INVOKER (relies on RLS and triggers for validation)
+-- RLS: Account and category ownership validated by RLS, transaction created with proper user_id
+CREATE OR REPLACE FUNCTION create_borrow_transaction(
+    p_loan_account_id UUID,             -- Loan liability account
+    p_disbursement_account_id UUID,     -- Account where borrowed funds go (cash, bank, wallet)
+    p_amount DECIMAL,
+    p_currency VARCHAR DEFAULT 'USD',
+    p_notes TEXT DEFAULT NULL
+)
+RETURNS UUID
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = pg_catalog, public
+VOLATILE
+AS $$
+DECLARE
+    v_transaction_id UUID;
+    v_user_id UUID;
+BEGIN
+    -- Get current user (validated by RLS + triggers)
+    v_user_id := auth.uid();
+    IF v_user_id IS NULL THEN
+        RAISE EXCEPTION 'No authenticated user found';
+    END IF;
+
+    -- Validate amount
+    IF p_amount <= 0 THEN
+        RAISE EXCEPTION 'Borrow amount must be positive';
+    END IF;
+
+    -- Insert base transaction
+    INSERT INTO transactions (
+        user_id,
+        type,
+        amount,
+        currency,
+        notes,
+        created_month,
+        type_amount_jsonb
+    )
+    VALUES (
+        v_user_id,
+        'borrow',
+        p_amount,
+        p_currency,
+        p_notes,
+        date_trunc('month', now())::date,
+        jsonb_build_object('type','borrow','amount',p_amount)
+    )
+    RETURNING id INTO v_transaction_id;
+
+    -- Insert borrow details (trigger will validate accounts and user)
+    INSERT INTO transactions_borrow (
+        transaction_id,
+        loan_account_id,
+        disbursement_account_id,
+        created_at,
+        updated_at
+    )
+    VALUES (
+        v_transaction_id,
+        p_loan_account_id,
+        p_disbursement_account_id,
+        now(),
+        now()
+    );
+
+    RETURN v_transaction_id;
+END;
+$$;
+
+-- =========================================
+-- 05. Function: create_lend_transaction
+-- =========================================
+-- Create Expense Transaction
+-- Purpose: Create a new expense transaction with validation
+-- Parameters: account_id, amount, currency, category_id (subcategory), payment_method, notes
+-- Returns: UUID of created transaction
+-- Security: INVOKER (relies on RLS and triggers for validation)
+-- RLS: Account and category ownership validated by RLS, transaction created with proper user_id
+CREATE OR REPLACE FUNCTION create_lend_transaction(
+    p_receivable_account_id UUID,       -- Where the receivable is tracked (loan asset)
+    p_funding_account_id UUID,          -- Account providing funds (cash, bank, wallet)
+    p_amount DECIMAL,
+    p_currency VARCHAR DEFAULT 'USD',
+    p_counterparty_id UUID DEFAULT NULL,
+    p_interest_rate DECIMAL(5,2) DEFAULT NULL,
+    p_due_date DATE DEFAULT NULL,
+    p_collateral TEXT DEFAULT NULL,
+    p_notes TEXT DEFAULT NULL
+)
+RETURNS UUID
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = pg_catalog, public
+VOLATILE
+AS $$
+DECLARE
+    v_transaction_id UUID;
+    v_user_id UUID;
+BEGIN
+    -- Get current user (validated by RLS + triggers)
+    v_user_id := auth.uid();
+    IF v_user_id IS NULL THEN
+        RAISE EXCEPTION 'No authenticated user found';
+    END IF;
+
+    -- Validate amount is positive
+    IF p_amount <= 0 THEN
+        RAISE EXCEPTION 'Lend amount must be positive';
+    END IF;
+
+    -- Create base transaction
+    INSERT INTO transactions (
+        user_id,
+        type,
+        amount,
+        currency,
+        notes,
+        created_month,
+        type_amount_jsonb
+    )
+    VALUES (
+        v_user_id,
+        'lend',
+        p_amount,
+        p_currency,
+        p_notes,
+        date_trunc('month', now())::date,
+        jsonb_build_object('type','lend','amount',p_amount)
+    )
+    RETURNING id INTO v_transaction_id;
+
+    -- Create lend transaction details (trigger validates account ownership)
+    INSERT INTO transactions_lend (
+        transaction_id,
+        receivable_account_id,
+        funding_account_id,
+        counterparty_id,
+        interest_rate,
+        due_date,
+        collateral,
+        created_at,
+        updated_at
+    )
+    VALUES (
+        v_transaction_id,
+        p_receivable_account_id,
+        p_funding_account_id,
+        p_counterparty_id,
+        p_interest_rate,
+        p_due_date,
+        p_collateral,
+        now(),
+        now()
+    );
+
+    RETURN v_transaction_id;
+END;
+$$;
+
+-- =========================================
+-- 06. Function: create_adjustment_transaction
+-- =========================================
+-- Create Expense Transaction
+-- Purpose: Create a new expense transaction with validation
+-- Parameters: account_id, amount, currency, category_id (subcategory), payment_method, notes
+-- Returns: UUID of created transaction
+-- Security: INVOKER (relies on RLS and triggers for validation)
+-- RLS: Account and category ownership validated by RLS, transaction created with proper user_id
+CREATE OR REPLACE FUNCTION create_adjustment_transaction(
+    p_account_id UUID,
+    p_amount DECIMAL,
+    p_currency VARCHAR DEFAULT 'USD',
+    p_reason TEXT DEFAULT NULL,
+    p_notes TEXT DEFAULT NULL
+)
+RETURNS UUID
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = pg_catalog, public
+VOLATILE
+AS $$
+DECLARE
+    v_transaction_id UUID;
+    v_user_id UUID;
+BEGIN
+    -- Get current user (validated by RLS)
+    v_user_id := auth.uid();
+    IF v_user_id IS NULL THEN
+        RAISE EXCEPTION 'No authenticated user found';
+    END IF;
+
+    -- Validate adjustment amount (cannot be zero)
+    IF p_amount = 0 THEN
+        RAISE EXCEPTION 'Adjustment amount cannot be zero';
+    END IF;
+
+    -- Create base transaction (neutral type)
+    INSERT INTO transactions (user_id, type, amount, currency, notes)
+    VALUES (v_user_id, 'adjustment', p_amount, p_currency, p_notes)
+    RETURNING id INTO v_transaction_id;
+
+    -- Create adjustment details
+    INSERT INTO transactions_adjustment (
+        transaction_id,
+        account_id,
+        reason,
+        created_at,
+        updated_at
+    )
+    VALUES (
+        v_transaction_id,
+        p_account_id,
+        p_reason,
+        now(),
+        now()
+    );
+
+    RETURN v_transaction_id;
+END;
+$$;
+
+
+-- =========================================
+-- 17. Function: compute_transaction_direction
+-- =========================================
+-- Get Transaction Direction
+-- Purpose: Compute transaction direction based on type and amount
+-- Parameters: transaction_type, amount
+-- Returns: transaction_direction enum
+-- Security: INVOKER (pure computation)
+-- RLS: N/A (no data access)
+CREATE OR REPLACE FUNCTION compute_transaction_direction(
+    p_type transaction_type, 
+    p_amount DECIMAL
+)
+RETURNS transaction_direction
+LANGUAGE sql
+IMMUTABLE
+SECURITY INVOKER
+SET search_path = pg_catalog, public
+AS $$
+    SELECT CASE
+        WHEN p_type = 'income' THEN 'inflow'::transaction_direction
+        WHEN p_type = 'expense' THEN 'outflow'::transaction_direction
+        WHEN p_type = 'borrow' AND p_amount >= 0 THEN 'inflow'::transaction_direction
+        WHEN p_type = 'borrow' AND p_amount < 0 THEN 'outflow'::transaction_direction
+        WHEN p_type = 'lend' AND p_amount >= 0 THEN 'outflow'::transaction_direction
+        WHEN p_type = 'lend' AND p_amount < 0 THEN 'inflow'::transaction_direction
+        WHEN p_type = 'investment' AND p_amount >= 0 THEN 'outflow'::transaction_direction
+        WHEN p_type = 'investment' AND p_amount < 0 THEN 'inflow'::transaction_direction
+        WHEN p_type = 'adjustment' AND p_amount >= 0 THEN 'inflow'::transaction_direction
+        WHEN p_type = 'adjustment' AND p_amount < 0 THEN 'outflow'::transaction_direction
+        WHEN p_type = 'transfer' THEN 'neutral'::transaction_direction
+        ELSE 'unknown'::transaction_direction
+    END;
+$$;
+
+
+
+-- =========================================
 -- 03. Function: execute_transfer
 -- =========================================
 -- Atomic Transfer Between Accounts
@@ -243,55 +585,7 @@ BEGIN
 END;
 $$;
 
--- =========================================
--- 05. Function: hard_delete_recurring_transaction
--- =========================================
--- Hard delete recurring transaction template
-CREATE OR REPLACE FUNCTION hard_delete_recurring_transaction(recurring_id UUID)
-RETURNS BOOLEAN
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public
-AS $$
-DECLARE
-    current_user_id UUID;
-    recurring_owner UUID;
-    template_transaction_id UUID;
-    is_admin BOOLEAN;
-BEGIN
-    current_user_id := auth.uid();
-    
-    IF current_user_id IS NULL THEN
-        RAISE EXCEPTION 'Not authenticated';
-    END IF;
-    
-    -- Get recurring transaction details
-    SELECT user_id, transaction_template_id INTO recurring_owner, template_transaction_id
-    FROM transactions_recurring
-    WHERE id = recurring_id AND deleted_at IS NULL;
-    
-    IF recurring_owner IS NULL THEN
-        RAISE EXCEPTION 'Recurring transaction not found';
-    END IF;
-    
-    -- Check permissions
-    is_admin := check_admin_permissions();
-    IF NOT is_admin AND current_user_id != recurring_owner THEN
-        RAISE EXCEPTION 'Permission denied';
-    END IF;
-    
-    -- Delete the recurring transaction record
-    DELETE FROM transactions_recurring WHERE id = recurring_id;
-    
-    -- Optionally delete the template transaction too
-    -- (You might want to keep it for audit purposes)
-    IF template_transaction_id IS NOT NULL THEN
-        PERFORM hard_delete_transaction(template_transaction_id);
-    END IF;
-    
-    RETURN TRUE;
-END;
-$$;
+
 
 -- =========================================
 -- 06. Function: create_recurring_schedule
@@ -595,6 +889,56 @@ END;
 $$;
 
 -- =========================================
+-- 05. Function: hard_delete_recurring_transaction
+-- =========================================
+-- Hard delete recurring transaction template
+CREATE OR REPLACE FUNCTION hard_delete_recurring_transaction(recurring_id UUID)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    current_user_id UUID;
+    recurring_owner UUID;
+    template_transaction_id UUID;
+    is_admin BOOLEAN;
+BEGIN
+    current_user_id := auth.uid();
+    
+    IF current_user_id IS NULL THEN
+        RAISE EXCEPTION 'Not authenticated';
+    END IF;
+    
+    -- Get recurring transaction details
+    SELECT user_id, transaction_template_id INTO recurring_owner, template_transaction_id
+    FROM transactions_recurring
+    WHERE id = recurring_id AND deleted_at IS NULL;
+    
+    IF recurring_owner IS NULL THEN
+        RAISE EXCEPTION 'Recurring transaction not found';
+    END IF;
+    
+    -- Check permissions
+    is_admin := check_admin_permissions();
+    IF NOT is_admin AND current_user_id != recurring_owner THEN
+        RAISE EXCEPTION 'Permission denied';
+    END IF;
+    
+    -- Delete the recurring transaction record
+    DELETE FROM transactions_recurring WHERE id = recurring_id;
+    
+    -- Optionally delete the template transaction too
+    -- (You might want to keep it for audit purposes)
+    IF template_transaction_id IS NOT NULL THEN
+        PERFORM hard_delete_transaction(template_transaction_id);
+    END IF;
+    
+    RETURN TRUE;
+END;
+$$;
+
+-- =========================================
 -- 11. Function: get_user_transaction_count
 -- =========================================
 -- Get Transaction Count for User
@@ -892,40 +1236,7 @@ BEGIN
 END;
 $$;
 
--- =========================================
--- 17. Function: compute_transaction_direction
--- =========================================
--- Get Transaction Direction
--- Purpose: Compute transaction direction based on type and amount
--- Parameters: transaction_type, amount
--- Returns: transaction_direction enum
--- Security: INVOKER (pure computation)
--- RLS: N/A (no data access)
-CREATE OR REPLACE FUNCTION compute_transaction_direction(
-    p_type transaction_type, 
-    p_amount DECIMAL
-)
-RETURNS transaction_direction
-LANGUAGE sql
-IMMUTABLE
-SECURITY INVOKER
-SET search_path = pg_catalog, public
-AS $$
-    SELECT CASE
-        WHEN p_type = 'income' THEN 'inflow'::transaction_direction
-        WHEN p_type = 'expense' THEN 'outflow'::transaction_direction
-        WHEN p_type = 'borrow' AND p_amount >= 0 THEN 'inflow'::transaction_direction
-        WHEN p_type = 'borrow' AND p_amount < 0 THEN 'outflow'::transaction_direction
-        WHEN p_type = 'lend' AND p_amount >= 0 THEN 'outflow'::transaction_direction
-        WHEN p_type = 'lend' AND p_amount < 0 THEN 'inflow'::transaction_direction
-        WHEN p_type = 'investment' AND p_amount >= 0 THEN 'outflow'::transaction_direction
-        WHEN p_type = 'investment' AND p_amount < 0 THEN 'inflow'::transaction_direction
-        WHEN p_type = 'adjustment' AND p_amount >= 0 THEN 'inflow'::transaction_direction
-        WHEN p_type = 'adjustment' AND p_amount < 0 THEN 'outflow'::transaction_direction
-        WHEN p_type = 'transfer' THEN 'neutral'::transaction_direction
-        ELSE 'unknown'::transaction_direction
-    END;
-$$;
+
 
 
 -- ================================
