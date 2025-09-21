@@ -399,39 +399,93 @@ BEGIN
     CASE TG_TABLE_NAME
         WHEN 'cash_accounts' THEN
             IF NEW.balance < 0 THEN
-                RAISE WARNING 'Cash account % has negative balance: %', NEW.account_id, NEW.balance;
+                RAISE EXCEPTION 'Cash account % cannot have negative balance: %', NEW.account_id, NEW.balance;
             END IF;
+
         WHEN 'bank_accounts' THEN
             IF NEW.balance < 0 THEN
-                RAISE WARNING 'Bank account % has negative balance: %', NEW.account_id, NEW.balance;
+                RAISE EXCEPTION 'Bank account % cannot have negative balance: %', NEW.account_id, NEW.balance;
             END IF;
+
         WHEN 'wallet_accounts' THEN
             IF NEW.balance < 0 THEN
-                RAISE WARNING 'Wallet account % has negative balance: %', NEW.account_id, NEW.balance;
+                RAISE EXCEPTION 'Wallet account % cannot have negative balance: %', NEW.account_id, NEW.balance;
             END IF;
+
         WHEN 'crypto_accounts' THEN
             IF NEW.balance < 0 THEN
-                RAISE WARNING 'Crypto account % has negative balance: %', NEW.account_id, NEW.balance;
+                RAISE EXCEPTION 'Crypto account % cannot have negative balance: %', NEW.account_id, NEW.balance;
             END IF;
+
+        WHEN 'credit_card_accounts' THEN
+            IF NEW.current_balance < 0 THEN
+                RAISE EXCEPTION 'Credit card account % cannot have negative current balance: %', NEW.account_id, NEW.current_balance;
+            END IF;
+            IF NEW.credit_limit IS NOT NULL AND NEW.current_balance > NEW.credit_limit THEN
+                RAISE EXCEPTION 'Credit card account % exceeds credit limit (%): current balance %', NEW.account_id, NEW.credit_limit, NEW.current_balance;
+            END IF;
+
+        WHEN 'loan_accounts' THEN
+            IF NEW.outstanding_amount < 0 THEN
+                RAISE EXCEPTION 'Loan account % cannot have negative outstanding amount: %', NEW.account_id, NEW.outstanding_amount;
+            END IF;
+
+        WHEN 'investment_accounts' THEN
+            IF NEW.portfolio_value < 0 THEN
+                RAISE EXCEPTION 'Investment account % cannot have negative portfolio value: %', NEW.account_id, NEW.portfolio_value;
+            END IF;
+
+        WHEN 'receivable_accounts' THEN
+            IF NEW.amount_due < 0 THEN
+                RAISE EXCEPTION 'Receivable account % cannot have negative amount due: %', NEW.account_id, NEW.amount_due;
+            END IF;
+
+        ELSE
+            RAISE EXCEPTION 'Unknown account table: %', TG_TABLE_NAME;
     END CASE;
+
     RETURN NEW;
 END;
 $$;
 
+-- Cash
 CREATE TRIGGER trg_validate_cash_balance
-    BEFORE UPDATE ON cash_accounts
+    BEFORE INSERT OR UPDATE ON cash_accounts
     FOR EACH ROW EXECUTE FUNCTION validate_account_balance();
 
+-- Bank
 CREATE TRIGGER trg_validate_bank_balance
-    BEFORE UPDATE ON bank_accounts
+    BEFORE INSERT OR UPDATE ON bank_accounts
     FOR EACH ROW EXECUTE FUNCTION validate_account_balance();
 
+-- Wallet
 CREATE TRIGGER trg_validate_wallet_balance
-    BEFORE UPDATE ON wallet_accounts
+    BEFORE INSERT OR UPDATE ON wallet_accounts
     FOR EACH ROW EXECUTE FUNCTION validate_account_balance();
 
+-- Crypto
 CREATE TRIGGER trg_validate_crypto_balance
-    BEFORE UPDATE ON crypto_accounts
+    BEFORE INSERT OR UPDATE ON crypto_accounts
+    FOR EACH ROW EXECUTE FUNCTION validate_account_balance();
+
+-- Credit Card
+CREATE TRIGGER trg_validate_credit_card_balance
+    BEFORE INSERT OR UPDATE ON credit_card_accounts
+    FOR EACH ROW EXECUTE FUNCTION validate_account_balance();
+
+-- Loan
+CREATE TRIGGER trg_validate_loan_balance
+    BEFORE INSERT OR UPDATE ON loan_accounts
+    FOR EACH ROW EXECUTE FUNCTION validate_account_balance();
+
+-- Investment
+CREATE TRIGGER trg_validate_investment_balance
+    BEFORE INSERT OR UPDATE ON investment_accounts
+    FOR EACH ROW EXECUTE FUNCTION validate_account_balance();
+
+-- Receivable
+CREATE TRIGGER trg_validate_receivable_balance
+    BEFORE INSERT OR UPDATE ON receivable_accounts
     FOR EACH ROW EXECUTE FUNCTION validate_account_balance();
 
 -- =========================================

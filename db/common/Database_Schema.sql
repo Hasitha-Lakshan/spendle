@@ -74,7 +74,9 @@ CREATE TABLE cash_accounts (
   notes TEXT,                           -- additional info
   created_at timestamptz DEFAULT now(),
   updated_at timestamptz DEFAULT now(),
-  deleted_at timestamptz NULL DEFAULT NULL
+  deleted_at timestamptz NULL DEFAULT NULL,
+  
+  CONSTRAINT chk_cash_balance_nonnegative CHECK (balance >= 0)
 );
 
 -- Bank Accounts
@@ -90,7 +92,9 @@ CREATE TABLE bank_accounts (
   notes TEXT,
   created_at timestamptz DEFAULT now(),
   updated_at timestamptz DEFAULT now(),
-  deleted_at timestamptz NULL DEFAULT NULL
+  deleted_at timestamptz NULL DEFAULT NULL,
+  
+  CONSTRAINT chk_bank_balance_nonnegative CHECK (balance >= 0)
 );
 
 -- Credit Card Accounts
@@ -110,6 +114,10 @@ CREATE TABLE credit_card_accounts (
 
   CONSTRAINT chk_credit_limit CHECK (
     credit_limit IS NULL OR current_balance <= credit_limit
+  ),
+  
+  CONSTRAINT chk_credit_balance_nonnegative CHECK (
+    current_balance >= 0
   )
 );
 
@@ -129,7 +137,9 @@ CREATE TABLE loan_accounts (
   notes TEXT,
   created_at timestamptz DEFAULT now(),
   updated_at timestamptz DEFAULT now(),
-  deleted_at timestamptz NULL DEFAULT NULL
+  deleted_at timestamptz NULL DEFAULT NULL,
+  
+  CONSTRAINT chk_loan_outstanding_nonnegative CHECK (outstanding_amount >= 0)
 );
 
 -- Investment Accounts
@@ -143,7 +153,9 @@ CREATE TABLE investment_accounts (
   notes TEXT,
   created_at timestamptz DEFAULT now(),
   updated_at timestamptz DEFAULT now(),
-  deleted_at timestamptz NULL DEFAULT NULL
+  deleted_at timestamptz NULL DEFAULT NULL,
+  
+  CONSTRAINT chk_investment_portfolio_nonnegative CHECK (portfolio_value >= 0)
 );
 
 -- Crypto Accounts
@@ -156,7 +168,9 @@ CREATE TABLE crypto_accounts (
   notes TEXT,
   created_at timestamptz DEFAULT now(),
   updated_at timestamptz DEFAULT now(),
-  deleted_at timestamptz NULL DEFAULT NULL
+  deleted_at timestamptz NULL DEFAULT NULL,
+  
+  CONSTRAINT chk_crypto_balance_nonnegative CHECK (balance >= 0)
 );
 
 -- Wallet Accounts
@@ -169,7 +183,9 @@ CREATE TABLE wallet_accounts (
   notes TEXT,
   created_at timestamptz DEFAULT now(),
   updated_at timestamptz DEFAULT now(),
-  deleted_at timestamptz NULL DEFAULT NULL
+  deleted_at timestamptz NULL DEFAULT NULL,
+  
+  CONSTRAINT chk_wallet_balance_nonnegative CHECK (balance >= 0)
 );
 
 -- Receivable Accounts
@@ -184,7 +200,9 @@ CREATE TABLE receivable_accounts (
   notes TEXT,
   created_at timestamptz DEFAULT now(),
   updated_at timestamptz DEFAULT now(),
-  deleted_at timestamptz NULL DEFAULT NULL
+  deleted_at timestamptz NULL DEFAULT NULL,
+  
+  CONSTRAINT chk_receivable_amount_nonnegative CHECK (amount_due >= 0)
 );
 
 -- =========================================
