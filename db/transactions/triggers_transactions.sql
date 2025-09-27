@@ -95,6 +95,35 @@ BEGIN
             END IF;
         END IF;
 
+    ELSIF TG_TABLE_NAME = 'transactions_transfer' THEN
+        -- Prevent transfers from an account to itself
+        IF NEW.from_account = NEW.to_account THEN
+            RAISE EXCEPTION 'Cannot transfer from an account to itself';
+        END IF;
+
+        -- Validate from_account belongs to current user
+        PERFORM 1
+        FROM public.accounts
+        WHERE id = NEW.from_account
+          AND user_id = auth.uid()
+          AND deleted_at IS NULL;
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'From account invalid or access denied';
+        END IF;
+
+        -- Validate to_account belongs to current user
+        PERFORM 1
+        FROM public.accounts
+        WHERE id = NEW.to_account
+          AND user_id = auth.uid()
+          AND deleted_at IS NULL;
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'To account invalid or access denied';
+        END IF;
+
+        -- Set account_user for final check
+        v_account_user := auth.uid();
+
     ELSE
         -- Generic account validation
         SELECT user_id INTO v_account_user 
@@ -148,76 +177,12 @@ CREATE TRIGGER trg_tx_lend_validate
     BEFORE INSERT ON transactions_lend
     FOR EACH ROW EXECUTE FUNCTION validate_transaction_user();
 
--- =========================================
--- 02. Function: validate_transfer_accounts
--- =========================================
--- Purpose:
---   Ensures that both accounts involved in a transfer belong to the same user
---   and validates that the transfer is allowed. Prevents unauthorized or invalid transfers.
---
--- Behavior:
---   - Checks that both "from" and "to" accounts exist and are not deleted
---   - Ensures both accounts belong to the same user as the transaction/user
---   - Prevents transfers where the source and destination accounts are identical
---   - Raises exceptions if any of the above validations fail
---
--- Parameters:
---   NEW (trigger record) - The new transfer row being inserted
---
--- Returns:
---   NEW - The original row if validation passes
---
--- Notes:
---   - Trigger is applied BEFORE INSERT on transactions_transfer
---   - Uses SECURITY DEFINER to enforce consistent validation regardless of RLS
---   - Ensures account ownership consistency and prevents self-transfers
--- =========================================
-CREATE OR REPLACE FUNCTION validate_transfer_accounts() 
-RETURNS TRIGGER 
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public
-AS $$
-DECLARE 
-    from_user UUID;
-    to_user UUID;
-BEGIN
-    -- Get account users based on NEW.user_id instead of querying transactions
-    SELECT user_id INTO from_user 
-    FROM accounts 
-    WHERE id = NEW.from_account
-      AND deleted_at IS NULL;
-
-    SELECT user_id INTO to_user 
-    FROM accounts 
-    WHERE id = NEW.to_account
-      AND deleted_at IS NULL;
-
-    IF from_user IS NULL OR to_user IS NULL THEN
-        RAISE EXCEPTION 'Accounts not found or access denied';
-    END IF;
-
-    -- Both accounts must belong to the same user as the transaction/user
-    IF from_user <> to_user OR from_user <> NEW.user_id THEN
-        RAISE EXCEPTION 'Transfer accounts must belong to the same user as the transaction';
-    END IF;
-
-    -- Prevent transfers from an account to itself
-    IF NEW.from_account = NEW.to_account THEN
-        RAISE EXCEPTION 'Cannot transfer from an account to itself';
-    END IF;
-
-    RETURN NEW;
-END;
-$$;
-
 CREATE TRIGGER trg_tx_transfer_validate
     BEFORE INSERT ON transactions_transfer
-    FOR EACH ROW EXECUTE FUNCTION validate_transfer_accounts();
-
+    FOR EACH ROW EXECUTE FUNCTION validate_transaction_user();
 
 -- =========================================
--- 03. TRANSACTIONS GENERATED COLUMNS TRIGGERS
+-- 02. TRANSACTIONS GENERATED COLUMNS TRIGGERS
 -- =========================================
 -- Purpose:
 --   Automatically populate and maintain certain derived columns in the transactions table
@@ -326,7 +291,7 @@ EXECUTE FUNCTION public.set_is_recent();
 
 
 -- =========================================
--- 04. Function: apply_transaction_balance
+-- 03. Function: apply_transaction_balance
 -- =========================================
 -- Purpose:
 --   Automatically updates the balances or relevant fields of accounts
@@ -365,202 +330,96 @@ AS $$
 DECLARE
     v_amount NUMERIC;
     v_account_type account_type;
-    v_account_id UUID;
-    v_user_id UUID;
 BEGIN
-    -- Get transaction amount and user_id
-    SELECT amount, user_id INTO v_amount, v_user_id 
-    FROM public.transactions 
-    WHERE id = NEW.transaction_id 
-      AND user_id = auth.uid()
+    -- Get transaction amount
+    SELECT amount INTO v_amount
+    FROM public.transactions
+    WHERE id = NEW.transaction_id
       AND deleted_at IS NULL;
-    
+
     IF NOT FOUND THEN
-        RAISE EXCEPTION 'Transaction not found or access denied';
+        RAISE EXCEPTION 'Transaction not found';
     END IF;
 
-    -- Determine main account ID based on table
-    IF TG_TABLE_NAME = 'transactions_transfer' THEN
-        RETURN NEW; -- handled separately
-    ELSIF TG_TABLE_NAME = 'transactions_borrow' THEN
-        v_account_id := NEW.loan_account_id;
-    ELSIF TG_TABLE_NAME = 'transactions_lend' THEN
-        v_account_id := NEW.receivable_account_id;
-    ELSIF TG_TABLE_NAME = 'transactions_investment' THEN
-        v_account_id := NEW.investment_account_id;
-    ELSE
-        v_account_id := NEW.account_id;
-    END IF;
-
-    -- Get main account type
-    SELECT type INTO v_account_type 
-    FROM public.accounts 
-    WHERE id = v_account_id 
-      AND user_id = auth.uid()
-      AND deleted_at IS NULL;
-    
-    IF NOT FOUND THEN
-        RAISE EXCEPTION 'Account not found or access denied';
-    END IF;
-
-    -- Update main account timestamp
-    UPDATE public.accounts 
-    SET updated_at = NOW() 
-    WHERE id = v_account_id;
-
-    -- Apply transaction amount to main account
+    -- Apply logic based on transaction table
     CASE TG_TABLE_NAME
+
         WHEN 'transactions_income' THEN
-            CASE v_account_type
-                WHEN 'cash' THEN
-                    UPDATE public.cash_accounts
-                    SET balance = balance + v_amount, updated_at = NOW()
-                    WHERE account_id = v_account_id;
-                WHEN 'bank' THEN
-                    UPDATE public.bank_accounts
-                    SET balance = balance + v_amount, updated_at = NOW()
-                    WHERE account_id = v_account_id;
-                WHEN 'wallet' THEN
-                    UPDATE public.wallet_accounts
-                    SET balance = balance + v_amount, updated_at = NOW()
-                    WHERE account_id = v_account_id;
-                WHEN 'crypto' THEN
-                    UPDATE public.crypto_accounts
-                    SET balance = balance + v_amount, updated_at = NOW()
-                    WHERE account_id = v_account_id;
-            END CASE;
+            SELECT type INTO v_account_type FROM accounts WHERE id = NEW.account_id;
+            UPDATE accounts SET updated_at = NOW() WHERE id = NEW.account_id;
+            PERFORM set_account_balance(v_account_type, NEW.account_id, v_amount);
 
         WHEN 'transactions_expense' THEN
-            CASE v_account_type
-                WHEN 'cash' THEN
-                    UPDATE public.cash_accounts
-                    SET balance = balance - v_amount, updated_at = NOW()
-                    WHERE account_id = v_account_id;
-                WHEN 'bank' THEN
-                    UPDATE public.bank_accounts
-                    SET balance = balance - v_amount, updated_at = NOW()
-                    WHERE account_id = v_account_id;
-                WHEN 'wallet' THEN
-                    UPDATE public.wallet_accounts
-                    SET balance = balance - v_amount, updated_at = NOW()
-                    WHERE account_id = v_account_id;
-                WHEN 'crypto' THEN
-                    UPDATE public.crypto_accounts
-                    SET balance = balance - v_amount, updated_at = NOW()
-                    WHERE account_id = v_account_id;
-                WHEN 'credit_card' THEN
-                    UPDATE public.credit_card_accounts
-                    SET current_balance = current_balance + v_amount, updated_at = NOW()
-                    WHERE account_id = v_account_id;
-                WHEN 'investment' THEN
-                    UPDATE public.investment_accounts
-                    SET portfolio_value = portfolio_value - v_amount, updated_at = NOW()
-                    WHERE account_id = v_account_id;
-            END CASE;
+            SELECT type INTO v_account_type FROM accounts WHERE id = NEW.account_id;
+            UPDATE accounts SET updated_at = NOW() WHERE id = NEW.account_id;
+            IF v_account_type = 'credit_card' THEN
+                PERFORM set_account_balance(v_account_type, NEW.account_id, v_amount);
+            ELSE
+                PERFORM set_account_balance(v_account_type, NEW.account_id, -v_amount);
+            END IF;
+
+        WHEN 'transactions_transfer' THEN
+            -- From account (outflow including fees)
+            SELECT type INTO v_account_type FROM accounts WHERE id = NEW.from_account;
+            UPDATE accounts SET updated_at = NOW() WHERE id = NEW.from_account;
+            PERFORM set_account_balance(v_account_type, NEW.from_account, -(v_amount + COALESCE(NEW.fees,0)));
+
+            -- To account (inflow)
+            SELECT type INTO v_account_type FROM accounts WHERE id = NEW.to_account;
+            UPDATE accounts SET updated_at = NOW() WHERE id = NEW.to_account;
+            PERFORM set_account_balance(v_account_type, NEW.to_account, v_amount);
 
         WHEN 'transactions_investment' THEN
-            CASE v_account_type
-                WHEN 'investment' THEN
-                    UPDATE public.investment_accounts
-                    SET portfolio_value = portfolio_value + v_amount, updated_at = NOW()
-                    WHERE account_id = v_account_id;
-            END CASE;
+            -- Destination investment account
+            SELECT type INTO v_account_type FROM accounts WHERE id = NEW.investment_account_id;
+            UPDATE accounts SET updated_at = NOW() WHERE id = NEW.investment_account_id;
+            PERFORM set_account_balance(v_account_type, NEW.investment_account_id, v_amount);
 
-            -- Apply funding account if exists
-            IF TG_TABLE_NAME = 'transactions_investment' AND NEW.funding_account_id IS NOT NULL THEN
-                SELECT type INTO v_account_type
-                FROM public.accounts
-                WHERE id = NEW.funding_account_id AND deleted_at IS NULL;
-
-                UPDATE public.accounts SET updated_at = NOW()
-                WHERE id = NEW.funding_account_id;
-
-                PERFORM set_account_balance(v_account_type, NEW.funding_account_id, -v_amount); 
-                -- negative because funding account is reduced when investment increases
+            -- Funding account reduces balance
+            IF NEW.funding_account_id IS NOT NULL THEN
+                SELECT type INTO v_account_type FROM accounts WHERE id = NEW.funding_account_id;
+                UPDATE accounts SET updated_at = NOW() WHERE id = NEW.funding_account_id;
+                PERFORM set_account_balance(v_account_type, NEW.funding_account_id, -v_amount);
             END IF;
 
         WHEN 'transactions_borrow' THEN
-            CASE v_account_type
-                WHEN 'loan' THEN
-                    UPDATE public.loan_accounts
-                    SET outstanding_amount = outstanding_amount + v_amount, updated_at = NOW()
-                    WHERE account_id = v_account_id;
-            END CASE;
+            -- Loan account increases
+            SELECT type INTO v_account_type FROM accounts WHERE id = NEW.loan_account_id;
+            UPDATE accounts SET updated_at = NOW() WHERE id = NEW.loan_account_id;
+            PERFORM set_account_balance(v_account_type, NEW.loan_account_id, v_amount);
 
-            -- Apply disbursement account if exists
+            -- Disbursement account increases
             IF NEW.disbursement_account_id IS NOT NULL THEN
-                SELECT type INTO v_account_type
-                FROM public.accounts
-                WHERE id = NEW.disbursement_account_id AND deleted_at IS NULL;
-
-                UPDATE public.accounts SET updated_at = NOW()
-                WHERE id = NEW.disbursement_account_id;
-
+                SELECT type INTO v_account_type FROM accounts WHERE id = NEW.disbursement_account_id;
+                UPDATE accounts SET updated_at = NOW() WHERE id = NEW.disbursement_account_id;
                 PERFORM set_account_balance(v_account_type, NEW.disbursement_account_id, v_amount);
             END IF;
 
         WHEN 'transactions_lend' THEN
-            CASE v_account_type
-                WHEN 'receivable' THEN
-                    UPDATE public.receivable_accounts
-                    SET amount_due = amount_due + v_amount, updated_at = NOW()
-                    WHERE account_id = v_account_id;
-            END CASE;
+            -- Receivable account increases
+            SELECT type INTO v_account_type FROM accounts WHERE id = NEW.receivable_account_id;
+            UPDATE accounts SET updated_at = NOW() WHERE id = NEW.receivable_account_id;
+            PERFORM set_account_balance(v_account_type, NEW.receivable_account_id, v_amount);
 
-            -- Apply funding account if exists
+            -- Funding account reduces balance
             IF NEW.funding_account_id IS NOT NULL THEN
-                SELECT type INTO v_account_type
-                FROM public.accounts
-                WHERE id = NEW.funding_account_id AND deleted_at IS NULL;
-
-                UPDATE public.accounts SET updated_at = NOW()
-                WHERE id = NEW.funding_account_id;
-
+                SELECT type INTO v_account_type FROM accounts WHERE id = NEW.funding_account_id;
+                UPDATE accounts SET updated_at = NOW() WHERE id = NEW.funding_account_id;
                 PERFORM set_account_balance(v_account_type, NEW.funding_account_id, -v_amount);
             END IF;
 
         WHEN 'transactions_adjustment' THEN
-            CASE v_account_type
-                WHEN 'cash' THEN
-                    UPDATE public.cash_accounts
-                    SET balance = balance + v_amount, updated_at = NOW()
-                    WHERE account_id = v_account_id;
-                WHEN 'bank' THEN
-                    UPDATE public.bank_accounts
-                    SET balance = balance + v_amount, updated_at = NOW()
-                    WHERE account_id = v_account_id;
-                WHEN 'wallet' THEN
-                    UPDATE public.wallet_accounts
-                    SET balance = balance + v_amount, updated_at = NOW()
-                    WHERE account_id = v_account_id;
-                WHEN 'crypto' THEN
-                    UPDATE public.crypto_accounts
-                    SET balance = balance + v_amount, updated_at = NOW()
-                    WHERE account_id = v_account_id;
-                WHEN 'credit_card' THEN
-                    UPDATE public.credit_card_accounts
-                    SET current_balance = current_balance - v_amount, updated_at = NOW()
-                    WHERE account_id = v_account_id;
-                WHEN 'investment' THEN
-                    UPDATE public.investment_accounts
-                    SET portfolio_value = portfolio_value + v_amount, updated_at = NOW()
-                    WHERE account_id = v_account_id;
-                WHEN 'loan' THEN
-                    UPDATE public.loan_accounts
-                    SET outstanding_amount = outstanding_amount - v_amount, updated_at = NOW()
-                    WHERE account_id = v_account_id;
-                WHEN 'receivable' THEN
-                    UPDATE public.receivable_accounts
-                    SET amount_due = amount_due + v_amount, updated_at = NOW()
-                    WHERE account_id = v_account_id;
-            END CASE;
+            SELECT type INTO v_account_type FROM accounts WHERE id = NEW.account_id;
+            UPDATE accounts SET updated_at = NOW() WHERE id = NEW.account_id;
+            PERFORM set_account_balance(v_account_type, NEW.account_id, v_amount);
+
     END CASE;
 
     RETURN NEW;
 END;
 $$;
 
--- Attach to all transaction detail tables
+-- Attach triggers to all transaction tables
 CREATE TRIGGER trg_tx_income_balance
     AFTER INSERT ON transactions_income
     FOR EACH ROW EXECUTE FUNCTION apply_transaction_balance();
@@ -585,180 +444,12 @@ CREATE TRIGGER trg_tx_lend_balance
     AFTER INSERT ON transactions_lend
     FOR EACH ROW EXECUTE FUNCTION apply_transaction_balance();
 
--- =========================================
--- 05. Function: apply_transfer_balances
--- =========================================
--- Purpose:
---   Handles comprehensive balance updates for transfers between accounts,
---   ensuring that both the source (from_account) and destination (to_account)
---   reflect accurate balances according to the transaction amount and fees.
---
--- Behavior:
---   - Retrieves the transfer amount and user_id with RLS enforcement
---   - Validates that both from_account and to_account exist, are not deleted,
---     and belong to the current user
---   - Updates the updated_at timestamp for both accounts
---   - Decreases balance (or adjusts relevant field) in from_account based on account type
---   - Increases balance (or adjusts relevant field) in to_account based on account type
---   - Handles all account types including cash, bank, wallet, crypto, credit_card, loan,
---     investment, and receivable
---   - Raises exceptions if any account is missing or of an unknown type
---   - Optionally allows tracking transfer fees in audit logs
---
--- Parameters:
---   NEW (trigger record) - The newly inserted transfer row
---
--- Returns:
---   NEW - The original row after updating balances of both accounts
---
--- Notes:
---   - Trigger applied AFTER INSERT on transactions_transfer
---   - Uses SECURITY DEFINER to ensure consistent balance updates regardless of RLS
---   - Ensures full integrity of transfers across different account types
--- =========================================
-CREATE OR REPLACE FUNCTION apply_transfer_balances()
-RETURNS TRIGGER 
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public
-AS $$
-DECLARE
-    from_acc_type account_type;
-    to_acc_type account_type;
-    v_amount NUMERIC;
-    v_user_id UUID;
-BEGIN
-    -- Get transaction amount and user_id with RLS check
-    SELECT COALESCE(amount, 0), user_id INTO v_amount, v_user_id 
-    FROM transactions 
-    WHERE id = NEW.transaction_id
-    AND user_id = auth.uid()
-    AND deleted_at IS NULL;
-    
-    IF NOT FOUND THEN
-        RAISE EXCEPTION 'Transaction not found or access denied';
-    END IF;
-
-    -- Get account types with RLS checks
-    SELECT type INTO from_acc_type 
-    FROM accounts 
-    WHERE id = NEW.from_account
-    AND user_id = auth.uid()
-    AND deleted_at IS NULL;
-    
-    IF NOT FOUND THEN
-        RAISE EXCEPTION 'From account not found or access denied';
-    END IF;
-
-    SELECT type INTO to_acc_type 
-    FROM accounts 
-    WHERE id = NEW.to_account
-    AND user_id = auth.uid()
-    AND deleted_at IS NULL;
-    
-    IF NOT FOUND THEN
-        RAISE EXCEPTION 'To account not found or access denied';
-    END IF;
-
-    -- Update timestamps for both accounts (RLS enforced automatically)
-    UPDATE accounts 
-    SET updated_at = NOW() 
-    WHERE id IN (NEW.from_account, NEW.to_account);
-
-    -- Decrease balance from from_account (outflow)
-    CASE from_acc_type
-        WHEN 'cash' THEN
-            UPDATE cash_accounts 
-            SET balance = balance - NEW.fees - v_amount, updated_at = NOW() 
-            WHERE account_id = NEW.from_account;
-        WHEN 'bank' THEN
-            UPDATE bank_accounts 
-            SET balance = balance - NEW.fees - v_amount, updated_at = NOW() 
-            WHERE account_id = NEW.from_account;
-        WHEN 'wallet' THEN
-            UPDATE wallet_accounts 
-            SET balance = balance - NEW.fees - v_amount, updated_at = NOW() 
-            WHERE account_id = NEW.from_account;
-        WHEN 'crypto' THEN
-            UPDATE crypto_accounts 
-            SET balance = balance - NEW.fees - v_amount, updated_at = NOW() 
-            WHERE account_id = NEW.from_account;
-        WHEN 'credit_card' THEN
-            UPDATE credit_card_accounts 
-            SET current_balance = current_balance + v_amount + NEW.fees, updated_at = NOW() 
-            WHERE account_id = NEW.from_account;
-        WHEN 'loan' THEN
-            -- Transfer from loan reduces outstanding amount (payment)
-            UPDATE loan_accounts 
-            SET outstanding_amount = outstanding_amount - v_amount, updated_at = NOW() 
-            WHERE account_id = NEW.from_account;
-        WHEN 'investment' THEN
-            UPDATE investment_accounts 
-            SET portfolio_value = portfolio_value - v_amount - NEW.fees, updated_at = NOW() 
-            WHERE account_id = NEW.from_account;
-        WHEN 'receivable' THEN
-            UPDATE receivable_accounts 
-            SET amount_due = amount_due - v_amount, updated_at = NOW() 
-            WHERE account_id = NEW.from_account;
-        ELSE
-            RAISE EXCEPTION 'Unknown account type for from_account: %', from_acc_type;
-    END CASE;
-
-    -- Optional: track fees separately in audit_logs if needed
-    -- INSERT INTO audit_logs(user_id, action, reference_table, reference_id, details, created_at)
-    -- VALUES (NEW.action_by, 'transfer_fee', 'transactions_transfer', NEW.id, NEW.fees::TEXT, NOW());
-
-    -- Increase balance to to_account (inflow)
-    CASE to_acc_type
-        WHEN 'cash' THEN
-            UPDATE cash_accounts 
-            SET balance = balance + v_amount, updated_at = NOW() 
-            WHERE account_id = NEW.to_account;
-        WHEN 'bank' THEN
-            UPDATE bank_accounts 
-            SET balance = balance + v_amount, updated_at = NOW() 
-            WHERE account_id = NEW.to_account;
-        WHEN 'wallet' THEN
-            UPDATE wallet_accounts 
-            SET balance = balance + v_amount, updated_at = NOW() 
-            WHERE account_id = NEW.to_account;
-        WHEN 'crypto' THEN
-            UPDATE crypto_accounts 
-            SET balance = balance + v_amount, updated_at = NOW() 
-            WHERE account_id = NEW.to_account;
-        WHEN 'credit_card' THEN
-            -- Transfer to credit card reduces outstanding balance (payment)
-            UPDATE credit_card_accounts 
-            SET current_balance = current_balance - v_amount, updated_at = NOW() 
-            WHERE account_id = NEW.to_account;
-        WHEN 'loan' THEN
-            -- Transfer to loan increases outstanding amount (new borrowing)
-            UPDATE loan_accounts 
-            SET outstanding_amount = outstanding_amount + v_amount, updated_at = NOW() 
-            WHERE account_id = NEW.to_account;
-        WHEN 'investment' THEN
-            UPDATE investment_accounts 
-            SET portfolio_value = portfolio_value + v_amount, updated_at = NOW() 
-            WHERE account_id = NEW.to_account;
-        WHEN 'receivable' THEN
-            UPDATE receivable_accounts 
-            SET amount_due = amount_due + v_amount, updated_at = NOW() 
-            WHERE account_id = NEW.to_account;
-        ELSE
-            RAISE EXCEPTION 'Unknown account type for to_account: %', to_acc_type;
-    END CASE;
-
-    RETURN NEW;
-END;
-$$;
-
-CREATE TRIGGER trigger_apply_transfer_balances
+CREATE TRIGGER trg_tx_transfer_balance
     AFTER INSERT ON transactions_transfer
-    FOR EACH ROW 
-    EXECUTE FUNCTION apply_transfer_balances();
+    FOR EACH ROW EXECUTE FUNCTION apply_transaction_balance();
 
 -- =========================================
--- 06. Function: cleanup_transaction_details
+-- 04. Function: cleanup_transaction_details
 -- =========================================
 -- Purpose:
 --   Automatically soft deletes all related transaction detail records
@@ -840,7 +531,7 @@ CREATE TRIGGER trg_cleanup_transaction_details
     FOR EACH ROW EXECUTE FUNCTION cleanup_transaction_details();
 
 -- =========================================
--- 07. Function: handle_soft_delete_and_reverse_balance
+-- 05. Function: handle_soft_delete_and_reverse_balance
 -- =========================================
 -- Purpose:
 --   Handles comprehensive processing when a transaction is soft deleted,
@@ -936,7 +627,7 @@ CREATE TRIGGER trg_handle_soft_delete_and_reverse_balance
     EXECUTE FUNCTION handle_soft_delete_and_reverse_balance();
 
 -- =========================================
--- 08. Function: reverse_balance_on_soft_delete_core
+-- 06. Function: reverse_balance_on_soft_delete_core
 -- =========================================
 -- Purpose:
 --   Reverses the balances of accounts affected by a transaction when the
@@ -1133,7 +824,7 @@ END;
 $$;
 
 -- =========================================
--- 09. Function: reverse_account_balance
+-- 07. Function: reverse_account_balance
 -- =========================================
 -- Purpose:
 --   Reverses the balance or relevant field of a specific account based on
@@ -1215,7 +906,7 @@ END;
 $$;
 
 -- =========================================
--- 10. Function: set_account_balance
+-- 08. Function: set_account_balance
 -- =========================================
 -- Purpose:
 --   Adjusts the balance or relevant field of a specific account by adding
@@ -1281,7 +972,7 @@ BEGIN
 
         WHEN 'credit_card' THEN
             UPDATE public.credit_card_accounts
-            SET current_balance = current_balance - p_amount, updated_at = NOW()
+            SET current_balance = current_balance + p_amount, updated_at = NOW()
             WHERE account_id = p_account_id;
 
         WHEN 'investment' THEN
@@ -1306,7 +997,7 @@ END;
 $$;
 
 -- =========================================
--- 11. Function: reverse_transfer_balances
+-- 09. Function: reverse_transfer_balances
 -- =========================================
 -- Purpose:
 --   Reverses the balances of both accounts involved in a transfer transaction
@@ -1443,7 +1134,7 @@ END;
 $$;
 
 -- =========================================
--- 12. Function: setup_recurring_transaction
+-- 10. Function: setup_recurring_transaction
 -- =========================================
 -- Purpose:
 --   Prepares and validates recurring transactions before insertion, ensuring
@@ -1514,7 +1205,7 @@ CREATE TRIGGER trg_setup_recurring
     FOR EACH ROW EXECUTE FUNCTION setup_recurring_transaction();
 
 -- =========================================
--- 13. Function: process_recurring_transactions
+-- 11. Function: process_recurring_transactions
 -- =========================================
 -- Purpose:
 --   Processes all active recurring transactions that are due, creating new
@@ -1657,7 +1348,7 @@ END;
 $$;
 
 -- =========================================
--- 14. Function: validate_income_account
+-- 12. Function: validate_income_account
 -- =========================================
 -- Purpose:
 --   Ensures that any inserted or updated income transaction has a valid account type.
@@ -1706,7 +1397,7 @@ FOR EACH ROW
 EXECUTE FUNCTION public.validate_income_account();
 
 -- =========================================
--- 15. Function: validate_expense_account
+-- 13. Function: validate_expense_account
 -- =========================================
 -- Purpose:
 --   Ensures that any inserted or updated expense transaction has a valid account type.
@@ -1755,7 +1446,7 @@ FOR EACH ROW
 EXECUTE FUNCTION public.validate_expense_account();
 
 -- =========================================
--- 16. Function: validate_investment_account
+-- 14. Function: validate_investment_account
 -- =========================================
 -- Purpose:
 --   Ensures that any inserted or updated investment transaction has a valid account type.
@@ -1822,7 +1513,7 @@ FOR EACH ROW
 EXECUTE FUNCTION public.validate_investment_account();
 
 -- =========================================
--- 17. Function: validate_borrow_account
+-- 15. Function: validate_borrow_account
 -- =========================================
 -- Purpose:
 --   Ensures that any inserted or updated borrow transaction has a valid account type.
@@ -1889,7 +1580,7 @@ FOR EACH ROW
 EXECUTE FUNCTION public.validate_borrow_account();
 
 -- =========================================
--- 18. Function: validate_lend_account
+-- 16. Function: validate_lend_account
 -- =========================================
 -- Purpose:
 --   Ensures that any inserted or updated lend transaction has a valid account type.
@@ -1956,7 +1647,7 @@ FOR EACH ROW
 EXECUTE FUNCTION public.validate_lend_account();
 
 -- =========================================
--- 19. Function: validate_transfer_accounts
+-- 17. Function: validate_transfer_accounts
 -- =========================================
 -- Purpose:
 --   Ensures that any inserted or updated transfer transaction has valid source and destination accounts.
@@ -2010,7 +1701,7 @@ END;
 $$;
 
 -- =========================================
--- 20. Function: validate_adjustment_account
+-- 18. Function: validate_adjustment_account
 -- =========================================
 -- Purpose:
 --   Validates adjustment transactions; currently allows any account type without restriction.
@@ -2053,7 +1744,6 @@ EXECUTE FUNCTION public.validate_adjustment_account();
 GRANT EXECUTE ON FUNCTION validate_transaction_user() TO authenticated;
 GRANT EXECUTE ON FUNCTION validate_transfer_accounts() TO authenticated;
 GRANT EXECUTE ON FUNCTION apply_transaction_balance() TO authenticated;
-GRANT EXECUTE ON FUNCTION apply_transfer_balances() TO authenticated;
 GRANT EXECUTE ON FUNCTION handle_soft_delete_and_reverse_balance() TO authenticated;
 GRANT EXECUTE ON FUNCTION reverse_account_balance(account_type, uuid, numeric) TO authenticated;
 GRANT EXECUTE ON FUNCTION reverse_transfer_balances(account_type, account_type, record) TO authenticated;
@@ -2065,5 +1755,4 @@ GRANT EXECUTE ON FUNCTION process_recurring_transactions() TO authenticated;
 -- COMMENTS AND DOCUMENTATION
 -- =========================================
 COMMENT ON FUNCTION apply_transaction_balance() IS 'RLS-compliant balance updates for transaction operations';
-COMMENT ON FUNCTION apply_transfer_balances() IS 'RLS-compliant balance updates for transfer operations';
 COMMENT ON FUNCTION process_recurring_transactions() IS 'RLS-compliant recurring transaction processing';
