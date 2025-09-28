@@ -23,7 +23,26 @@ CREATE TYPE payment_method AS ENUM ('cash','bank','card','crypto','wallet','othe
 
 CREATE TYPE risk_level AS ENUM ('low','medium','high');
 
-CREATE TYPE transfer_method AS ENUM ('wire','bank_transfer','paypal','crypto','other');
+CREATE TYPE transfer_method AS ENUM (
+    'cash',               -- Cash to Cash
+    'deposit',            -- Cash to Bank
+    'payment',            -- Cash/Credit Card to Credit Card or others
+    'repay',              -- Cash/Credit Card/Loan to Loan
+    'invest',             -- Cash/Bank/Credit Card/Loan to Investment
+    'exchange',           -- Cash/Bank/Credit Card/Loan/Investment/Crypto to Crypto
+    'wallet',             -- Cash/Bank/Credit Card/Loan/Investment/Crypto to Wallet
+    'receive',            -- Cash/Bank/Credit Card/Loan/Investment/Crypto/Wallet to Receivable
+    'withdrawal',        -- Bank to Cash
+    'cash_advance',      -- Credit Card to Cash
+    'bank_payment',      -- Credit Card to Bank
+    'loan',               -- Loan to Loan
+    'divest',             -- Investment to Cash
+    'cash_out',          -- Crypto/Wallet to Cash
+    'crypto',            -- Crypto to Crypto
+    'bank_transfer',     -- Bank/Loan/Investment/Crypto/Wallet to Bank
+    'receivable',        -- Receivable to Receivable
+    'other'              -- Default / Unspecified transfer method
+);
 
 CREATE TYPE counterparty_type AS ENUM ('person','merchant','company','bank','government','organization','other');
 

@@ -362,12 +362,26 @@ BEGIN
             -- From account (outflow including fees)
             SELECT type INTO v_account_type FROM accounts WHERE id = NEW.from_account;
             UPDATE accounts SET updated_at = NOW() WHERE id = NEW.from_account;
-            PERFORM set_account_balance(v_account_type, NEW.from_account, -(v_amount + COALESCE(NEW.fees,0)));
+
+            IF v_account_type = 'credit_card' OR v_account_type = 'loan' THEN
+                -- Paying with credit card or loan increases balance owed
+                PERFORM set_account_balance(v_account_type, NEW.from_account, v_amount + COALESCE(NEW.fees,0));
+            ELSE
+                -- Regular outflow
+                PERFORM set_account_balance(v_account_type, NEW.from_account, -(v_amount + COALESCE(NEW.fees,0)));
+            END IF;
 
             -- To account (inflow)
             SELECT type INTO v_account_type FROM accounts WHERE id = NEW.to_account;
             UPDATE accounts SET updated_at = NOW() WHERE id = NEW.to_account;
-            PERFORM set_account_balance(v_account_type, NEW.to_account, v_amount);
+
+            IF v_account_type = 'credit_card' OR v_account_type = 'loan' THEN
+                -- Paying to credit card or loan reduces balance owed
+                PERFORM set_account_balance(v_account_type, NEW.to_account, -v_amount);
+            ELSE
+                -- Regular inflow
+                PERFORM set_account_balance(v_account_type, NEW.to_account, v_amount);
+            END IF;
 
         WHEN 'transactions_investment' THEN
             -- Destination investment account

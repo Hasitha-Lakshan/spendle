@@ -319,55 +319,6 @@ CREATE TRIGGER trg_currency_match_transfer
     FOR EACH ROW EXECUTE FUNCTION enforce_currency_match();
 
 -- =========================================
--- 04. Function: validate_credit_limit
--- =========================================
--- Purpose:
---   Enforces that credit card account balances never exceed their credit limits.
---
--- Behavior:
---   - Trigger fires BEFORE INSERT or UPDATE on public.credit_card_accounts
---   - Compares NEW.current_balance against NEW.credit_limit
---   - Raises an exception with a descriptive, formatted error message if the balance exceeds the limit
---
--- Parameters:
---   - Implicit NEW record (trigger variable) representing the row being inserted or updated
---
--- Returns:
---   - NEW record if valid
---   - Exception if NEW.current_balance > NEW.credit_limit
---
--- Notes:
---   - Uses SECURITY DEFINER to bypass potential RLS restrictions
---   - Locks search_path to public to avoid role-mutable schema resolution issues
---   - Uses TO_CHAR formatting for numeric values in the error message
---   - Schema-qualified references (public.credit_card_accounts) ensure predictable table resolution
-CREATE OR REPLACE FUNCTION public.validate_credit_limit()
-RETURNS TRIGGER
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public
-AS $$
-BEGIN
-    IF NEW.current_balance > NEW.credit_limit THEN
-        RAISE EXCEPTION
-            USING MESSAGE = FORMAT(
-                'Credit card balance (%s) exceeds credit limit (%s) for account %s',
-                TO_CHAR(NEW.current_balance, 'FM999999999.00'),
-                TO_CHAR(NEW.credit_limit, 'FM999999999.00'),
-                NEW.account_id
-            ),
-            ERRCODE = 'check_violation';
-    END IF;
-    RETURN NEW;
-END;
-$$;
-
-CREATE TRIGGER trg_validate_credit_limit
-BEFORE INSERT OR UPDATE ON public.credit_card_accounts
-FOR EACH ROW
-EXECUTE FUNCTION public.validate_credit_limit();
-
--- =========================================
 -- 05. Function: validate_account_balance
 -- =========================================
 -- Purpose:
@@ -418,8 +369,9 @@ BEGIN
             END IF;
 
         WHEN 'credit_card_accounts' THEN
+            -- Allow negative current_balance, just warn
             IF NEW.current_balance < 0 THEN
-                RAISE EXCEPTION 'Credit card account % cannot have negative current balance: %', NEW.account_id, NEW.current_balance;
+                RAISE WARNING 'Credit card account % has negative current balance: %', NEW.account_id, NEW.current_balance;
             END IF;
             IF NEW.credit_limit IS NOT NULL AND NEW.current_balance > NEW.credit_limit THEN
                 RAISE EXCEPTION 'Credit card account % exceeds credit limit (%): current balance %', NEW.account_id, NEW.credit_limit, NEW.current_balance;
@@ -644,6 +596,5 @@ GRANT EXECUTE ON FUNCTION update_receivable_status() TO authenticated;
 GRANT EXECUTE ON FUNCTION update_loan_status() TO authenticated;
 GRANT EXECUTE ON FUNCTION enforce_currency_match() TO authenticated;
 GRANT EXECUTE ON FUNCTION cleanup_specialized_account() TO authenticated;
-GRANT EXECUTE ON FUNCTION validate_credit_limit() TO authenticated;
 GRANT EXECUTE ON FUNCTION validate_account_balance() TO authenticated;
 GRANT EXECUTE ON FUNCTION validate_account_modification() TO authenticated;

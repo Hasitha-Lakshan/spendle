@@ -423,6 +423,101 @@ BEGIN
 END;
 $$;
 
+-- =========================================
+-- 07. Function: create_transfer_transaction
+-- =========================================
+-- Create Transfer Transaction
+-- Purpose: Create a new transfer transaction between two accounts with validation
+-- Parameters: 
+--   p_from_account (UUID)   - Source account ID
+--   p_to_account (UUID)     - Destination account ID
+--   p_amount (DECIMAL)      - Transfer amount (must be positive)
+--   p_currency (VARCHAR)    - Currency code (default 'USD')
+--   p_transfer_method (ENUM transfer_method) - Method of transfer (default 'other')
+--   p_fees (DECIMAL)        - Optional transfer fees (default 0)
+--   p_notes (TEXT)          - Optional notes
+-- Returns: UUID of created transaction
+-- Security: INVOKER (relies on RLS and triggers for validation and balance updates)
+-- RLS: Ownership of both accounts validated by RLS, transaction linked with user_id
+CREATE OR REPLACE FUNCTION create_transfer_transaction(
+    p_from_account UUID,
+    p_to_account UUID,
+    p_amount DECIMAL,
+    p_currency VARCHAR DEFAULT 'USD',
+    p_transfer_method transfer_method DEFAULT 'other',
+    p_fees DECIMAL DEFAULT 0,
+    p_notes TEXT DEFAULT NULL
+)
+RETURNS UUID
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = pg_catalog, public
+VOLATILE
+AS $$
+DECLARE
+    v_transaction_id UUID;
+    v_user_id UUID;
+BEGIN
+    -- Get current user
+    v_user_id := auth.uid();
+    IF v_user_id IS NULL THEN
+        RAISE EXCEPTION 'No authenticated user found';
+    END IF;
+
+    -- Validate amount
+    IF p_amount <= 0 THEN
+        RAISE EXCEPTION 'Transfer amount must be positive';
+    END IF;
+
+    -- Prevent self-transfer
+    IF p_from_account = p_to_account THEN
+        RAISE EXCEPTION 'Cannot transfer to the same account';
+    END IF;
+
+    -- Create base transaction
+    INSERT INTO transactions (
+        user_id,
+        type,
+        amount,
+        currency,
+        notes,
+        created_month,
+        type_amount_jsonb
+    )
+    VALUES (
+        v_user_id,
+        'transfer',
+        p_amount,
+        p_currency,
+        p_notes,
+        date_trunc('month', now())::date,
+        jsonb_build_object('type','transfer','amount',p_amount,'fees',COALESCE(p_fees,0))
+    )
+    RETURNING id INTO v_transaction_id;
+
+    -- Create transfer transaction details
+    INSERT INTO transactions_transfer (
+        transaction_id,
+        from_account,
+        to_account,
+        transfer_method,
+        fees,
+        created_at,
+        updated_at
+    )
+    VALUES (
+        v_transaction_id,
+        p_from_account,
+        p_to_account,
+        p_transfer_method,
+        COALESCE(p_fees,0),
+        now(),
+        now()
+    );
+
+    RETURN v_transaction_id;
+END;
+$$;
 
 -- =========================================
 -- 17. Function: compute_transaction_direction
@@ -457,79 +552,6 @@ AS $$
         WHEN p_type = 'transfer' THEN 'neutral'::transaction_direction
         ELSE 'unknown'::transaction_direction
     END;
-$$;
-
-
-
--- =========================================
--- 03. Function: execute_transfer
--- =========================================
--- Atomic Transfer Between Accounts
--- Purpose: Safely transfer funds between two accounts with validation
--- Parameters: from_account, to_account, amount, currency, optional notes and fees
--- Returns: UUID of created transaction
--- Security: INVOKER (relies on RLS and triggers for validation)
--- RLS: Account ownership validated by RLS, transaction details created with proper user_id
--- NOTE: Uses new transactions_transfer table instead of dual transactions
-CREATE OR REPLACE FUNCTION execute_transfer(
-    p_from_account UUID,
-    p_to_account UUID,
-    p_amount DECIMAL,
-    p_currency VARCHAR DEFAULT 'USD',
-    p_transfer_method transfer_method DEFAULT 'other',
-    p_fees DECIMAL DEFAULT 0,
-    p_notes TEXT DEFAULT NULL
-)
-RETURNS UUID
-LANGUAGE plpgsql
-SECURITY INVOKER
-SET search_path = pg_catalog, public
-VOLATILE
-AS $$
-DECLARE
-    v_transaction_id UUID;
-    v_user_id UUID;
-BEGIN
-    -- Get current user (will be validated by RLS)
-    v_user_id := auth.uid();
-    IF v_user_id IS NULL THEN
-        RAISE EXCEPTION 'No authenticated user found';
-    END IF;
-    
-    -- Validate amount is positive
-    IF p_amount <= 0 THEN
-        RAISE EXCEPTION 'Transfer amount must be positive';
-    END IF;
-    
-    -- Validate accounts are different
-    IF p_from_account = p_to_account THEN
-        RAISE EXCEPTION 'Cannot transfer from account to itself';
-    END IF;
-    
-    -- Create base transaction (triggers will validate RLS and currency matching)
-    INSERT INTO transactions (user_id, type, amount, currency, notes)
-    VALUES (v_user_id, 'transfer', p_amount, p_currency, 
-            COALESCE(p_notes, 'Transfer between accounts'))
-    RETURNING id INTO v_transaction_id;
-    
-    -- Create transfer details (triggers will validate account ownership and apply balances)
-    INSERT INTO transactions_transfer (
-        transaction_id, 
-        from_account, 
-        to_account, 
-        transfer_method, 
-        fees
-    )
-    VALUES (
-        v_transaction_id,
-        p_from_account,
-        p_to_account,
-        p_transfer_method,
-        COALESCE(p_fees, 0)
-    );
-    
-    RETURN v_transaction_id;
-END;
 $$;
 
 -- =========================================
@@ -1237,11 +1259,17 @@ END;
 $$;
 
 
-
-
 -- ================================
 -- Grant Permissions
 -- ================================
+GRANT EXECUTE ON FUNCTION create_income_transaction(UUID, DECIMAL, VARCHAR, UUID, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION create_expense_transaction(UUID, DECIMAL, VARCHAR, UUID, payment_method, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION create_investment_transaction(UUID, UUID, DECIMAL, VARCHAR, VARCHAR, VARCHAR, VARCHAR, risk_level, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION create_borrow_transaction(UUID, UUID, DECIMAL, VARCHAR, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION create_lend_transaction(UUID, UUID, DECIMAL, VARCHAR, UUID, DECIMAL, DATE, TEXT, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION create_adjustment_transaction(UUID, DECIMAL, VARCHAR, TEXT, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION create_transfer_transaction( UUID, UUID, DECIMAL, VARCHAR, transfer_method, DECIMAL, TEXT) TO authenticated;
+
 GRANT EXECUTE ON FUNCTION get_user_transaction_count(UUID, transaction_type, DATE, DATE) TO authenticated;
 GRANT EXECUTE ON FUNCTION schedule_recurring_processing() TO authenticated;
 GRANT EXECUTE ON FUNCTION get_recent_transactions(INTEGER) TO authenticated;
@@ -1250,9 +1278,6 @@ GRANT EXECUTE ON FUNCTION compute_transaction_direction(transaction_type, DECIMA
 GRANT EXECUTE ON FUNCTION get_recurring_schedules() TO authenticated;
 GRANT EXECUTE ON FUNCTION execute_due_recurring_transactions(INTEGER) TO authenticated;
 GRANT EXECUTE ON FUNCTION create_recurring_schedule(UUID, recurrence_frequency, INTEGER, DATE, DATE) TO authenticated;
-GRANT EXECUTE ON FUNCTION execute_transfer(UUID, UUID, DECIMAL, VARCHAR, transfer_method, DECIMAL, TEXT) TO authenticated;
-GRANT EXECUTE ON FUNCTION create_expense_transaction(UUID, DECIMAL, VARCHAR, UUID, payment_method, TEXT) TO authenticated;
-GRANT EXECUTE ON FUNCTION create_income_transaction(UUID, DECIMAL, VARCHAR, UUID, TEXT) TO authenticated;
 GRANT EXECUTE ON FUNCTION get_income_summary(timestamptz, timestamptz) TO authenticated;
 GRANT EXECUTE ON FUNCTION get_expense_summary(timestamptz, timestamptz) TO authenticated;
 GRANT EXECUTE ON FUNCTION get_investment_summary(timestamptz, timestamptz) TO authenticated;
@@ -1262,15 +1287,38 @@ GRANT EXECUTE ON FUNCTION get_borrow_lend_summary() TO authenticated;
 -- ================================
 -- Function Documentation
 -- ================================
+COMMENT ON FUNCTION create_income_transaction(
+    UUID, DECIMAL, VARCHAR, UUID, TEXT
+) IS 'RLS-compliant function to create income transactions with validation and automatic balance updates';
+
+COMMENT ON FUNCTION create_expense_transaction(
+    UUID, DECIMAL, VARCHAR, UUID, payment_method, TEXT
+) IS 'RLS-compliant function to create expense transactions with validation and automatic balance updates';
+
+COMMENT ON FUNCTION create_investment_transaction(
+    UUID, UUID, DECIMAL, VARCHAR, VARCHAR, VARCHAR, VARCHAR, risk_level, TEXT
+) IS 'RLS-compliant function to create investment transactions with validation and automatic balance updates';
+
+COMMENT ON FUNCTION create_borrow_transaction(
+    UUID, UUID, DECIMAL, VARCHAR, TEXT
+) IS 'RLS-compliant function to create borrow transactions with validation and automatic balance updates';
+
+COMMENT ON FUNCTION create_lend_transaction(
+    UUID, UUID, DECIMAL, VARCHAR, UUID, DECIMAL, DATE, TEXT, TEXT
+) IS 'RLS-compliant function to create lend transactions with validation and automatic balance updates';
+
+COMMENT ON FUNCTION create_adjustment_transaction(
+    UUID, DECIMAL, VARCHAR, TEXT, TEXT
+) IS 'RLS-compliant function to create adjustment transactions for corrections or balance fixes with validation and automatic balance updates';
+
+COMMENT ON FUNCTION create_transfer_transaction(
+    UUID, UUID, DECIMAL, VARCHAR, transfer_method, DECIMAL, TEXT
+) IS 
+'RLS-compliant function to create transfer transactions between two accounts with validation and automatic balance updates';
+
 COMMENT ON FUNCTION get_recent_transactions(INTEGER) IS 'RLS-compliant recent transactions query';
 COMMENT ON FUNCTION create_recurring_schedule(UUID, recurrence_frequency, INTEGER, DATE, DATE) IS 
 'RLS-compliant function to create recurring transaction schedules';
-COMMENT ON FUNCTION execute_transfer(UUID, UUID, DECIMAL, VARCHAR, transfer_method, DECIMAL, TEXT) IS 
-'RLS-compliant atomic transfer function using new transactions_transfer table';
-COMMENT ON FUNCTION create_expense_transaction(UUID, DECIMAL, VARCHAR, UUID, payment_method, TEXT) IS 
-'RLS-compliant function to create expense transactions with automatic balance updates';
-COMMENT ON FUNCTION create_income_transaction(UUID, DECIMAL, VARCHAR, UUID, TEXT) IS 
-'RLS-compliant function to create income transactions with automatic balance updates';
 COMMENT ON FUNCTION get_income_summary(timestamptz, timestamptz) IS 
 'RLS-compliant function to get income summary by source and account for current user';
 COMMENT ON FUNCTION get_expense_summary(timestamptz, timestamptz) IS 
