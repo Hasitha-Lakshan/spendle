@@ -405,3 +405,30 @@ CREATE POLICY update_own_api_rate_limits ON api_rate_limits
 -- Users can only delete their own rows
 CREATE POLICY delete_own_api_rate_limits ON api_rate_limits
     FOR DELETE USING (user_id = (select auth.uid()));
+
+-- =========================================
+-- EXCHANGE_RATES RLS
+-- =========================================
+ALTER TABLE exchange_rates ENABLE ROW LEVEL SECURITY;
+
+-- SELECT: everyone can see non-deleted rates
+CREATE POLICY select_exchange_rates ON exchange_rates
+    FOR SELECT USING (deleted_at IS NULL);
+
+-- INSERT: only admins
+CREATE POLICY insert_exchange_rates ON exchange_rates
+    FOR INSERT WITH CHECK (public.check_admin_permissions());
+
+-- UPDATE: only admins, only if not soft deleted
+CREATE POLICY update_exchange_rates ON exchange_rates
+    FOR UPDATE USING (
+        deleted_at IS NULL AND public.check_admin_permissions()
+    )
+    WITH CHECK (public.check_admin_permissions());
+
+-- DELETE: only admins, and only if already soft deleted (hard delete)
+CREATE POLICY delete_exchange_rates ON exchange_rates
+    FOR DELETE USING (
+        public.check_admin_permissions() AND deleted_at IS NOT NULL
+    );
+    

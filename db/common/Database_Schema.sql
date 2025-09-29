@@ -278,8 +278,10 @@ CREATE TABLE transactions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID NOT NULL REFERENCES profiles(user_id) ON DELETE CASCADE,
   type transaction_type NOT NULL,
-  amount DECIMAL(36,18) NOT NULL,
-  currency VARCHAR(10) NOT NULL,
+  original_amount DECIMAL(36,18) NOT NULL,
+  original_currency VARCHAR(10) NOT NULL,
+  exchange_rate DECIMAL(36,18),
+  converted_amount DECIMAL(36,18),
   notes TEXT,
   deleted_at timestamptz NULL DEFAULT NULL,
   created_at timestamptz DEFAULT now(),
@@ -389,6 +391,18 @@ CREATE TABLE transactions_adjustment (
   transaction_id UUID NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
   account_id UUID NOT NULL REFERENCES accounts(id),
   reason TEXT, -- reason for adjustment
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now(),
+  deleted_at timestamptz NULL DEFAULT NULL
+);
+
+-- 1. Exchange Rates
+CREATE TABLE exchange_rates (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  from_currency VARCHAR(10) NOT NULL,
+  to_currency VARCHAR(10) NOT NULL,
+  rate NUMERIC NOT NULL CHECK (rate > 0),
+  source TEXT DEFAULT NULL,
   created_at timestamptz DEFAULT now(),
   updated_at timestamptz DEFAULT now(),
   deleted_at timestamptz NULL DEFAULT NULL
@@ -530,8 +544,10 @@ CREATE INDEX idx_income_sources_active ON income_sources(user_id, name) WHERE de
 
 -- ----- Audit log indexes -----
 CREATE INDEX idx_audit_user_table_record ON audit_logs(user_id, table_name, record_id);
-CREATE INDEX idx_audit_old_amount ON audit_logs ((old_data->>'amount'));
-CREATE INDEX idx_audit_new_amount ON audit_logs ((new_data->>'amount'));
+CREATE INDEX idx_audit_old_original_amount ON audit_logs ((old_data->>'original_amount'));
+CREATE INDEX idx_audit_new_original_amount ON audit_logs ((new_data->>'original_amount'));
+CREATE INDEX idx_audit_old_converted_amount ON audit_logs ((old_data->>'converted_amount'));
+CREATE INDEX idx_audit_new_converted_amount ON audit_logs ((new_data->>'converted_amount'));
 CREATE INDEX idx_audit_action_by ON audit_logs(action_by);
 CREATE INDEX idx_audit_created_at ON audit_logs(created_at);
 
@@ -562,6 +578,8 @@ ON counterparties(user_id, deleted_at) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_transactions_recurring_user_deleted 
 ON transactions_recurring(user_id, deleted_at) WHERE deleted_at IS NULL;
 
+CREATE INDEX idx_exchange_rates ON exchange_rates(from_currency, to_currency);
+CREATE INDEX idx_transactions_is_recent ON transactions (created_at DESC) WHERE is_recent = true;
 
 -- Create a role for running scheduled jobs
 -- CREATE ROLE scheduled_job_role LOGIN PASSWORD 'strong_password_here';

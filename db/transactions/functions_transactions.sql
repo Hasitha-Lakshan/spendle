@@ -23,23 +23,52 @@ AS $$
 DECLARE
     v_transaction_id UUID;
     v_user_id UUID;
+    v_account_currency VARCHAR;
+    v_exchange_rate NUMERIC;
 BEGIN
     -- Get current user (will be validated by RLS)
     v_user_id := auth.uid();
     IF v_user_id IS NULL THEN
         RAISE EXCEPTION 'No authenticated user found';
     END IF;
-    
+
     -- Validate amount is positive
     IF p_amount <= 0 THEN
         RAISE EXCEPTION 'Income amount must be positive';
     END IF;
-    
-    -- Create base transaction (triggers will validate RLS and currency matching)
-    INSERT INTO transactions (user_id, type, amount, currency, notes)
-    VALUES (v_user_id, 'income', p_amount, p_currency, p_notes)
+
+    -- Get account currency
+    SELECT currency INTO v_account_currency
+    FROM accounts
+    WHERE id = p_account_id;
+
+    IF v_account_currency IS NULL THEN
+        RAISE EXCEPTION 'Account not found';
+    END IF;
+
+    -- Get exchange rate
+    v_exchange_rate := get_exchange_rate(p_currency, v_account_currency);
+
+    -- Create base transaction
+    INSERT INTO transactions (
+        user_id,
+        type,
+        original_amount,
+        original_currency,
+        exchange_rate,
+        converted_amount,
+        notes
+    ) VALUES (
+        v_user_id,
+        'income',
+        p_amount,
+        p_currency,
+        v_exchange_rate,
+        p_amount * v_exchange_rate,
+        p_notes
+    )
     RETURNING id INTO v_transaction_id;
-    
+
     -- Create income details (triggers will validate account/source ownership and apply balances)
     INSERT INTO transactions_income (
         transaction_id,
@@ -53,7 +82,7 @@ BEGIN
         p_source_id,
         'Income transaction'
     );
-    
+
     RETURN v_transaction_id;
 END;
 $$;
@@ -84,23 +113,52 @@ AS $$
 DECLARE
     v_transaction_id UUID;
     v_user_id UUID;
+    v_account_currency VARCHAR;
+    v_exchange_rate NUMERIC;
 BEGIN
-    -- Get current user (will be validated by RLS)
+    -- Get current user (validated by RLS)
     v_user_id := auth.uid();
     IF v_user_id IS NULL THEN
         RAISE EXCEPTION 'No authenticated user found';
     END IF;
-    
+
     -- Validate amount is positive
     IF p_amount <= 0 THEN
         RAISE EXCEPTION 'Expense amount must be positive';
     END IF;
-    
-    -- Create base transaction (triggers will validate RLS and currency matching)
-    INSERT INTO transactions (user_id, type, amount, currency, notes)
-    VALUES (v_user_id, 'expense', p_amount, p_currency, p_notes)
+
+    -- Get account currency
+    SELECT currency INTO v_account_currency 
+    FROM accounts 
+    WHERE id = p_account_id;
+
+    IF v_account_currency IS NULL THEN
+        RAISE EXCEPTION 'Account not found';
+    END IF;
+
+    -- Get exchange rate
+    v_exchange_rate := get_exchange_rate(p_currency, v_account_currency);
+
+    -- Create base transaction
+    INSERT INTO transactions (
+        user_id, 
+        type, 
+        original_amount, 
+        original_currency,
+        exchange_rate, 
+        converted_amount, 
+        notes
+    ) VALUES (
+        v_user_id, 
+        'expense', 
+        p_amount, 
+        p_currency,
+        v_exchange_rate, 
+        p_amount * v_exchange_rate, 
+        p_notes
+    )
     RETURNING id INTO v_transaction_id;
-    
+
     -- Create expense details (triggers will validate account/category ownership and apply balances)
     INSERT INTO transactions_expense (
         transaction_id,
@@ -114,7 +172,7 @@ BEGIN
         p_category_id,
         p_payment_method
     );
-    
+
     RETURN v_transaction_id;
 END;
 $$;
@@ -129,8 +187,8 @@ $$;
 -- Security: INVOKER (relies on RLS and triggers for validation)
 -- RLS: Account and category ownership validated by RLS, transaction created with proper user_id
 CREATE OR REPLACE FUNCTION create_investment_transaction(
-    p_funding_account_id UUID,              -- account providing the funds (cash, bank, wallet)
-    p_investment_account_id UUID,           -- account receiving the investment (investment/crypto/etc.)
+    p_funding_account_id UUID,              -- account providing the funds
+    p_investment_account_id UUID,           -- account receiving the investment
     p_amount DECIMAL,
     p_currency VARCHAR DEFAULT 'USD',
     p_asset_type VARCHAR DEFAULT NULL,
@@ -148,6 +206,8 @@ AS $$
 DECLARE
     v_transaction_id UUID;
     v_user_id UUID;
+    v_account_currency VARCHAR;
+    v_exchange_rate NUMERIC;
 BEGIN
     -- Get current user (validated by RLS)
     v_user_id := auth.uid();
@@ -160,9 +220,36 @@ BEGIN
         RAISE EXCEPTION 'Investment amount must be positive';
     END IF;
 
+    -- Get funding account currency
+    SELECT currency INTO v_account_currency 
+    FROM accounts 
+    WHERE id = p_funding_account_id;
+
+    IF v_account_currency IS NULL THEN
+        RAISE EXCEPTION 'Funding account not found';
+    END IF;
+
+    -- Get exchange rate
+    v_exchange_rate := get_exchange_rate(p_currency, v_account_currency);
+
     -- Create base transaction
-    INSERT INTO transactions (user_id, type, amount, currency, notes)
-    VALUES (v_user_id, 'investment', p_amount, p_currency, p_notes)
+    INSERT INTO transactions (
+        user_id, 
+        type, 
+        original_amount, 
+        original_currency,
+        exchange_rate, 
+        converted_amount, 
+        notes
+    ) VALUES (
+        v_user_id, 
+        'investment', 
+        p_amount, 
+        p_currency,
+        v_exchange_rate, 
+        p_amount * v_exchange_rate, 
+        p_notes
+    )
     RETURNING id INTO v_transaction_id;
 
     -- Create investment transaction details
@@ -218,6 +305,8 @@ AS $$
 DECLARE
     v_transaction_id UUID;
     v_user_id UUID;
+    v_account_currency VARCHAR;
+    v_exchange_rate NUMERIC;
 BEGIN
     -- Get current user (validated by RLS + triggers)
     v_user_id := auth.uid();
@@ -230,12 +319,26 @@ BEGIN
         RAISE EXCEPTION 'Borrow amount must be positive';
     END IF;
 
+    -- Get disbursement account currency (where funds are received)
+    SELECT currency INTO v_account_currency 
+    FROM accounts 
+    WHERE id = p_disbursement_account_id;
+
+    IF v_account_currency IS NULL THEN
+        RAISE EXCEPTION 'Disbursement account not found';
+    END IF;
+
+    -- Get exchange rate
+    v_exchange_rate := get_exchange_rate(p_currency, v_account_currency);
+
     -- Insert base transaction
     INSERT INTO transactions (
         user_id,
         type,
-        amount,
-        currency,
+        original_amount,
+        original_currency,
+        exchange_rate,
+        converted_amount,
         notes,
         created_month,
         type_amount_jsonb
@@ -245,9 +348,9 @@ BEGIN
         'borrow',
         p_amount,
         p_currency,
-        p_notes,
-        date_trunc('month', now())::date,
-        jsonb_build_object('type','borrow','amount',p_amount)
+        v_exchange_rate,
+        p_amount * v_exchange_rate,
+        p_notes
     )
     RETURNING id INTO v_transaction_id;
 
@@ -300,6 +403,8 @@ AS $$
 DECLARE
     v_transaction_id UUID;
     v_user_id UUID;
+    v_account_currency VARCHAR;
+    v_exchange_rate NUMERIC;
 BEGIN
     -- Get current user (validated by RLS + triggers)
     v_user_id := auth.uid();
@@ -312,12 +417,26 @@ BEGIN
         RAISE EXCEPTION 'Lend amount must be positive';
     END IF;
 
-    -- Create base transaction
+    -- Get funding account currency (source of funds)
+    SELECT currency INTO v_account_currency 
+    FROM accounts 
+    WHERE id = p_funding_account_id;
+
+    IF v_account_currency IS NULL THEN
+        RAISE EXCEPTION 'Funding account not found';
+    END IF;
+
+    -- Get exchange rate
+    v_exchange_rate := get_exchange_rate(p_currency, v_account_currency);
+
+    -- Insert base transaction
     INSERT INTO transactions (
         user_id,
         type,
-        amount,
-        currency,
+        original_amount,
+        original_currency,
+        exchange_rate,
+        converted_amount,
         notes,
         created_month,
         type_amount_jsonb
@@ -327,9 +446,9 @@ BEGIN
         'lend',
         p_amount,
         p_currency,
-        p_notes,
-        date_trunc('month', now())::date,
-        jsonb_build_object('type','lend','amount',p_amount)
+        v_exchange_rate,
+        p_amount * v_exchange_rate,
+        p_notes
     )
     RETURNING id INTO v_transaction_id;
 
@@ -386,6 +505,8 @@ AS $$
 DECLARE
     v_transaction_id UUID;
     v_user_id UUID;
+    v_account_currency VARCHAR;
+    v_exchange_rate NUMERIC;
 BEGIN
     -- Get current user (validated by RLS)
     v_user_id := auth.uid();
@@ -398,9 +519,37 @@ BEGIN
         RAISE EXCEPTION 'Adjustment amount cannot be zero';
     END IF;
 
+    -- Get account currency
+    SELECT currency INTO v_account_currency 
+    FROM accounts 
+    WHERE id = p_account_id;
+
+    IF v_account_currency IS NULL THEN
+        RAISE EXCEPTION 'Account not found';
+    END IF;
+
+    -- Get exchange rate
+    v_exchange_rate := get_exchange_rate(p_currency, v_account_currency);
+
     -- Create base transaction (neutral type)
-    INSERT INTO transactions (user_id, type, amount, currency, notes)
-    VALUES (v_user_id, 'adjustment', p_amount, p_currency, p_notes)
+    INSERT INTO transactions (
+        user_id,
+        type,
+        original_amount,
+        original_currency,
+        exchange_rate,
+        converted_amount,
+        notes
+    )
+    VALUES (
+        v_user_id,
+        'adjustment',
+        p_amount,
+        p_currency,
+        v_exchange_rate,
+        p_amount * v_exchange_rate,
+        p_notes
+    )
     RETURNING id INTO v_transaction_id;
 
     -- Create adjustment details
@@ -457,6 +606,12 @@ AS $$
 DECLARE
     v_transaction_id UUID;
     v_user_id UUID;
+    v_from_account_currency VARCHAR;
+    v_to_account_currency VARCHAR;
+    v_exchange_rate_from NUMERIC;
+    v_exchange_rate_to NUMERIC;
+    v_converted_amount_from DECIMAL;
+    v_converted_amount_to DECIMAL;
 BEGIN
     -- Get current user
     v_user_id := auth.uid();
@@ -474,12 +629,37 @@ BEGIN
         RAISE EXCEPTION 'Cannot transfer to the same account';
     END IF;
 
+    -- Get from_account currency
+    SELECT currency INTO v_from_account_currency
+    FROM accounts
+    WHERE id = p_from_account;
+    IF v_from_account_currency IS NULL THEN
+        RAISE EXCEPTION 'From account not found';
+    END IF;
+
+    -- Get to_account currency
+    SELECT currency INTO v_to_account_currency
+    FROM accounts
+    WHERE id = p_to_account;
+    IF v_to_account_currency IS NULL THEN
+        RAISE EXCEPTION 'To account not found';
+    END IF;
+
+    -- Get exchange rates
+    v_exchange_rate_from := get_exchange_rate(p_currency, v_from_account_currency);
+    v_exchange_rate_to := get_exchange_rate(p_currency, v_to_account_currency);
+
+    v_converted_amount_from := p_amount * v_exchange_rate_from;
+    v_converted_amount_to := p_amount * v_exchange_rate_to;
+
     -- Create base transaction
     INSERT INTO transactions (
         user_id,
         type,
-        amount,
-        currency,
+        original_amount,
+        original_currency,
+        exchange_rate,
+        converted_amount,
         notes,
         created_month,
         type_amount_jsonb
@@ -489,9 +669,9 @@ BEGIN
         'transfer',
         p_amount,
         p_currency,
-        p_notes,
-        date_trunc('month', now())::date,
-        jsonb_build_object('type','transfer','amount',p_amount,'fees',COALESCE(p_fees,0))
+        v_exchange_rate_from,
+        v_converted_amount_from,
+        p_notes
     )
     RETURNING id INTO v_transaction_id;
 
@@ -502,6 +682,8 @@ BEGIN
         to_account,
         transfer_method,
         fees,
+        exchange_rate_from,
+        exchange_rate_to,
         created_at,
         updated_at
     )
@@ -511,6 +693,8 @@ BEGIN
         p_to_account,
         p_transfer_method,
         COALESCE(p_fees,0),
+        v_exchange_rate_from,
+        v_exchange_rate_to,
         now(),
         now()
     );
@@ -530,7 +714,7 @@ $$;
 -- RLS: N/A (no data access)
 CREATE OR REPLACE FUNCTION compute_transaction_direction(
     p_type transaction_type, 
-    p_amount DECIMAL
+    p_original_amount DECIMAL
 )
 RETURNS transaction_direction
 LANGUAGE sql
@@ -541,14 +725,14 @@ AS $$
     SELECT CASE
         WHEN p_type = 'income' THEN 'inflow'::transaction_direction
         WHEN p_type = 'expense' THEN 'outflow'::transaction_direction
-        WHEN p_type = 'borrow' AND p_amount >= 0 THEN 'inflow'::transaction_direction
-        WHEN p_type = 'borrow' AND p_amount < 0 THEN 'outflow'::transaction_direction
-        WHEN p_type = 'lend' AND p_amount >= 0 THEN 'outflow'::transaction_direction
-        WHEN p_type = 'lend' AND p_amount < 0 THEN 'inflow'::transaction_direction
-        WHEN p_type = 'investment' AND p_amount >= 0 THEN 'outflow'::transaction_direction
-        WHEN p_type = 'investment' AND p_amount < 0 THEN 'inflow'::transaction_direction
-        WHEN p_type = 'adjustment' AND p_amount >= 0 THEN 'inflow'::transaction_direction
-        WHEN p_type = 'adjustment' AND p_amount < 0 THEN 'outflow'::transaction_direction
+        WHEN p_type = 'borrow' AND p_original_amount >= 0 THEN 'inflow'::transaction_direction
+        WHEN p_type = 'borrow' AND p_original_amount < 0 THEN 'outflow'::transaction_direction
+        WHEN p_type = 'lend' AND p_original_amount >= 0 THEN 'outflow'::transaction_direction
+        WHEN p_type = 'lend' AND p_original_amount < 0 THEN 'inflow'::transaction_direction
+        WHEN p_type = 'investment' AND p_original_amount >= 0 THEN 'outflow'::transaction_direction
+        WHEN p_type = 'investment' AND p_original_amount < 0 THEN 'inflow'::transaction_direction
+        WHEN p_type = 'adjustment' AND p_original_amount >= 0 THEN 'inflow'::transaction_direction
+        WHEN p_type = 'adjustment' AND p_original_amount < 0 THEN 'outflow'::transaction_direction
         WHEN p_type = 'transfer' THEN 'neutral'::transaction_direction
         ELSE 'unknown'::transaction_direction
     END;
@@ -571,26 +755,26 @@ DECLARE
     is_admin BOOLEAN;
 BEGIN
     current_user_id := auth.uid();
-    
+
     IF current_user_id IS NULL THEN
         RAISE EXCEPTION 'Not authenticated';
     END IF;
-    
+
     -- Get transaction details
     SELECT user_id, type INTO transaction_owner, transaction_type
     FROM transactions
     WHERE id = transaction_id;
-    
+
     IF transaction_owner IS NULL THEN
         RAISE EXCEPTION 'Transaction not found';
     END IF;
-    
+
     -- Check permissions
     is_admin := check_admin_permissions();
     IF NOT is_admin AND current_user_id != transaction_owner THEN
         RAISE EXCEPTION 'Permission denied';
     END IF;
-    
+
     -- Delete from transaction detail tables
     DELETE FROM transactions_income WHERE transaction_id = transaction_id;
     DELETE FROM transactions_expense WHERE transaction_id = transaction_id;
@@ -599,10 +783,14 @@ BEGIN
     DELETE FROM transactions_lend WHERE transaction_id = transaction_id;
     DELETE FROM transactions_transfer WHERE transaction_id = transaction_id;
     DELETE FROM transactions_adjustment WHERE transaction_id = transaction_id;
-    
+
     -- Delete the main transaction record
-    DELETE FROM transactions WHERE id = transaction_id;
-    
+    DELETE FROM transactions WHERE id = transaction_id RETURNING id INTO transaction_id;
+
+    IF transaction_id IS NULL THEN
+        RAISE EXCEPTION 'Transaction deletion failed';
+    END IF;
+
     RETURN TRUE;
 END;
 $$;
@@ -635,21 +823,34 @@ DECLARE
     v_recurring_id UUID;
     v_user_id UUID;
     v_next_occurrence timestamptz;
+    v_template_exists BOOLEAN;
 BEGIN
     -- Get current user
     v_user_id := auth.uid();
     IF v_user_id IS NULL THEN
         RAISE EXCEPTION 'No authenticated user found';
     END IF;
-    
+
     -- Validate interval
     IF p_interval <= 0 THEN
         RAISE EXCEPTION 'Interval must be positive';
     END IF;
-    
+
+    -- Ensure template transaction exists and belongs to user
+    SELECT EXISTS (
+        SELECT 1 FROM transactions
+        WHERE id = p_template_transaction_id
+        AND user_id = v_user_id
+        AND deleted_at IS NULL
+    ) INTO v_template_exists;
+
+    IF NOT v_template_exists THEN
+        RAISE EXCEPTION 'Template transaction not found or access denied';
+    END IF;
+
     -- Calculate next occurrence
     v_next_occurrence := p_start_date::timestamptz;
-    
+
     -- Create recurring schedule (trigger will validate template exists and set action_by)
     INSERT INTO transactions_recurring (
         transaction_template_id,
@@ -658,7 +859,9 @@ BEGIN
         start_date,
         end_date,
         next_occurrence,
-        user_id
+        user_id,
+        created_at,
+        updated_at
     )
     VALUES (
         p_template_transaction_id,
@@ -667,10 +870,12 @@ BEGIN
         p_start_date,
         p_end_date,
         v_next_occurrence,
-        v_user_id
+        v_user_id,
+        now(),
+        now()
     )
     RETURNING id INTO v_recurring_id;
-    
+
     RETURN v_recurring_id;
 END;
 $$;
@@ -684,9 +889,7 @@ $$;
 -- Returns: TABLE with count and created transaction IDs
 -- Security: INVOKER (relies on RLS and existing process_recurring_transactions trigger function)
 -- RLS: Only processes recurring transactions owned by current user
-CREATE OR REPLACE FUNCTION execute_due_recurring_transactions(
-    p_limit INTEGER DEFAULT NULL
-)
+CREATE OR REPLACE FUNCTION execute_due_recurring_transactions()
 RETURNS TABLE(processed_count INTEGER, new_transaction_ids UUID[])
 LANGUAGE plpgsql
 SECURITY INVOKER
@@ -694,8 +897,9 @@ SET search_path = pg_catalog, public
 VOLATILE
 AS $$
 BEGIN
-    -- Call the existing trigger function that handles RLS properly
-    RETURN QUERY SELECT * FROM process_recurring_transactions();
+    -- Execute due recurring transactions, passing a limit if specified
+    RETURN QUERY
+    SELECT * FROM process_recurring_transactions();
 END;
 $$;
 
@@ -722,9 +926,10 @@ BEGIN
     SELECT processed_count, new_transaction_ids INTO result_record 
     FROM public.process_recurring_transactions();
 
+    -- Build log message
     processing_result := format(
         'Processed %s recurring transactions at %s. New transaction IDs: %s',
-        result_record.processed_count,
+        COALESCE(result_record.processed_count, 0),
         NOW()::TEXT,
         COALESCE(array_to_string(result_record.new_transaction_ids, ', '), 'none')
     );
@@ -738,7 +943,7 @@ BEGIN
         gen_random_uuid(),
         'RECURRING_PROCESSING',
         jsonb_build_object(
-            'processed_count', result_record.processed_count,
+            'processed_count', COALESCE(result_record.processed_count, 0),
             'new_transaction_ids', result_record.new_transaction_ids,
             'processed_at', NOW()
         )
@@ -765,8 +970,11 @@ CREATE OR REPLACE FUNCTION get_recent_transactions(p_limit INTEGER DEFAULT 10)
 RETURNS TABLE(
     transaction_id UUID,
     transaction_type transaction_type,
-    amount DECIMAL(36,18),
-    currency VARCHAR(10),
+    original_amount DECIMAL(36,18),
+    original_currency VARCHAR(10),
+    converted_amount DECIMAL(36,18),
+    converted_currency VARCHAR(10),
+    exchange_rate DECIMAL(36,18),
     transaction_date TIMESTAMPTZ,
     account_name TEXT,
     notes TEXT
@@ -779,44 +987,68 @@ DECLARE
     v_current_user UUID;
 BEGIN
     v_current_user := auth.uid();
-    
+
     RETURN QUERY
     SELECT 
         t.id AS transaction_id,
         t.type AS transaction_type,
-        t.amount,
-        t.currency,
+        t.original_amount,
+        t.original_currency,
+        t.converted_amount,
+        t.currency AS converted_currency,
+        t.exchange_rate,
         t.created_at AS transaction_date,
         COALESCE(
-            (SELECT a.account_name FROM accounts a 
+            (SELECT a.account_name 
+             FROM accounts a 
              JOIN transactions_income ti ON a.id = ti.account_id 
-             WHERE ti.transaction_id = t.id AND a.user_id = v_current_user AND a.deleted_at IS NULL),
-            (SELECT a.account_name FROM accounts a 
+             WHERE ti.transaction_id = t.id 
+               AND a.user_id = v_current_user 
+               AND a.deleted_at IS NULL),
+            (SELECT a.account_name 
+             FROM accounts a 
              JOIN transactions_expense te ON a.id = te.account_id 
-             WHERE te.transaction_id = t.id AND a.user_id = v_current_user AND a.deleted_at IS NULL),
-            (SELECT a.account_name FROM accounts a 
-             JOIN transactions_investment tinv ON a.id = tinv.account_id 
-             WHERE tinv.transaction_id = t.id AND a.user_id = v_current_user AND a.deleted_at IS NULL),
-            (SELECT a.account_name FROM accounts a 
+             WHERE te.transaction_id = t.id 
+               AND a.user_id = v_current_user 
+               AND a.deleted_at IS NULL),
+            (SELECT a.account_name 
+             FROM accounts a 
+             JOIN transactions_investment tinv ON a.id = tinv.funding_account_id 
+             WHERE tinv.transaction_id = t.id 
+               AND a.user_id = v_current_user 
+               AND a.deleted_at IS NULL),
+            (SELECT a.account_name 
+             FROM accounts a 
              JOIN transactions_adjustment tadj ON a.id = tadj.account_id 
-             WHERE tadj.transaction_id = t.id AND a.user_id = v_current_user AND a.deleted_at IS NULL),
-            (SELECT a.account_name FROM accounts a 
-             JOIN transactions_borrow tb ON a.id = tb.account_id 
-             WHERE tb.transaction_id = t.id AND a.user_id = v_current_user AND a.deleted_at IS NULL),
-            (SELECT a.account_name FROM accounts a 
-             JOIN transactions_lend tl ON a.id = tl.account_id 
-             WHERE tl.transaction_id = t.id AND a.user_id = v_current_user AND a.deleted_at IS NULL),
-            (SELECT CONCAT(af.account_name, ' → ', at.account_name) FROM 
-             accounts af, accounts at, transactions_transfer tt 
+             WHERE tadj.transaction_id = t.id 
+               AND a.user_id = v_current_user 
+               AND a.deleted_at IS NULL),
+            (SELECT a.account_name 
+             FROM accounts a 
+             JOIN transactions_borrow tb ON a.id = tb.disbursement_account_id 
+             WHERE tb.transaction_id = t.id 
+               AND a.user_id = v_current_user 
+               AND a.deleted_at IS NULL),
+            (SELECT a.account_name 
+             FROM accounts a 
+             JOIN transactions_lend tl ON a.id = tl.funding_account_id 
+             WHERE tl.transaction_id = t.id 
+               AND a.user_id = v_current_user 
+               AND a.deleted_at IS NULL),
+            (SELECT CONCAT(af.account_name, ' → ', at.account_name) 
+             FROM accounts af, accounts at, transactions_transfer tt 
              WHERE tt.transaction_id = t.id 
-             AND af.id = tt.from_account AND at.id = tt.to_account 
-             AND af.user_id = v_current_user AND at.user_id = v_current_user
-             AND af.deleted_at IS NULL AND at.deleted_at IS NULL)
+               AND af.id = tt.from_account 
+               AND at.id = tt.to_account 
+               AND af.user_id = v_current_user 
+               AND at.user_id = v_current_user
+               AND af.deleted_at IS NULL 
+               AND at.deleted_at IS NULL)
         ) AS account_name,
         t.notes
     FROM transactions t
     WHERE t.user_id = v_current_user
-    AND t.deleted_at IS NULL
+      AND t.deleted_at IS NULL
     ORDER BY t.created_at DESC
     LIMIT p_limit;
 END;
@@ -841,8 +1073,11 @@ CREATE OR REPLACE FUNCTION get_user_transactions(
 RETURNS TABLE(
     transaction_id UUID,
     transaction_type transaction_type,
-    amount DECIMAL,
-    currency VARCHAR,
+    original_amount DECIMAL(36,18),
+    original_currency VARCHAR(10),
+    converted_amount DECIMAL(36,18),
+    converted_currency VARCHAR(10),
+    exchange_rate DECIMAL(36,18),
     notes TEXT,
     created_at timestamptz,
     account_id UUID,
@@ -858,16 +1093,19 @@ AS $$
 BEGIN
     RETURN QUERY
     SELECT 
-        t.id as transaction_id,
-        t.type as transaction_type,
-        t.amount,
-        t.currency,
+        t.id AS transaction_id,
+        t.type AS transaction_type,
+        t.original_amount,
+        t.original_currency,
+        t.converted_amount,
+        t.currency AS converted_currency,
+        t.exchange_rate,
         t.notes,
         t.created_at,
         COALESCE(
-            ti.account_id, te.account_id, tinv.account_id, 
-            tb.account_id, tl.account_id, ta.account_id
-        ) as account_id,
+            ti.account_id, te.account_id, tinv.funding_account_id, 
+            tb.disbursement_account_id, tl.funding_account_id, ta.account_id
+        ) AS account_id,
         a.account_name,
         CASE 
             WHEN t.type = 'income' THEN jsonb_build_object(
@@ -886,9 +1124,30 @@ BEGIN
                 'platform', tinv.platform,
                 'risk_level', tinv.risk_level
             )
+            WHEN t.type = 'borrow' THEN jsonb_build_object(
+                'loan_account_id', tb.loan_account_id,
+                'disbursement_account_id', tb.disbursement_account_id
+            )
+            WHEN t.type = 'lend' THEN jsonb_build_object(
+                'receivable_account_id', tl.receivable_account_id,
+                'funding_account_id', tl.funding_account_id,
+                'counterparty_id', tl.counterparty_id,
+                'interest_rate', tl.interest_rate,
+                'due_date', tl.due_date,
+                'collateral', tl.collateral
+            )
+            WHEN t.type = 'adjustment' THEN jsonb_build_object(
+                'reason', ta.reason
+            )
+            WHEN t.type = 'transfer' THEN jsonb_build_object(
+                'from_account', tt.from_account,
+                'to_account', tt.to_account,
+                'transfer_method', tt.transfer_method,
+                'fees', tt.fees
+            )
             ELSE NULL
-        END as category_info,
-        compute_transaction_direction(t.type, t.amount) as direction
+        END AS category_info,
+        compute_transaction_direction(t.type, t.converted_amount) AS direction
     FROM transactions t
     LEFT JOIN transactions_income ti ON t.id = ti.transaction_id AND ti.deleted_at IS NULL
     LEFT JOIN transactions_expense te ON t.id = te.transaction_id AND te.deleted_at IS NULL
@@ -896,7 +1155,12 @@ BEGIN
     LEFT JOIN transactions_borrow tb ON t.id = tb.transaction_id AND tb.deleted_at IS NULL
     LEFT JOIN transactions_lend tl ON t.id = tl.transaction_id AND tl.deleted_at IS NULL
     LEFT JOIN transactions_adjustment ta ON t.id = ta.transaction_id AND ta.deleted_at IS NULL
-    LEFT JOIN accounts a ON COALESCE(ti.account_id, te.account_id, tinv.account_id, tb.account_id, tl.account_id, ta.account_id) = a.id
+    LEFT JOIN transactions_transfer tt ON t.id = tt.transaction_id AND tt.deleted_at IS NULL
+    LEFT JOIN accounts a ON COALESCE(
+        ti.account_id, te.account_id, tinv.funding_account_id, 
+        tb.disbursement_account_id, tl.funding_account_id, ta.account_id,
+        tt.from_account
+    ) = a.id
     LEFT JOIN income_sources ins ON ti.source_id = ins.id AND ins.deleted_at IS NULL
     LEFT JOIN expense_subcategories es ON te.category_id = es.id AND es.deleted_at IS NULL
     LEFT JOIN expense_categories ec ON es.category_id = ec.id AND ec.deleted_at IS NULL
@@ -927,35 +1191,38 @@ DECLARE
     is_admin BOOLEAN;
 BEGIN
     current_user_id := auth.uid();
-    
+
     IF current_user_id IS NULL THEN
         RAISE EXCEPTION 'Not authenticated';
     END IF;
-    
+
     -- Get recurring transaction details
-    SELECT user_id, transaction_template_id INTO recurring_owner, template_transaction_id
+    SELECT user_id, transaction_template_id
+    INTO recurring_owner, template_transaction_id
     FROM transactions_recurring
-    WHERE id = recurring_id AND deleted_at IS NULL;
-    
+    WHERE id = recurring_id
+      AND deleted_at IS NULL;
+
     IF recurring_owner IS NULL THEN
         RAISE EXCEPTION 'Recurring transaction not found';
     END IF;
-    
+
     -- Check permissions
     is_admin := check_admin_permissions();
     IF NOT is_admin AND current_user_id != recurring_owner THEN
         RAISE EXCEPTION 'Permission denied';
     END IF;
-    
-    -- Delete the recurring transaction record
-    DELETE FROM transactions_recurring WHERE id = recurring_id;
-    
-    -- Optionally delete the template transaction too
-    -- (You might want to keep it for audit purposes)
+
+    -- Soft-delete recurring schedule
+    UPDATE transactions_recurring
+    SET deleted_at = NOW()
+    WHERE id = recurring_id;
+
+    -- Hard delete the template transaction if desired
     IF template_transaction_id IS NOT NULL THEN
         PERFORM hard_delete_transaction(template_transaction_id);
     END IF;
-    
+
     RETURN TRUE;
 END;
 $$;
@@ -980,16 +1247,23 @@ DECLARE
     v_user_id UUID;
     v_count INTEGER;
 BEGIN
+    -- Use passed user_id or fallback to authenticated user
     v_user_id := COALESCE(p_user_id, auth.uid());
-    
-    SELECT COUNT(*)::INTEGER INTO v_count
+
+    IF v_user_id IS NULL THEN
+        RAISE EXCEPTION 'No authenticated user found';
+    END IF;
+
+    -- Count transactions for the user with filters
+    SELECT COUNT(*)::INTEGER
+    INTO v_count
     FROM transactions
     WHERE user_id = v_user_id
       AND deleted_at IS NULL
       AND (p_transaction_type IS NULL OR type = p_transaction_type)
       AND (p_start_date IS NULL OR created_at::DATE >= p_start_date)
       AND (p_end_date IS NULL OR created_at::DATE <= p_end_date);
-      
+
     RETURN v_count;
 END;
 $$;
@@ -1008,8 +1282,10 @@ RETURNS TABLE(
     schedule_id UUID,
     template_transaction_id UUID,
     transaction_type transaction_type,
-    amount DECIMAL,
-    currency VARCHAR,
+    original_amount DECIMAL(36,18),
+    original_currency VARCHAR(10),
+    exchange_rate DECIMAL(36,18),
+    converted_amount DECIMAL(36,18),
     frequency recurrence_frequency,
     recurrence_interval INTEGER,
     next_occurrence timestamptz,
@@ -1024,18 +1300,21 @@ AS $$
 BEGIN
     RETURN QUERY
     SELECT 
-        tr.id as schedule_id,
+        tr.id AS schedule_id,
         tr.transaction_template_id,
-        t.type as transaction_type,
-        t.amount,
-        t.currency,
+        t.type AS transaction_type,
+        t.original_amount,
+        t.original_currency,
+        t.exchange_rate,
+        t.converted_amount,
         tr.frequency,
-        tr.interval as recurrence_interval,
+        tr.interval AS recurrence_interval,
         tr.next_occurrence,
         tr.end_date,
         tr.created_at
     FROM transactions_recurring tr
-    JOIN transactions t ON tr.transaction_template_id = t.id
+    JOIN transactions t 
+        ON tr.transaction_template_id = t.id
     WHERE tr.deleted_at IS NULL
       AND t.deleted_at IS NULL
     ORDER BY tr.next_occurrence ASC;
@@ -1060,7 +1339,8 @@ RETURNS TABLE(
     account_name VARCHAR,
     source_id UUID,
     source_name VARCHAR,
-    total_amount DECIMAL
+    total_original_amount DECIMAL(36,18),
+    total_converted_amount DECIMAL(36,18)
 )
 LANGUAGE plpgsql
 SECURITY INVOKER
@@ -1073,20 +1353,25 @@ BEGIN
         ti.account_id,
         a.account_name,
         ti.source_id,
-        COALESCE(ins.name, 'Unknown') as source_name,
-        SUM(t.amount) as total_amount
+        COALESCE(ins.name, 'Unknown') AS source_name,
+        SUM(t.original_amount) AS total_original_amount,
+        SUM(t.converted_amount) AS total_converted_amount
     FROM transactions t
-    JOIN transactions_income ti ON t.id = ti.transaction_id
-    JOIN accounts a ON ti.account_id = a.id
-    LEFT JOIN income_sources ins ON ti.source_id = ins.id
+    JOIN transactions_income ti 
+        ON t.id = ti.transaction_id
+        AND ti.deleted_at IS NULL
+    JOIN accounts a 
+        ON ti.account_id = a.id
+        AND a.deleted_at IS NULL
+    LEFT JOIN income_sources ins 
+        ON ti.source_id = ins.id
+        AND ins.deleted_at IS NULL
     WHERE t.type = 'income'
       AND t.deleted_at IS NULL
-      AND ti.deleted_at IS NULL
-      AND a.deleted_at IS NULL
       AND (p_start_date IS NULL OR t.created_at >= p_start_date)
       AND (p_end_date IS NULL OR t.created_at <= p_end_date)
     GROUP BY ti.account_id, a.account_name, ti.source_id, ins.name
-    ORDER BY total_amount DESC;
+    ORDER BY total_converted_amount DESC;
 END;
 $$;
 
@@ -1110,7 +1395,8 @@ RETURNS TABLE(
     category_name VARCHAR,
     subcategory_id UUID,
     subcategory_name VARCHAR,
-    total_amount DECIMAL
+    total_original_amount DECIMAL(36,18),
+    total_converted_amount DECIMAL(36,18)
 )
 LANGUAGE plpgsql
 SECURITY INVOKER
@@ -1123,23 +1409,30 @@ BEGIN
         te.account_id,
         a.account_name,
         es.category_id,
-        ec.name as category_name,
-        te.category_id as subcategory_id,
-        es.name as subcategory_name,
-        SUM(t.amount) as total_amount
+        ec.name AS category_name,
+        te.category_id AS subcategory_id,
+        es.name AS subcategory_name,
+        SUM(t.original_amount) AS total_original_amount,
+        SUM(t.converted_amount) AS total_converted_amount
     FROM transactions t
-    JOIN transactions_expense te ON t.id = te.transaction_id
-    JOIN accounts a ON te.account_id = a.id
-    LEFT JOIN expense_subcategories es ON te.category_id = es.id
-    LEFT JOIN expense_categories ec ON es.category_id = ec.id
+    JOIN transactions_expense te 
+        ON t.id = te.transaction_id
+        AND te.deleted_at IS NULL
+    JOIN accounts a 
+        ON te.account_id = a.id
+        AND a.deleted_at IS NULL
+    LEFT JOIN expense_subcategories es 
+        ON te.category_id = es.id
+        AND es.deleted_at IS NULL
+    LEFT JOIN expense_categories ec 
+        ON es.category_id = ec.id
+        AND ec.deleted_at IS NULL
     WHERE t.type = 'expense'
       AND t.deleted_at IS NULL
-      AND te.deleted_at IS NULL
-      AND a.deleted_at IS NULL
       AND (p_start_date IS NULL OR t.created_at >= p_start_date)
       AND (p_end_date IS NULL OR t.created_at <= p_end_date)
     GROUP BY te.account_id, a.account_name, es.category_id, ec.name, te.category_id, es.name
-    ORDER BY total_amount DESC;
+    ORDER BY total_converted_amount DESC;
 END;
 $$;
 
@@ -1162,7 +1455,8 @@ RETURNS TABLE(
     asset_type VARCHAR,
     asset_symbol VARCHAR,
     platform VARCHAR,
-    total_amount DECIMAL,
+    total_original_amount DECIMAL(36,18),
+    total_converted_amount DECIMAL(36,18),
     risk_level risk_level
 )
 LANGUAGE plpgsql
@@ -1178,19 +1472,22 @@ BEGIN
         ti.asset_type,
         ti.asset_symbol,
         ti.platform,
-        SUM(t.amount) as total_amount,
+        SUM(t.original_amount) AS total_original_amount,
+        SUM(t.converted_amount) AS total_converted_amount,
         ti.risk_level
     FROM transactions t
-    JOIN transactions_investment ti ON t.id = ti.transaction_id
-    JOIN accounts a ON ti.account_id = a.id
+    JOIN transactions_investment ti 
+        ON t.id = ti.transaction_id
+        AND ti.deleted_at IS NULL
+    JOIN accounts a 
+        ON ti.account_id = a.id
+        AND a.deleted_at IS NULL
     WHERE t.type = 'investment'
       AND t.deleted_at IS NULL
-      AND ti.deleted_at IS NULL
-      AND a.deleted_at IS NULL
       AND (p_start_date IS NULL OR t.created_at >= p_start_date)
       AND (p_end_date IS NULL OR t.created_at <= p_end_date)
     GROUP BY ti.account_id, a.account_name, ti.asset_type, ti.asset_symbol, ti.platform, ti.risk_level
-    ORDER BY total_amount DESC;
+    ORDER BY total_converted_amount DESC;
 END;
 $$;
 
@@ -1208,7 +1505,9 @@ RETURNS TABLE(
     transaction_type transaction_type,
     counterparty_name VARCHAR,
     counterparty_type counterparty_type,
-    principal_amount DECIMAL,
+    principal_original_amount DECIMAL(36,18),
+    principal_converted_amount DECIMAL(36,18),
+    currency VARCHAR,
     interest_rate DECIMAL,
     due_date DATE,
     collateral TEXT
@@ -1223,38 +1522,46 @@ BEGIN
     -- Borrow transactions
     SELECT 
         'borrow'::transaction_type,
-        COALESCE(cp.name, 'Unknown') as counterparty_name,
-        COALESCE(cp.type, 'other'::counterparty_type) as counterparty_type,
-        t.amount as principal_amount,
+        COALESCE(cp.name, 'Unknown') AS counterparty_name,
+        COALESCE(cp.type, 'other'::counterparty_type) AS counterparty_type,
+        t.original_amount AS principal_original_amount,
+        t.converted_amount AS principal_converted_amount,
+        t.currency,
         tb.interest_rate,
         tb.due_date,
         tb.collateral
     FROM transactions t
-    JOIN transactions_borrow tb ON t.id = tb.transaction_id
-    LEFT JOIN counterparties cp ON tb.counterparty_id = cp.id
+    JOIN transactions_borrow tb 
+        ON t.id = tb.transaction_id
+        AND tb.deleted_at IS NULL
+    LEFT JOIN counterparties cp 
+        ON tb.counterparty_id = cp.id
     WHERE t.type = 'borrow'
       AND t.deleted_at IS NULL
-      AND tb.deleted_at IS NULL
-    
+
     UNION ALL
-    
+
     -- Lend transactions
     SELECT 
         'lend'::transaction_type,
-        COALESCE(cp.name, 'Unknown') as counterparty_name,
-        COALESCE(cp.type, 'other'::counterparty_type) as counterparty_type,
-        t.amount as principal_amount,
+        COALESCE(cp.name, 'Unknown') AS counterparty_name,
+        COALESCE(cp.type, 'other'::counterparty_type) AS counterparty_type,
+        t.original_amount AS principal_original_amount,
+        t.converted_amount AS principal_converted_amount,
+        t.currency,
         tl.interest_rate,
         tl.due_date,
         tl.collateral
     FROM transactions t
-    JOIN transactions_lend tl ON t.id = tl.transaction_id
-    LEFT JOIN counterparties cp ON tl.counterparty_id = cp.id
+    JOIN transactions_lend tl 
+        ON t.id = tl.transaction_id
+        AND tl.deleted_at IS NULL
+    LEFT JOIN counterparties cp 
+        ON tl.counterparty_id = cp.id
     WHERE t.type = 'lend'
       AND t.deleted_at IS NULL
-      AND tl.deleted_at IS NULL
-    
-    ORDER BY principal_amount DESC;
+
+    ORDER BY principal_converted_amount DESC;
 END;
 $$;
 
@@ -1276,7 +1583,7 @@ GRANT EXECUTE ON FUNCTION get_recent_transactions(INTEGER) TO authenticated;
 GRANT EXECUTE ON FUNCTION get_user_transactions(INTEGER, INTEGER, timestamptz, timestamptz, transaction_type) TO authenticated;
 GRANT EXECUTE ON FUNCTION compute_transaction_direction(transaction_type, DECIMAL) TO authenticated;
 GRANT EXECUTE ON FUNCTION get_recurring_schedules() TO authenticated;
-GRANT EXECUTE ON FUNCTION execute_due_recurring_transactions(INTEGER) TO authenticated;
+GRANT EXECUTE ON FUNCTION execute_due_recurring_transactions() TO authenticated;
 GRANT EXECUTE ON FUNCTION create_recurring_schedule(UUID, recurrence_frequency, INTEGER, DATE, DATE) TO authenticated;
 GRANT EXECUTE ON FUNCTION get_income_summary(timestamptz, timestamptz) TO authenticated;
 GRANT EXECUTE ON FUNCTION get_expense_summary(timestamptz, timestamptz) TO authenticated;
