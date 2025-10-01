@@ -276,7 +276,6 @@ CREATE OR REPLACE FUNCTION create_investment_transaction(
     p_funding_account_id UUID,              -- account providing the funds
     p_investment_account_id UUID,           -- account receiving the investment
     p_amount DECIMAL,
-    p_currency VARCHAR DEFAULT 'USD',
     p_asset_type VARCHAR DEFAULT NULL,
     p_asset_symbol VARCHAR DEFAULT NULL,
     p_platform VARCHAR DEFAULT NULL,
@@ -292,8 +291,10 @@ AS $$
 DECLARE
     v_transaction_id UUID;
     v_user_id UUID;
-    v_account_currency VARCHAR;
+    v_funding_account_currency VARCHAR;
+    v_investment_account_currency VARCHAR;
     v_exchange_rate NUMERIC;
+    v_converted_amount DECIMAL;
 BEGIN
     -- Get current user (validated by RLS)
     v_user_id := auth.uid();
@@ -307,16 +308,26 @@ BEGIN
     END IF;
 
     -- Get funding account currency
-    SELECT currency INTO v_account_currency 
+    SELECT currency INTO v_funding_account_currency 
     FROM accounts 
     WHERE id = p_funding_account_id;
-
-    IF v_account_currency IS NULL THEN
+    IF v_funding_account_currency IS NULL THEN
         RAISE EXCEPTION 'Funding account not found';
     END IF;
 
-    -- Get exchange rate
-    v_exchange_rate := get_exchange_rate(p_currency, v_account_currency);
+    -- Get investment account currency
+    SELECT currency INTO v_investment_account_currency
+    FROM accounts
+    WHERE id = p_investment_account_id;
+    IF v_investment_account_currency IS NULL THEN
+        RAISE EXCEPTION 'Investment account not found';
+    END IF;
+
+    -- Get exchange rate from funding account currency → investment account currency
+    v_exchange_rate := get_exchange_rate(v_funding_account_currency, v_investment_account_currency);
+
+    -- Calculate converted amount
+    v_converted_amount := p_amount * v_exchange_rate;
 
     -- Create base transaction
     INSERT INTO transactions (
@@ -331,9 +342,9 @@ BEGIN
         v_user_id, 
         'investment', 
         p_amount, 
-        p_currency,
+        v_funding_account_currency,
         v_exchange_rate, 
-        p_amount * v_exchange_rate, 
+        v_converted_amount, 
         p_notes
     )
     RETURNING id INTO v_transaction_id;
@@ -406,7 +417,6 @@ CREATE OR REPLACE FUNCTION create_borrow_transaction(
     p_loan_account_id UUID,             -- Loan liability account
     p_disbursement_account_id UUID,     -- Account where borrowed funds go (cash, bank, wallet)
     p_amount DECIMAL,
-    p_currency VARCHAR DEFAULT 'USD',
     p_notes TEXT DEFAULT NULL
 )
 RETURNS UUID
@@ -418,8 +428,10 @@ AS $$
 DECLARE
     v_transaction_id UUID;
     v_user_id UUID;
-    v_account_currency VARCHAR;
+    v_loan_account_currency VARCHAR;
+    v_disbursement_account_currency VARCHAR;
     v_exchange_rate NUMERIC;
+    v_converted_amount DECIMAL;
 BEGIN
     -- Get current user (validated by RLS + triggers)
     v_user_id := auth.uid();
@@ -432,17 +444,27 @@ BEGIN
         RAISE EXCEPTION 'Borrow amount must be positive';
     END IF;
 
-    -- Get disbursement account currency (where funds are received)
-    SELECT currency INTO v_account_currency 
+    -- Get loan account currency
+    SELECT currency INTO v_loan_account_currency 
+    FROM accounts 
+    WHERE id = p_loan_account_id;
+    IF v_loan_account_currency IS NULL THEN
+        RAISE EXCEPTION 'Loan account not found';
+    END IF;
+
+    -- Get disbursement account currency
+    SELECT currency INTO v_disbursement_account_currency 
     FROM accounts 
     WHERE id = p_disbursement_account_id;
-
-    IF v_account_currency IS NULL THEN
+    IF v_disbursement_account_currency IS NULL THEN
         RAISE EXCEPTION 'Disbursement account not found';
     END IF;
 
-    -- Get exchange rate
-    v_exchange_rate := get_exchange_rate(p_currency, v_account_currency);
+    -- Get exchange rate from loan account currency → disbursement account currency
+    v_exchange_rate := get_exchange_rate(v_loan_account_currency, v_disbursement_account_currency);
+
+    -- Calculate converted amount
+    v_converted_amount := p_amount * v_exchange_rate;
 
     -- Insert base transaction
     INSERT INTO transactions (
@@ -452,17 +474,15 @@ BEGIN
         original_currency,
         exchange_rate,
         converted_amount,
-        notes,
-        created_month,
-        type_amount_jsonb
+        notes
     )
     VALUES (
         v_user_id,
         'borrow',
         p_amount,
-        p_currency,
+        v_loan_account_currency,
         v_exchange_rate,
-        p_amount * v_exchange_rate,
+        v_converted_amount,
         p_notes
     )
     RETURNING id INTO v_transaction_id;
@@ -532,7 +552,6 @@ CREATE OR REPLACE FUNCTION create_lend_transaction(
     p_receivable_account_id UUID,       -- Where the receivable is tracked (loan asset)
     p_funding_account_id UUID,          -- Account providing funds (cash, bank, wallet)
     p_amount DECIMAL,
-    p_currency VARCHAR DEFAULT 'USD',
     p_counterparty_id UUID DEFAULT NULL,
     p_interest_rate DECIMAL(5,2) DEFAULT NULL,
     p_due_date DATE DEFAULT NULL,
@@ -548,8 +567,10 @@ AS $$
 DECLARE
     v_transaction_id UUID;
     v_user_id UUID;
-    v_account_currency VARCHAR;
+    v_receivable_account_currency VARCHAR;
+    v_funding_account_currency VARCHAR;
     v_exchange_rate NUMERIC;
+    v_converted_amount DECIMAL;
 BEGIN
     -- Get current user (validated by RLS + triggers)
     v_user_id := auth.uid();
@@ -562,17 +583,27 @@ BEGIN
         RAISE EXCEPTION 'Lend amount must be positive';
     END IF;
 
+    -- Get receivable account currency (loan asset)
+    SELECT currency INTO v_receivable_account_currency 
+    FROM accounts 
+    WHERE id = p_receivable_account_id;
+    IF v_receivable_account_currency IS NULL THEN
+        RAISE EXCEPTION 'Receivable account not found';
+    END IF;
+
     -- Get funding account currency (source of funds)
-    SELECT currency INTO v_account_currency 
+    SELECT currency INTO v_funding_account_currency 
     FROM accounts 
     WHERE id = p_funding_account_id;
-
-    IF v_account_currency IS NULL THEN
+    IF v_funding_account_currency IS NULL THEN
         RAISE EXCEPTION 'Funding account not found';
     END IF;
 
-    -- Get exchange rate
-    v_exchange_rate := get_exchange_rate(p_currency, v_account_currency);
+    -- Get exchange rate from funding account currency → receivable account currency
+    v_exchange_rate := get_exchange_rate(v_funding_account_currency, v_receivable_account_currency);
+
+    -- Calculate converted amount
+    v_converted_amount := p_amount * v_exchange_rate;
 
     -- Insert base transaction
     INSERT INTO transactions (
@@ -582,17 +613,15 @@ BEGIN
         original_currency,
         exchange_rate,
         converted_amount,
-        notes,
-        created_month,
-        type_amount_jsonb
+        notes
     )
     VALUES (
         v_user_id,
         'lend',
         p_amount,
-        p_currency,
+        v_funding_account_currency,
         v_exchange_rate,
-        p_amount * v_exchange_rate,
+        v_converted_amount,
         p_notes
     )
     RETURNING id INTO v_transaction_id;
@@ -691,13 +720,13 @@ BEGIN
         RAISE EXCEPTION 'Adjustment amount cannot be zero';
     END IF;
 
-    -- Get account currency
+    -- Get account currency and validate account exists
     SELECT currency INTO v_account_currency 
     FROM accounts 
     WHERE id = p_account_id;
 
     IF v_account_currency IS NULL THEN
-        RAISE EXCEPTION 'Account not found';
+        RAISE EXCEPTION 'Account not found for id: %', p_account_id;
     END IF;
 
     -- Get exchange rate
@@ -790,7 +819,6 @@ CREATE OR REPLACE FUNCTION create_transfer_transaction(
     p_from_account UUID,
     p_to_account UUID,
     p_amount DECIMAL,
-    p_currency VARCHAR DEFAULT 'USD',
     p_transfer_method transfer_method DEFAULT 'other',
     p_fees DECIMAL DEFAULT 0,
     p_notes TEXT DEFAULT NULL
@@ -806,10 +834,8 @@ DECLARE
     v_user_id UUID;
     v_from_account_currency VARCHAR;
     v_to_account_currency VARCHAR;
-    v_exchange_rate_from NUMERIC;
-    v_exchange_rate_to NUMERIC;
-    v_converted_amount_from DECIMAL;
-    v_converted_amount_to DECIMAL;
+    v_exchange_rate NUMERIC;
+    v_converted_amount DECIMAL;
 BEGIN
     -- Get current user
     v_user_id := auth.uid();
@@ -843,12 +869,11 @@ BEGIN
         RAISE EXCEPTION 'To account not found';
     END IF;
 
-    -- Get exchange rates
-    v_exchange_rate_from := get_exchange_rate(p_currency, v_from_account_currency);
-    v_exchange_rate_to := get_exchange_rate(p_currency, v_to_account_currency);
+    -- Get exchange rate from from_account currency to to_account currency
+    v_exchange_rate := get_exchange_rate(v_from_account_currency, v_to_account_currency);
 
-    v_converted_amount_from := p_amount * v_exchange_rate_from;
-    v_converted_amount_to := p_amount * v_exchange_rate_to;
+    -- Calculate converted amount
+    v_converted_amount := p_amount * v_exchange_rate;
 
     -- Create base transaction
     INSERT INTO transactions (
@@ -858,17 +883,15 @@ BEGIN
         original_currency,
         exchange_rate,
         converted_amount,
-        notes,
-        created_month,
-        type_amount_jsonb
+        notes
     )
     VALUES (
         v_user_id,
         'transfer',
         p_amount,
-        p_currency,
-        v_exchange_rate_from,
-        v_converted_amount_from,
+        v_from_account_currency,
+        v_exchange_rate,
+        v_converted_amount,
         p_notes
     )
     RETURNING id INTO v_transaction_id;
@@ -880,8 +903,6 @@ BEGIN
         to_account,
         transfer_method,
         fees,
-        exchange_rate_from,
-        exchange_rate_to,
         created_at,
         updated_at
     )
@@ -890,9 +911,7 @@ BEGIN
         p_from_account,
         p_to_account,
         p_transfer_method,
-        COALESCE(p_fees,0),
-        v_exchange_rate_from,
-        v_exchange_rate_to,
+        COALESCE(p_fees, 0),
         now(),
         now()
     );
@@ -988,7 +1007,6 @@ BEGIN
                 (p_params->>'funding_account_id')::UUID,
                 (p_params->>'investment_account_id')::UUID,
                 (p_params->>'amount')::DECIMAL,
-                COALESCE(p_params->>'currency','USD'),
                 p_params->>'asset_type',
                 p_params->>'asset_symbol',
                 p_params->>'platform',
@@ -1001,7 +1019,6 @@ BEGIN
                 (p_params->>'loan_account_id')::UUID,
                 (p_params->>'disbursement_account_id')::UUID,
                 (p_params->>'amount')::DECIMAL,
-                COALESCE(p_params->>'currency','USD'),
                 p_params->>'notes'
             );
 
@@ -1010,7 +1027,6 @@ BEGIN
                 (p_params->>'receivable_account_id')::UUID,
                 (p_params->>'funding_account_id')::UUID,
                 (p_params->>'amount')::DECIMAL,
-                COALESCE(p_params->>'currency','USD'),
                 (p_params->>'counterparty_id')::UUID,
                 (p_params->>'interest_rate')::DECIMAL,
                 (p_params->>'due_date')::DATE,
@@ -1032,7 +1048,6 @@ BEGIN
                 (p_params->>'from_account')::UUID,
                 (p_params->>'to_account')::UUID,
                 (p_params->>'amount')::DECIMAL,
-                COALESCE(p_params->>'currency','USD'),
                 COALESCE((p_params->>'transfer_method')::transfer_method, 'other'),
                 COALESCE((p_params->>'fees')::DECIMAL, 0),
                 p_params->>'notes'
@@ -2073,11 +2088,11 @@ $$;
 -- ================================
 GRANT EXECUTE ON FUNCTION create_income_transaction(UUID, DECIMAL, VARCHAR, UUID, TEXT) TO authenticated;
 GRANT EXECUTE ON FUNCTION create_expense_transaction(UUID, DECIMAL, VARCHAR, UUID, payment_method, TEXT) TO authenticated;
-GRANT EXECUTE ON FUNCTION create_investment_transaction(UUID, UUID, DECIMAL, VARCHAR, VARCHAR, VARCHAR, VARCHAR, risk_level, TEXT) TO authenticated;
-GRANT EXECUTE ON FUNCTION create_borrow_transaction(UUID, UUID, DECIMAL, VARCHAR, TEXT) TO authenticated;
-GRANT EXECUTE ON FUNCTION create_lend_transaction(UUID, UUID, DECIMAL, VARCHAR, UUID, DECIMAL, DATE, TEXT, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION create_investment_transaction(UUID, UUID, DECIMAL, VARCHAR, VARCHAR, VARCHAR, risk_level, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION create_borrow_transaction(UUID, UUID, DECIMAL, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION create_lend_transaction(UUID, UUID, DECIMAL, UUID, DECIMAL, DATE, TEXT, TEXT) TO authenticated;
 GRANT EXECUTE ON FUNCTION create_adjustment_transaction(UUID, DECIMAL, VARCHAR, TEXT, TEXT) TO authenticated;
-GRANT EXECUTE ON FUNCTION create_transfer_transaction( UUID, UUID, DECIMAL, VARCHAR, transfer_method, DECIMAL, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION create_transfer_transaction( UUID, UUID, DECIMAL, transfer_method, DECIMAL, TEXT) TO authenticated;
 GRANT EXECUTE ON FUNCTION create_recurring_transaction(TEXT, JSONB, recurrence_frequency, INT, DATE, DATE) TO authenticated;
 GRANT EXECUTE ON FUNCTION process_recurring_transactions() TO authenticated;
 GRANT EXECUTE ON FUNCTION public.generate_transaction_from_template(UUID) TO authenticated;
@@ -2105,15 +2120,15 @@ COMMENT ON FUNCTION create_expense_transaction(
 ) IS 'RLS-compliant function to create expense transactions with validation and automatic balance updates';
 
 COMMENT ON FUNCTION create_investment_transaction(
-    UUID, UUID, DECIMAL, VARCHAR, VARCHAR, VARCHAR, VARCHAR, risk_level, TEXT
+    UUID, UUID, DECIMAL, VARCHAR, VARCHAR, VARCHAR, risk_level, TEXT
 ) IS 'RLS-compliant function to create investment transactions with validation and automatic balance updates';
 
 COMMENT ON FUNCTION create_borrow_transaction(
-    UUID, UUID, DECIMAL, VARCHAR, TEXT
+    UUID, UUID, DECIMAL, TEXT
 ) IS 'RLS-compliant function to create borrow transactions with validation and automatic balance updates';
 
 COMMENT ON FUNCTION create_lend_transaction(
-    UUID, UUID, DECIMAL, VARCHAR, UUID, DECIMAL, DATE, TEXT, TEXT
+    UUID, UUID, DECIMAL, UUID, DECIMAL, DATE, TEXT, TEXT
 ) IS 'RLS-compliant function to create lend transactions with validation and automatic balance updates';
 
 COMMENT ON FUNCTION create_adjustment_transaction(
@@ -2121,7 +2136,7 @@ COMMENT ON FUNCTION create_adjustment_transaction(
 ) IS 'RLS-compliant function to create adjustment transactions for corrections or balance fixes with validation and automatic balance updates';
 
 COMMENT ON FUNCTION create_transfer_transaction(
-    UUID, UUID, DECIMAL, VARCHAR, transfer_method, DECIMAL, TEXT
+    UUID, UUID, DECIMAL, transfer_method, DECIMAL, TEXT
 ) IS 
 'RLS-compliant function to create transfer transactions between two accounts with validation and automatic balance updates';
 
