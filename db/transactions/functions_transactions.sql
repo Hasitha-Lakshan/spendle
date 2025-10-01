@@ -1069,12 +1069,7 @@ BEGIN
     )
     RETURNING id INTO v_recurring_id;
 
-    -- Immediately create the first transaction if start_date = today
-    IF p_start_date = CURRENT_DATE THEN
-        PERFORM public.process_single_recurring(v_recurring_id);
-    END IF;
-
-    RETURN v_recurring_id;
+    RETURN v_transaction_id;
 END;
 $$;
 
@@ -1227,40 +1222,6 @@ BEGIN
     WHERE id = rec.id;
 
     RETURN new_tx_id;
-END;
-$$;
-
--- =========================================
--- 10. Function: process_single_recurring
--- =========================================
--- Purpose:
---   Processes a single recurring transaction by generating a new transaction
---   from its template and advancing its schedule.
---
--- Behavior:
---   - Invokes generate_transaction_from_template() for the given recurring transaction ID.
---   - Ensures that the specific recurring rule is processed and the next occurrence is advanced.
---
--- Parameters:
---   p_recurring_id UUID - ID of the recurring transaction to process.
---
--- Returns:
---   UUID - ID of the newly created transaction, or NULL if no transaction was generated.
---
--- Notes:
---   - SECURITY DEFINER ensures this function runs with elevated privileges
---     so it can process transactions even if restricted by Row Level Security.
---   - Intended to be used for processing one specific recurring transaction rule at a time.
--- =========================================
-CREATE OR REPLACE FUNCTION public.process_single_recurring(
-    p_recurring_id UUID
-) RETURNS UUID
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public, pg_catalog
-AS $$
-BEGIN
-    RETURN public.generate_transaction_from_template(p_recurring_id);
 END;
 $$;
 
@@ -2120,7 +2081,6 @@ GRANT EXECUTE ON FUNCTION create_transfer_transaction( UUID, UUID, DECIMAL, VARC
 GRANT EXECUTE ON FUNCTION create_recurring_transaction(TEXT, JSONB, recurrence_frequency, INT, DATE, DATE) TO authenticated;
 GRANT EXECUTE ON FUNCTION process_recurring_transactions() TO authenticated;
 GRANT EXECUTE ON FUNCTION public.generate_transaction_from_template(UUID) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.process_single_recurring(UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION schedule_recurring_processing() TO authenticated;
 
 GRANT EXECUTE ON FUNCTION get_user_transaction_count(UUID, transaction_type, DATE, DATE) TO authenticated;
@@ -2175,9 +2135,6 @@ COMMENT ON FUNCTION public.generate_transaction_from_template(UUID) IS
 'Generates a new transaction from a recurring transaction template.
 Fetches the recurring rule and template transaction, inserts a new transaction record,
 copies type-specific details, advances the next_occurrence date, and returns the new transaction UUID.';
-
-COMMENT ON FUNCTION public.process_single_recurring(UUID) IS
-'Processes a single due recurring transaction by generating a transaction from its template. Returns the new transaction UUID or NULL if not processed.';
 
 COMMENT ON FUNCTION schedule_recurring_processing() IS 'Triggers processing of due recurring transactions and logs the result to audit_logs table. Intended for scheduled execution (e.g., with pg_cron).';
 

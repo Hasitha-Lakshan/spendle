@@ -543,12 +543,17 @@ DECLARE
     v_account_currency VARCHAR(10);
     v_tx_currency VARCHAR(10);
     v_exchange_rate NUMERIC;
+    v_user_id UUID;
 BEGIN
+    v_user_id := COALESCE(
+        NULLIF(current_setting('app.system_user_id', true), '')::uuid,
+        auth.uid()
+    );
     -- Get transaction original currency
     SELECT original_currency INTO v_tx_currency 
     FROM public.transactions 
     WHERE id = NEW.transaction_id 
-      AND user_id = auth.uid()
+      AND user_id = v_user_id
       AND deleted_at IS NULL;
     
     IF v_tx_currency IS NULL THEN
@@ -562,7 +567,7 @@ BEGIN
             SELECT currency INTO v_account_currency 
             FROM public.accounts 
             WHERE id = NEW.from_account
-              AND user_id = auth.uid()
+              AND user_id = v_user_id
               AND deleted_at IS NULL;
 
             IF v_account_currency IS NULL THEN
@@ -586,7 +591,7 @@ BEGIN
             SELECT currency INTO v_account_currency 
             FROM public.accounts 
             WHERE id = NEW.to_account
-              AND user_id = auth.uid()
+              AND user_id = v_user_id
               AND deleted_at IS NULL;
 
             IF v_account_currency IS NULL THEN
@@ -606,7 +611,7 @@ BEGIN
             SELECT currency INTO v_account_currency
             FROM public.accounts
             WHERE id = NEW.loan_account_id
-              AND user_id = auth.uid()
+              AND user_id = v_user_id
               AND deleted_at IS NULL;
 
             IF v_account_currency IS NULL THEN
@@ -630,7 +635,7 @@ BEGIN
             SELECT currency INTO v_account_currency
             FROM public.accounts
             WHERE id = NEW.disbursement_account_id
-              AND user_id = auth.uid()
+              AND user_id = v_user_id
               AND deleted_at IS NULL;
 
             IF v_account_currency IS NULL THEN
@@ -650,7 +655,7 @@ BEGIN
             SELECT currency INTO v_account_currency
             FROM public.accounts
             WHERE id = NEW.receivable_account_id
-              AND user_id = auth.uid()
+              AND user_id = v_user_id
               AND deleted_at IS NULL;
 
             IF v_account_currency IS NULL THEN
@@ -674,7 +679,7 @@ BEGIN
             SELECT currency INTO v_account_currency
             FROM public.accounts
             WHERE id = NEW.funding_account_id
-              AND user_id = auth.uid()
+              AND user_id = v_user_id
               AND deleted_at IS NULL;
 
             IF v_account_currency IS NULL THEN
@@ -694,7 +699,7 @@ BEGIN
             SELECT currency INTO v_account_currency
             FROM public.accounts
             WHERE id = NEW.investment_account_id
-              AND user_id = auth.uid()
+              AND user_id = v_user_id
               AND deleted_at IS NULL;
 
             IF v_account_currency IS NULL THEN
@@ -718,7 +723,7 @@ BEGIN
             SELECT currency INTO v_account_currency
             FROM public.accounts
             WHERE id = NEW.funding_account_id
-              AND user_id = auth.uid()
+              AND user_id = v_user_id
               AND deleted_at IS NULL;
 
             IF v_account_currency IS NULL THEN
@@ -738,7 +743,7 @@ BEGIN
             SELECT currency INTO v_account_currency 
             FROM public.accounts 
             WHERE id = NEW.account_id
-              AND user_id = auth.uid()
+              AND user_id = v_user_id
               AND deleted_at IS NULL;
 
             IF v_account_currency IS NULL THEN
