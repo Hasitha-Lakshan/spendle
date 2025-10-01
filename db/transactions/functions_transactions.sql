@@ -1,12 +1,39 @@
 -- =========================================
 -- 01. Function: create_income_transaction
 -- =========================================
--- Create Income Transaction
--- Purpose: Create a new income transaction with validation
--- Parameters: account_id, amount, currency, source_id, notes
--- Returns: UUID of created transaction
--- Security: INVOKER (relies on RLS and triggers for validation)
--- RLS: Account and source ownership validated by RLS, transaction created with proper user_id
+-- Purpose:
+--   Creates a new income transaction for a specific account, ensuring
+--   correct currency conversion, positive amount validation, and
+--   linkage to the account and income details.
+--
+-- Behavior:
+--   - Retrieves the current authenticated user (RLS‑validated)
+--   - Validates that the amount is positive
+--   - Retrieves the currency of the target account
+--   - Fetches the appropriate exchange rate between the provided
+--     currency and the account currency
+--   - Inserts a new row into the transactions table with converted
+--     amounts and metadata
+--   - Inserts a corresponding row into the transactions_income table
+--     linking the transaction to the account and optional source
+--
+-- Parameters:
+--   p_account_id UUID       - The account receiving the income
+--   p_amount DECIMAL        - The amount of income (must be positive)
+--   p_currency VARCHAR      - Currency code of the amount (default: 'USD')
+--   p_source_id UUID        - Optional source ID for the income
+--   p_notes TEXT            - Optional notes for the transaction
+--
+-- Returns:
+--   UUID - ID of the newly created transaction
+--
+-- Notes:
+--   - SECURITY INVOKER ensures the function runs with the privileges
+--     of the calling user and respects RLS policies
+--   - Trigger functions on transactions and transactions_income
+--     handle validation and account balance updates
+--   - Exchange rates are dynamically calculated using get_exchange_rate()
+-- =========================================
 CREATE OR REPLACE FUNCTION create_income_transaction(
     p_account_id UUID,
     p_amount DECIMAL,
@@ -90,12 +117,40 @@ $$;
 -- =========================================
 -- 02. Function: create_expense_transaction
 -- =========================================
--- Create Expense Transaction
--- Purpose: Create a new expense transaction with validation
--- Parameters: account_id, amount, currency, category_id (subcategory), payment_method, notes
--- Returns: UUID of created transaction
--- Security: INVOKER (relies on RLS and triggers for validation)
--- RLS: Account and category ownership validated by RLS, transaction created with proper user_id
+-- Purpose:
+--   Creates a new expense transaction for a specific account, ensuring
+--   correct currency conversion, positive amount validation, and
+--   linkage to the account and expense details.
+--
+-- Behavior:
+--   - Retrieves the current authenticated user (RLS‑validated)
+--   - Validates that the expense amount is positive
+--   - Retrieves the currency of the target account
+--   - Fetches the appropriate exchange rate between the provided
+--     currency and the account currency
+--   - Inserts a new row into the transactions table with converted
+--     amounts and metadata
+--   - Inserts a corresponding row into the transactions_expense table
+--     linking the transaction to the account, category, and payment method
+--
+-- Parameters:
+--   p_account_id UUID           - The account from which the expense is paid
+--   p_amount DECIMAL            - The expense amount (must be positive)
+--   p_currency VARCHAR          - Currency code of the amount (default: 'USD')
+--   p_category_id UUID          - Optional expense category
+--   p_payment_method payment_method - Payment method used (default: 'other')
+--   p_notes TEXT                - Optional notes for the transaction
+--
+-- Returns:
+--   UUID - ID of the newly created transaction
+--
+-- Notes:
+--   - SECURITY INVOKER ensures the function runs with the privileges
+--     of the calling user and respects RLS policies
+--   - Trigger functions on transactions and transactions_expense
+--     handle validation and account balance updates
+--   - Exchange rates are dynamically calculated using get_exchange_rate()
+-- =========================================
 CREATE OR REPLACE FUNCTION create_expense_transaction(
     p_account_id UUID,
     p_amount DECIMAL,
@@ -180,12 +235,43 @@ $$;
 -- =========================================
 -- 03. Function: create_investment_transaction
 -- =========================================
--- Create Expense Transaction
--- Purpose: Create a new expense transaction with validation
--- Parameters: account_id, amount, currency, category_id (subcategory), payment_method, notes
--- Returns: UUID of created transaction
--- Security: INVOKER (relies on RLS and triggers for validation)
--- RLS: Account and category ownership validated by RLS, transaction created with proper user_id
+-- Purpose:
+--   Creates a new investment transaction linking a funding account
+--   to an investment account, with currency conversion, asset details,
+--   and risk level recorded.
+--
+-- Behavior:
+--   - Retrieves the current authenticated user (RLS‑validated)
+--   - Validates that the investment amount is positive
+--   - Retrieves the currency of the funding account
+--   - Fetches the appropriate exchange rate between the provided
+--     currency and the funding account currency
+--   - Inserts a new row into the transactions table with converted
+--     amounts and metadata
+--   - Inserts a corresponding row into transactions_investment linking
+--     the transaction to the funding account, investment account, and
+--     recording asset details and risk level
+--
+-- Parameters:
+--   p_funding_account_id UUID     - Account providing the funds
+--   p_investment_account_id UUID  - Account receiving the investment
+--   p_amount DECIMAL              - Investment amount (must be positive)
+--   p_currency VARCHAR            - Currency code of the amount (default: 'USD')
+--   p_asset_type VARCHAR          - Type of the asset (optional)
+--   p_asset_symbol VARCHAR        - Symbol of the asset (optional)
+--   p_platform VARCHAR            - Investment platform name (optional)
+--   p_risk_level risk_level       - Risk level of the investment (default: 'medium')
+--   p_notes TEXT                  - Optional notes for the transaction
+--
+-- Returns:
+--   UUID - ID of the newly created investment transaction
+--
+-- Notes:
+--   - SECURITY INVOKER ensures the function runs with the privileges
+--     of the calling user and respects RLS policies
+--   - Trigger functions handle account validations and balance updates
+--   - Exchange rates are dynamically calculated using get_exchange_rate()
+-- =========================================
 CREATE OR REPLACE FUNCTION create_investment_transaction(
     p_funding_account_id UUID,              -- account providing the funds
     p_investment_account_id UUID,           -- account receiving the investment
@@ -281,14 +367,41 @@ END;
 $$;
 
 -- =========================================
--- 04. Function: create_borrow_transaction
+-- 05. Function: create_borrow_transaction
 -- =========================================
--- Create Expense Transaction
--- Purpose: Create a new expense transaction with validation
--- Parameters: account_id, amount, currency, category_id (subcategory), payment_method, notes
--- Returns: UUID of created transaction
--- Security: INVOKER (relies on RLS and triggers for validation)
--- RLS: Account and category ownership validated by RLS, transaction created with proper user_id
+-- Purpose:
+--   Creates a new borrow transaction that records a loan liability,
+--   including the account where borrowed funds are disbursed,
+--   with currency conversion and optional notes.
+--
+-- Behavior:
+--   - Retrieves the current authenticated user (RLS‑validated)
+--   - Validates that the borrow amount is positive
+--   - Retrieves the currency of the disbursement account
+--   - Fetches the appropriate exchange rate between the provided
+--     currency and the disbursement account currency
+--   - Inserts a new row into the transactions table with converted
+--     amounts, notes, and metadata
+--   - Inserts a corresponding row into transactions_borrow linking
+--     the transaction to the loan account and disbursement account
+--
+-- Parameters:
+--   p_loan_account_id UUID           - Account representing the loan liability
+--   p_disbursement_account_id UUID   - Account receiving the borrowed funds
+--   p_amount DECIMAL                  - Borrowed amount (must be positive)
+--   p_currency VARCHAR                - Currency code of the amount (default: 'USD')
+--   p_notes TEXT                      - Optional notes for the transaction
+--
+-- Returns:
+--   UUID - ID of the newly created borrow transaction
+--
+-- Notes:
+--   - SECURITY INVOKER ensures the function runs with the privileges
+--     of the calling user and respects RLS policies
+--   - Trigger functions handle validation of account ownership and
+--     updating account balances
+--   - Exchange rates are dynamically calculated using get_exchange_rate()
+-- =========================================
 CREATE OR REPLACE FUNCTION create_borrow_transaction(
     p_loan_account_id UUID,             -- Loan liability account
     p_disbursement_account_id UUID,     -- Account where borrowed funds go (cash, bank, wallet)
@@ -377,12 +490,44 @@ $$;
 -- =========================================
 -- 05. Function: create_lend_transaction
 -- =========================================
--- Create Expense Transaction
--- Purpose: Create a new expense transaction with validation
--- Parameters: account_id, amount, currency, category_id (subcategory), payment_method, notes
--- Returns: UUID of created transaction
--- Security: INVOKER (relies on RLS and triggers for validation)
--- RLS: Account and category ownership validated by RLS, transaction created with proper user_id
+-- Purpose:
+--   Creates a new lend transaction that records a loan receivable,
+--   including the account providing the funds and associated terms,
+--   with currency conversion and optional collateral or notes.
+--
+-- Behavior:
+--   - Retrieves the current authenticated user (RLS‑validated)
+--   - Validates that the lend amount is positive
+--   - Retrieves the currency of the funding account
+--   - Fetches the appropriate exchange rate between the provided
+--     currency and the funding account currency
+--   - Inserts a new row into the transactions table with converted
+--     amounts, notes, and metadata
+--   - Inserts a corresponding row into transactions_lend linking
+--     the transaction to the receivable and funding accounts
+--     along with optional counterparty, interest rate, due date, and collateral
+--
+-- Parameters:
+--   p_receivable_account_id UUID  - Account where the receivable is tracked (loan asset)
+--   p_funding_account_id UUID     - Account providing the funds (cash, bank, wallet)
+--   p_amount DECIMAL               - Lend amount (must be positive)
+--   p_currency VARCHAR             - Currency code of the amount (default: 'USD')
+--   p_counterparty_id UUID         - Optional counterparty ID
+--   p_interest_rate DECIMAL(5,2)   - Optional interest rate
+--   p_due_date DATE                - Optional due date for repayment
+--   p_collateral TEXT              - Optional collateral details
+--   p_notes TEXT                   - Optional notes for the transaction
+--
+-- Returns:
+--   UUID - ID of the newly created lend transaction
+--
+-- Notes:
+--   - SECURITY INVOKER ensures the function runs with the privileges
+--     of the calling user and respects RLS policies
+--   - Trigger functions handle validation of account ownership and
+--     updating account balances
+--   - Exchange rates are dynamically calculated using get_exchange_rate()
+-- =========================================
 CREATE OR REPLACE FUNCTION create_lend_transaction(
     p_receivable_account_id UUID,       -- Where the receivable is tracked (loan asset)
     p_funding_account_id UUID,          -- Account providing funds (cash, bank, wallet)
@@ -483,12 +628,39 @@ $$;
 -- =========================================
 -- 06. Function: create_adjustment_transaction
 -- =========================================
--- Create Expense Transaction
--- Purpose: Create a new expense transaction with validation
--- Parameters: account_id, amount, currency, category_id (subcategory), payment_method, notes
--- Returns: UUID of created transaction
--- Security: INVOKER (relies on RLS and triggers for validation)
--- RLS: Account and category ownership validated by RLS, transaction created with proper user_id
+-- Purpose:
+--   Creates a neutral adjustment transaction for a given account,
+--   allowing manual corrections to account balances with reason notes,
+--   and applying currency conversion if needed.
+--
+-- Behavior:
+--   - Retrieves the current authenticated user (RLS‑validated)
+--   - Validates that the adjustment amount is not zero
+--   - Retrieves the currency of the target account
+--   - Fetches the appropriate exchange rate between the provided
+--     currency and the account currency
+--   - Inserts a new row into the transactions table as an
+--     'adjustment' type with converted amounts and notes
+--   - Inserts a corresponding row into transactions_adjustment
+--     including reason and timestamps
+--
+-- Parameters:
+--   p_account_id UUID     - Account to be adjusted
+--   p_amount DECIMAL      - Adjustment amount (cannot be zero)
+--   p_currency VARCHAR    - Currency code of the amount (default: 'USD')
+--   p_reason TEXT         - Reason for adjustment
+--   p_notes TEXT          - Optional notes for the transaction
+--
+-- Returns:
+--   UUID - ID of the newly created adjustment transaction
+--
+-- Notes:
+--   - SECURITY INVOKER ensures the function runs with the privileges
+--     of the calling user and respects RLS policies
+--   - Trigger functions validate account ownership and
+--     apply the adjustment to account balances
+--   - Exchange rates are calculated dynamically using get_exchange_rate()
+-- =========================================
 CREATE OR REPLACE FUNCTION create_adjustment_transaction(
     p_account_id UUID,
     p_amount DECIMAL,
@@ -575,19 +747,45 @@ $$;
 -- =========================================
 -- 07. Function: create_transfer_transaction
 -- =========================================
--- Create Transfer Transaction
--- Purpose: Create a new transfer transaction between two accounts with validation
--- Parameters: 
---   p_from_account (UUID)   - Source account ID
---   p_to_account (UUID)     - Destination account ID
---   p_amount (DECIMAL)      - Transfer amount (must be positive)
---   p_currency (VARCHAR)    - Currency code (default 'USD')
---   p_transfer_method (ENUM transfer_method) - Method of transfer (default 'other')
---   p_fees (DECIMAL)        - Optional transfer fees (default 0)
---   p_notes (TEXT)          - Optional notes
--- Returns: UUID of created transaction
--- Security: INVOKER (relies on RLS and triggers for validation and balance updates)
--- RLS: Ownership of both accounts validated by RLS, transaction linked with user_id
+-- Purpose:
+--   Creates a transfer transaction between two accounts, handling
+--   currency conversion and optional fees while ensuring ownership
+--   validation and applying business rules.
+--
+-- Behavior:
+--   - Retrieves the current authenticated user (RLS‑validated)
+--   - Validates that:
+--       * Transfer amount is positive
+--       * Source and destination accounts are different
+--       * Both accounts exist
+--   - Retrieves the currencies of both the source (from_account)
+--     and destination (to_account) accounts
+--   - Fetches exchange rates for the provided currency to both account currencies
+--   - Calculates converted amounts for both accounts
+--   - Inserts a new row into the transactions table as a 'transfer' type
+--     with the calculated exchange rates and amounts
+--   - Inserts a corresponding row into transactions_transfer including
+--     transfer details, method, fees, and timestamps
+--
+-- Parameters:
+--   p_from_account UUID         - Account to transfer funds from
+--   p_to_account UUID           - Account to transfer funds to
+--   p_amount DECIMAL            - Amount to transfer
+--   p_currency VARCHAR          - Currency of the transfer amount (default: 'USD')
+--   p_transfer_method transfer_method - Transfer method (default: 'other')
+--   p_fees DECIMAL              - Optional fees for the transfer (default: 0)
+--   p_notes TEXT                - Optional notes for the transaction
+--
+-- Returns:
+--   UUID - ID of the newly created transfer transaction
+--
+-- Notes:
+--   - SECURITY INVOKER ensures the function runs with the privileges
+--     of the calling user and respects RLS policies
+--   - Trigger functions validate account ownership and apply balance updates
+--   - Exchange rates are dynamically retrieved using get_exchange_rate()
+--   - Prevents transfers between the same account
+-- =========================================
 CREATE OR REPLACE FUNCTION create_transfer_transaction(
     p_from_account UUID,
     p_to_account UUID,
@@ -704,6 +902,510 @@ END;
 $$;
 
 -- =========================================
+-- 08. Function: create_recurring_transaction
+-- =========================================
+-- Purpose:
+--   Creates a recurring transaction based on a provided transaction type
+--   ('income', 'expense', 'investment', 'borrow', 'lend', 'adjustment', 'transfer'),
+--   sets up a recurring schedule, and optionally creates the first occurrence
+--   immediately if the start date is today.
+--
+-- Behavior:
+--   - Retrieves the current authenticated user (RLS‑validated)
+--   - Dynamically calls the correct create_*_transaction function
+--     depending on p_transaction_type, passing parameters from p_params
+--   - Inserts a record into transactions_recurring with:
+--       * transaction_template_id
+--       * frequency and interval
+--       * start_date, end_date
+--       * next_occurrence
+--       * user_id and action_by
+--       * timestamps
+--   - Immediately processes the first occurrence if start_date = CURRENT_DATE
+--
+-- Parameters:
+--   p_transaction_type TEXT           - Type of transaction ('income', 'expense', etc.)
+--   p_params JSONB                    - JSONB object containing transaction-specific parameters
+--   p_frequency recurrence_frequency  - Frequency of recurrence ('daily', 'weekly', 'monthly', 'yearly')
+--   p_interval INT                    - Interval between occurrences (default: 1)
+--   p_start_date DATE                 - Recurrence start date (default: CURRENT_DATE)
+--   p_end_date DATE                   - Recurrence end date (optional)
+--
+-- Returns:
+--   UUID - ID of the newly created recurring transaction
+--
+-- Notes:
+--   - SECURITY INVOKER ensures the function executes with the privileges of the caller,
+--     respecting Row Level Security (RLS) policies.
+--   - Relies on existing create_*_transaction functions for specific transaction creation.
+--   - Ensures the user is authenticated before creating transactions.
+-- =========================================
+CREATE OR REPLACE FUNCTION create_recurring_transaction(
+    p_transaction_type TEXT,                  -- 'income', 'expense', 'investment', etc.
+    p_params JSONB,                           -- transaction-specific params
+    p_frequency recurrence_frequency,
+    p_interval INT DEFAULT 1,
+    p_start_date DATE DEFAULT CURRENT_DATE,
+    p_end_date DATE DEFAULT NULL
+)
+RETURNS UUID
+LANGUAGE plpgsql
+SECURITY INVOKER
+AS $$
+DECLARE
+    v_transaction_id UUID;
+    v_recurring_id UUID;
+    v_user_id UUID;
+BEGIN
+    v_user_id := auth.uid();
+    IF v_user_id IS NULL THEN
+        RAISE EXCEPTION 'No authenticated user found';
+    END IF;
+
+    -- Dynamically call the correct create_*_transaction
+    CASE p_transaction_type
+        WHEN 'income' THEN
+            v_transaction_id := create_income_transaction(
+                (p_params->>'account_id')::UUID,
+                (p_params->>'amount')::DECIMAL,
+                COALESCE(p_params->>'currency','USD'),
+                (p_params->>'source_id')::UUID,
+                p_params->>'notes'
+            );
+
+        WHEN 'expense' THEN
+            v_transaction_id := create_expense_transaction(
+                (p_params->>'account_id')::UUID,
+                (p_params->>'amount')::DECIMAL,
+                COALESCE(p_params->>'currency','USD'),
+                (p_params->>'category_id')::UUID,
+                COALESCE((p_params->>'payment_method')::payment_method, 'other'),
+                p_params->>'notes'
+            );
+
+        WHEN 'investment' THEN
+            v_transaction_id := create_investment_transaction(
+                (p_params->>'funding_account_id')::UUID,
+                (p_params->>'investment_account_id')::UUID,
+                (p_params->>'amount')::DECIMAL,
+                COALESCE(p_params->>'currency','USD'),
+                p_params->>'asset_type',
+                p_params->>'asset_symbol',
+                p_params->>'platform',
+                COALESCE((p_params->>'risk_level')::risk_level, 'medium'),
+                p_params->>'notes'
+            );
+
+        WHEN 'borrow' THEN
+            v_transaction_id := create_borrow_transaction(
+                (p_params->>'loan_account_id')::UUID,
+                (p_params->>'disbursement_account_id')::UUID,
+                (p_params->>'amount')::DECIMAL,
+                COALESCE(p_params->>'currency','USD'),
+                p_params->>'notes'
+            );
+
+        WHEN 'lend' THEN
+            v_transaction_id := create_lend_transaction(
+                (p_params->>'receivable_account_id')::UUID,
+                (p_params->>'funding_account_id')::UUID,
+                (p_params->>'amount')::DECIMAL,
+                COALESCE(p_params->>'currency','USD'),
+                (p_params->>'counterparty_id')::UUID,
+                (p_params->>'interest_rate')::DECIMAL,
+                (p_params->>'due_date')::DATE,
+                p_params->>'collateral',
+                p_params->>'notes'
+            );
+
+        WHEN 'adjustment' THEN
+            v_transaction_id := create_adjustment_transaction(
+                (p_params->>'account_id')::UUID,
+                (p_params->>'amount')::DECIMAL,
+                COALESCE(p_params->>'currency','USD'),
+                p_params->>'reason',
+                p_params->>'notes'
+            );
+
+        WHEN 'transfer' THEN
+            v_transaction_id := create_transfer_transaction(
+                (p_params->>'from_account')::UUID,
+                (p_params->>'to_account')::UUID,
+                (p_params->>'amount')::DECIMAL,
+                COALESCE(p_params->>'currency','USD'),
+                COALESCE((p_params->>'transfer_method')::transfer_method, 'other'),
+                COALESCE((p_params->>'fees')::DECIMAL, 0),
+                p_params->>'notes'
+            );
+
+        ELSE
+            RAISE EXCEPTION 'Unsupported recurring transaction type: %', p_transaction_type;
+    END CASE;
+
+    -- Link as recurring
+    INSERT INTO transactions_recurring (
+        transaction_template_id,
+        frequency,
+        interval,
+        start_date,
+        end_date,
+        next_occurrence,
+        user_id,
+        action_by,
+        created_at,
+        updated_at
+    )
+    VALUES (
+        v_transaction_id,
+        p_frequency,
+        p_interval,
+        p_start_date,
+        p_end_date,
+        p_start_date,
+        v_user_id,
+        v_user_id,
+        now(),
+        now()
+    )
+    RETURNING id INTO v_recurring_id;
+
+    -- Immediately create the first transaction if start_date = today
+    IF p_start_date = CURRENT_DATE THEN
+        PERFORM public.process_single_recurring(v_recurring_id);
+    END IF;
+
+    RETURN v_recurring_id;
+END;
+$$;
+
+-- =========================================
+-- 09. Function: generate_transaction_from_template
+-- =========================================
+-- Purpose:
+--   Generates a new transaction based on an existing recurring transaction template.
+--   Copies all relevant transaction data and type‑specific details while advancing
+--   the recurrence schedule.
+--
+-- Behavior:
+--   - Fetches the recurring rule from transactions_recurring by p_recurring_id,
+--     ensuring it is active and due for processing (next_occurrence <= CURRENT_DATE).
+--   - Fetches the corresponding template transaction from transactions.
+--   - Creates a new transaction row in transactions with base details copied from
+--     the template transaction and a note indicating it was auto-generated.
+--   - Copies type‑specific transaction details into the appropriate table
+--     (transactions_income, transactions_expense, transactions_investment, etc.)
+--   - Advances next_occurrence in transactions_recurring according to the
+--     defined frequency and interval.
+--
+-- Parameters:
+--   p_recurring_id UUID - ID of the recurring transaction rule to process.
+--
+-- Returns:
+--   UUID - ID of the newly generated transaction, or NULL if no processing occurred.
+--
+-- Notes:
+--   - SECURITY DEFINER ensures the function executes with elevated privileges
+--     so it can bypass Row Level Security for processing recurring transactions.
+--   - Only processes transactions where next_occurrence is due.
+--   - Adds "[Auto-recurring <recurring_id>]" to the notes field for traceability.
+-- =========================================
+CREATE OR REPLACE FUNCTION public.generate_transaction_from_template(
+    p_recurring_id UUID
+) RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_catalog
+AS $$
+DECLARE
+    rec RECORD;
+    new_tx_id UUID;
+    template_tx RECORD;
+BEGIN
+    -- Fetch the recurring rule
+    SELECT *
+    INTO rec
+    FROM transactions_recurring
+    WHERE id = p_recurring_id
+      AND deleted_at IS NULL
+      AND next_occurrence <= CURRENT_DATE
+      AND (end_date IS NULL OR next_occurrence <= end_date);
+
+    IF NOT FOUND THEN
+        RETURN NULL; -- nothing to process
+    END IF;
+
+    -- Fetch the template transaction
+    SELECT *
+    INTO template_tx
+    FROM transactions
+    WHERE id = rec.transaction_template_id
+      AND deleted_at IS NULL;
+
+    IF NOT FOUND THEN
+        RAISE WARNING 'Template % not found for recurring %', rec.transaction_template_id, rec.id;
+        RETURN NULL;
+    END IF;
+
+    -- Insert new transaction (base)
+    INSERT INTO transactions (
+        user_id, type, original_amount, original_currency,
+        exchange_rate, converted_amount, notes,
+        created_at, updated_at
+    )
+    VALUES (
+        template_tx.user_id,
+        template_tx.type,
+        template_tx.original_amount,
+        template_tx.original_currency,
+        template_tx.exchange_rate,
+        template_tx.converted_amount,
+        COALESCE(template_tx.notes, '') || ' [Auto-recurring ' || rec.id::text || ']',
+        NOW(),
+        NOW()
+    )
+    RETURNING id INTO new_tx_id;
+
+    -- Copy type-specific details
+    CASE template_tx.type
+        WHEN 'income' THEN
+            INSERT INTO transactions_income (transaction_id, account_id, source_id, notes, created_at, updated_at)
+            SELECT new_tx_id, account_id, source_id, 'Auto-generated from recurring', NOW(), NOW()
+            FROM transactions_income WHERE transaction_id = template_tx.id AND deleted_at IS NULL;
+
+        WHEN 'expense' THEN
+            INSERT INTO transactions_expense (transaction_id, account_id, category_id, payment_method, created_at, updated_at)
+            SELECT new_tx_id, account_id, category_id, payment_method, NOW(), NOW()
+            FROM transactions_expense WHERE transaction_id = template_tx.id AND deleted_at IS NULL;
+
+        WHEN 'investment' THEN
+            INSERT INTO transactions_investment (transaction_id, investment_account_id, funding_account_id,
+                                                 asset_type, asset_symbol, platform, risk_level,
+                                                 created_at, updated_at)
+            SELECT new_tx_id, investment_account_id, funding_account_id,
+                   asset_type, asset_symbol, platform, risk_level,
+                   NOW(), NOW()
+            FROM transactions_investment WHERE transaction_id = template_tx.id AND deleted_at IS NULL;
+
+        WHEN 'adjustment' THEN
+            INSERT INTO transactions_adjustment (transaction_id, account_id, reason, created_at, updated_at)
+            SELECT new_tx_id, account_id, reason, NOW(), NOW()
+            FROM transactions_adjustment WHERE transaction_id = template_tx.id AND deleted_at IS NULL;
+
+        WHEN 'borrow' THEN
+            INSERT INTO transactions_borrow (transaction_id, loan_account_id, disbursement_account_id,
+                                             lender_id, notes, created_at, updated_at)
+            SELECT new_tx_id, loan_account_id, disbursement_account_id,
+                   lender_id, 'Auto-generated from recurring borrow', NOW(), NOW()
+            FROM transactions_borrow WHERE transaction_id = template_tx.id AND deleted_at IS NULL;
+
+        WHEN 'lend' THEN
+            INSERT INTO transactions_lend (transaction_id, receivable_account_id, funding_account_id,
+                                           counterparty_id, interest_rate, due_date, collateral,
+                                           notes, created_at, updated_at)
+            SELECT new_tx_id, receivable_account_id, funding_account_id,
+                   counterparty_id, interest_rate, due_date, collateral,
+                   'Auto-generated from recurring lend', NOW(), NOW()
+            FROM transactions_lend WHERE transaction_id = template_tx.id AND deleted_at IS NULL;
+
+        WHEN 'transfer' THEN
+            INSERT INTO transactions_transfer (transaction_id, from_account, to_account, transfer_method, fees, notes,
+                                               created_at, updated_at)
+            SELECT new_tx_id, from_account, to_account, transfer_method, COALESCE(fees,0),
+                   'Auto-generated from recurring transfer', NOW(), NOW()
+            FROM transactions_transfer WHERE transaction_id = template_tx.id AND deleted_at IS NULL;
+    END CASE;
+
+    -- Advance next_occurrence
+    UPDATE transactions_recurring
+    SET next_occurrence = CASE rec.frequency::TEXT
+            WHEN 'daily'   THEN rec.next_occurrence + (rec.interval || ' days')::interval
+            WHEN 'weekly'  THEN rec.next_occurrence + (rec.interval || ' weeks')::interval
+            WHEN 'monthly' THEN rec.next_occurrence + (rec.interval || ' months')::interval
+            WHEN 'yearly'  THEN rec.next_occurrence + (rec.interval || ' years')::interval
+        END,
+        updated_at = NOW()
+    WHERE id = rec.id;
+
+    RETURN new_tx_id;
+END;
+$$;
+
+-- =========================================
+-- 10. Function: process_single_recurring
+-- =========================================
+-- Purpose:
+--   Processes a single recurring transaction by generating a new transaction
+--   from its template and advancing its schedule.
+--
+-- Behavior:
+--   - Invokes generate_transaction_from_template() for the given recurring transaction ID.
+--   - Ensures that the specific recurring rule is processed and the next occurrence is advanced.
+--
+-- Parameters:
+--   p_recurring_id UUID - ID of the recurring transaction to process.
+--
+-- Returns:
+--   UUID - ID of the newly created transaction, or NULL if no transaction was generated.
+--
+-- Notes:
+--   - SECURITY DEFINER ensures this function runs with elevated privileges
+--     so it can process transactions even if restricted by Row Level Security.
+--   - Intended to be used for processing one specific recurring transaction rule at a time.
+-- =========================================
+CREATE OR REPLACE FUNCTION public.process_single_recurring(
+    p_recurring_id UUID
+) RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_catalog
+AS $$
+BEGIN
+    RETURN public.generate_transaction_from_template(p_recurring_id);
+END;
+$$;
+
+-- =========================================
+-- 11. Function: process_recurring_transactions
+-- =========================================
+-- Purpose:
+--   Processes all due recurring transactions by generating new transactions
+--   from their templates and advancing their schedules.
+--
+-- Behavior:
+--   - Selects all active recurring transactions where the next occurrence
+--     date is today or earlier and not past the end date.
+--   - Iterates over each recurring transaction and calls
+--     generate_transaction_from_template() to create the corresponding transaction.
+--   - Tracks the IDs of newly created transactions and counts how many
+--     transactions were processed.
+--
+-- Returns:
+--   TABLE(processed_count INT, new_transaction_ids UUID[])
+--     processed_count    - Number of recurring transactions processed.
+--     new_transaction_ids - Array of UUIDs of the newly created transactions.
+--
+-- Notes:
+--   - SECURITY DEFINER ensures this function runs with elevated privileges,
+--     bypassing Row Level Security to process all due recurring rules.
+--   - Useful for batch processing of recurring transactions, e.g., via cron jobs.
+-- =========================================
+CREATE OR REPLACE FUNCTION public.process_recurring_transactions()
+RETURNS TABLE(processed_count INT, new_transaction_ids UUID[])
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_catalog
+AS $$
+DECLARE
+    rec RECORD;
+    tx_id UUID;
+    ids UUID[] := '{}';
+    cnt INT := 0;
+BEGIN
+    FOR rec IN
+        SELECT id
+        FROM transactions_recurring
+        WHERE deleted_at IS NULL
+          AND next_occurrence <= CURRENT_DATE
+          AND (end_date IS NULL OR next_occurrence <= end_date)
+    LOOP
+        tx_id := public.generate_transaction_from_template(rec.id);
+        IF tx_id IS NOT NULL THEN
+            ids := array_append(ids, tx_id);
+            cnt := cnt + 1;
+        END IF;
+    END LOOP;
+
+    processed_count := cnt;
+    new_transaction_ids := ids;
+    RETURN NEXT;
+END;
+$$;
+
+-- =========================================
+-- 12. Function: schedule_recurring_processing
+-- =========================================
+-- Purpose:
+--   Acts as a scheduled entry point to process all due recurring transactions
+--   and logs a system-level audit entry summarizing the processing run.
+--
+-- Behavior:
+--   - Sets a dedicated system user ID in session configuration for audit logging.
+--   - Calls process_recurring_transactions() to generate all due transactions
+--     from recurring templates.
+--   - Collects the count of processed recurring transactions and their IDs.
+--   - Builds a summary message describing the processing outcome.
+--   - Inserts an audit log entry in the audit_logs table with:
+--       * user_id and action_by set to the system user ID
+--       * table_name set to 'system'
+--       * action set to 'RECURRING_PROCESSING'
+--       * new_data containing processed_count, new_transaction_ids, and timestamp.
+--
+-- Returns:
+--   TEXT - A summary message describing:
+--       * Number of recurring transactions processed
+--       * Execution timestamp
+--       * List of new transaction IDs created
+--
+-- Notes:
+--   - SECURITY DEFINER ensures this function runs with elevated privileges,
+--     bypassing Row Level Security so that all due recurring transactions
+--     can be processed by a scheduled job.
+--   - Designed to be called by a scheduler (e.g., pg_cron).
+--   - Uses a dedicated system user ID for audit clarity rather than relying
+--     on session user context.
+-- =========================================
+CREATE OR REPLACE FUNCTION public.schedule_recurring_processing()
+RETURNS TEXT 
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+    result_record RECORD;
+    processing_result TEXT;
+BEGIN
+    PERFORM set_config('app.system_user_id', '00000000-0000-0000-0000-000000000000', true);
+    -- Process all due recurring transactions
+    SELECT processed_count, new_transaction_ids INTO result_record 
+    FROM public.process_recurring_transactions();
+
+    -- Build log message
+    processing_result := format(
+        'Processed %s recurring transactions at %s. New transaction IDs: %s',
+        COALESCE(result_record.processed_count, 0),
+        NOW()::TEXT,
+        COALESCE(array_to_string(result_record.new_transaction_ids, ', '), 'none')
+    );
+
+    -- Log the processing result in audit logs
+    INSERT INTO public.audit_logs(
+        user_id,
+        action_by,
+        table_name,
+        record_id,
+        action,
+        new_data
+    )
+    VALUES (
+        current_setting('app.system_user_id')::uuid, -- dedicated system user
+        current_setting('app.system_user_id')::uuid, -- same system user
+        'system',
+        gen_random_uuid(),
+        'RECURRING_PROCESSING',
+        jsonb_build_object(
+            'processed_count', COALESCE(result_record.processed_count, 0),
+            'new_transaction_ids', result_record.new_transaction_ids,
+            'processed_at', NOW()
+        )
+    );
+    RETURN processing_result;
+END;
+$$;
+
+-- Note: Uncomment the following line if pg_cron extension is available
+SELECT cron.schedule('process-recurring', '0 0 * * *', 'SELECT schedule_recurring_processing();');
+
+-- =========================================
 -- 17. Function: compute_transaction_direction
 -- =========================================
 -- Get Transaction Direction
@@ -794,167 +1496,6 @@ BEGIN
     RETURN TRUE;
 END;
 $$;
-
-
-
--- =========================================
--- 06. Function: create_recurring_schedule
--- =========================================
--- Create Recurring Transaction Schedule
--- Purpose: Set up a recurring transaction based on a template
--- Parameters: template_transaction_id, frequency details, date range
--- Returns: UUID of recurring schedule
--- Security: INVOKER (relies on RLS)
--- RLS: Template transaction ownership validated by RLS
-CREATE OR REPLACE FUNCTION create_recurring_schedule(
-    p_template_transaction_id UUID,
-    p_frequency recurrence_frequency,
-    p_interval INTEGER DEFAULT 1,
-    p_start_date DATE DEFAULT CURRENT_DATE,
-    p_end_date DATE DEFAULT NULL
-)
-RETURNS UUID
-LANGUAGE plpgsql
-SECURITY INVOKER
-SET search_path = pg_catalog, public
-VOLATILE
-AS $$
-DECLARE
-    v_recurring_id UUID;
-    v_user_id UUID;
-    v_next_occurrence timestamptz;
-    v_template_exists BOOLEAN;
-BEGIN
-    -- Get current user
-    v_user_id := auth.uid();
-    IF v_user_id IS NULL THEN
-        RAISE EXCEPTION 'No authenticated user found';
-    END IF;
-
-    -- Validate interval
-    IF p_interval <= 0 THEN
-        RAISE EXCEPTION 'Interval must be positive';
-    END IF;
-
-    -- Ensure template transaction exists and belongs to user
-    SELECT EXISTS (
-        SELECT 1 FROM transactions
-        WHERE id = p_template_transaction_id
-        AND user_id = v_user_id
-        AND deleted_at IS NULL
-    ) INTO v_template_exists;
-
-    IF NOT v_template_exists THEN
-        RAISE EXCEPTION 'Template transaction not found or access denied';
-    END IF;
-
-    -- Calculate next occurrence
-    v_next_occurrence := p_start_date::timestamptz;
-
-    -- Create recurring schedule (trigger will validate template exists and set action_by)
-    INSERT INTO transactions_recurring (
-        transaction_template_id,
-        frequency,
-        interval,
-        start_date,
-        end_date,
-        next_occurrence,
-        user_id,
-        created_at,
-        updated_at
-    )
-    VALUES (
-        p_template_transaction_id,
-        p_frequency,
-        p_interval,
-        p_start_date,
-        p_end_date,
-        v_next_occurrence,
-        v_user_id,
-        now(),
-        now()
-    )
-    RETURNING id INTO v_recurring_id;
-
-    RETURN v_recurring_id;
-END;
-$$;
-
--- =========================================
--- 07. Function: execute_due_recurring_transactions
--- =========================================
--- Process Due Recurring Transactions
--- Purpose: Execute recurring transactions that are due (client-callable wrapper)
--- Parameters: optional limit on number to process
--- Returns: TABLE with count and created transaction IDs
--- Security: INVOKER (relies on RLS and existing process_recurring_transactions trigger function)
--- RLS: Only processes recurring transactions owned by current user
-CREATE OR REPLACE FUNCTION execute_due_recurring_transactions()
-RETURNS TABLE(processed_count INTEGER, new_transaction_ids UUID[])
-LANGUAGE plpgsql
-SECURITY INVOKER
-SET search_path = pg_catalog, public
-VOLATILE
-AS $$
-BEGIN
-    -- Execute due recurring transactions, passing a limit if specified
-    RETURN QUERY
-    SELECT * FROM process_recurring_transactions();
-END;
-$$;
-
--- =========================================
--- 08. Function: schedule_recurring_processing
--- =========================================
--- Schedule Recurring Transaction Processing
--- Purpose: Run all due recurring transactions and log audit trail.
--- Parameters: None
--- Returns: TEXT - Summary of processing results
--- Security: DEFINER (system-level job, often used with pg_cron)
--- RLS: Transactions are processed for their rightful owners
-CREATE OR REPLACE FUNCTION public.schedule_recurring_processing()
-RETURNS TEXT 
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = pg_catalog, public
-AS $$
-DECLARE
-    result_record RECORD;
-    processing_result TEXT;
-BEGIN
-    -- Process all due recurring transactions
-    SELECT processed_count, new_transaction_ids INTO result_record 
-    FROM public.process_recurring_transactions();
-
-    -- Build log message
-    processing_result := format(
-        'Processed %s recurring transactions at %s. New transaction IDs: %s',
-        COALESCE(result_record.processed_count, 0),
-        NOW()::TEXT,
-        COALESCE(array_to_string(result_record.new_transaction_ids, ', '), 'none')
-    );
-
-    -- Log the processing result in audit logs
-    INSERT INTO public.audit_logs(user_id, action_by, table_name, record_id, action, new_data)
-    VALUES (
-        auth.uid(), -- Current user
-        auth.uid(), -- Current user action
-        'system',
-        gen_random_uuid(),
-        'RECURRING_PROCESSING',
-        jsonb_build_object(
-            'processed_count', COALESCE(result_record.processed_count, 0),
-            'new_transaction_ids', result_record.new_transaction_ids,
-            'processed_at', NOW()
-        )
-    );
-
-    RETURN processing_result;
-END;
-$$;
-
--- Note: Uncomment the following line if pg_cron extension is available
-SELECT cron.schedule('process-recurring', '0 0 * * *', 'SELECT schedule_recurring_processing();');
 
 -- =========================================
 -- 09. Function: get_recent_transactions
@@ -1576,20 +2117,21 @@ GRANT EXECUTE ON FUNCTION create_borrow_transaction(UUID, UUID, DECIMAL, VARCHAR
 GRANT EXECUTE ON FUNCTION create_lend_transaction(UUID, UUID, DECIMAL, VARCHAR, UUID, DECIMAL, DATE, TEXT, TEXT) TO authenticated;
 GRANT EXECUTE ON FUNCTION create_adjustment_transaction(UUID, DECIMAL, VARCHAR, TEXT, TEXT) TO authenticated;
 GRANT EXECUTE ON FUNCTION create_transfer_transaction( UUID, UUID, DECIMAL, VARCHAR, transfer_method, DECIMAL, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION create_recurring_transaction(TEXT, JSONB, recurrence_frequency, INT, DATE, DATE) TO authenticated;
+GRANT EXECUTE ON FUNCTION process_recurring_transactions() TO authenticated;
+GRANT EXECUTE ON FUNCTION public.generate_transaction_from_template(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.process_single_recurring(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION schedule_recurring_processing() TO authenticated;
 
 GRANT EXECUTE ON FUNCTION get_user_transaction_count(UUID, transaction_type, DATE, DATE) TO authenticated;
-GRANT EXECUTE ON FUNCTION schedule_recurring_processing() TO authenticated;
 GRANT EXECUTE ON FUNCTION get_recent_transactions(INTEGER) TO authenticated;
 GRANT EXECUTE ON FUNCTION get_user_transactions(INTEGER, INTEGER, timestamptz, timestamptz, transaction_type) TO authenticated;
 GRANT EXECUTE ON FUNCTION compute_transaction_direction(transaction_type, DECIMAL) TO authenticated;
 GRANT EXECUTE ON FUNCTION get_recurring_schedules() TO authenticated;
-GRANT EXECUTE ON FUNCTION execute_due_recurring_transactions() TO authenticated;
-GRANT EXECUTE ON FUNCTION create_recurring_schedule(UUID, recurrence_frequency, INTEGER, DATE, DATE) TO authenticated;
 GRANT EXECUTE ON FUNCTION get_income_summary(timestamptz, timestamptz) TO authenticated;
 GRANT EXECUTE ON FUNCTION get_expense_summary(timestamptz, timestamptz) TO authenticated;
 GRANT EXECUTE ON FUNCTION get_investment_summary(timestamptz, timestamptz) TO authenticated;
 GRANT EXECUTE ON FUNCTION get_borrow_lend_summary() TO authenticated;
-
 
 -- ================================
 -- Function Documentation
@@ -1623,12 +2165,29 @@ COMMENT ON FUNCTION create_transfer_transaction(
 ) IS 
 'RLS-compliant function to create transfer transactions between two accounts with validation and automatic balance updates';
 
+COMMENT ON FUNCTION create_recurring_transaction(
+    TEXT, JSONB, recurrence_frequency, INT, DATE, DATE
+) IS 'Creates a recurring transaction of a specified type and stores a template in transactions_recurring table for automated processing. Handles income, expense, investment, adjustment, borrow, lend, and transfer transaction types.';
+
+COMMENT ON FUNCTION process_recurring_transactions() IS 'Processes all active recurring transactions due for execution, creating new transactions based on templates and advancing the schedule.';
+
+COMMENT ON FUNCTION public.generate_transaction_from_template(UUID) IS
+'Generates a new transaction from a recurring transaction template.
+Fetches the recurring rule and template transaction, inserts a new transaction record,
+copies type-specific details, advances the next_occurrence date, and returns the new transaction UUID.';
+
+COMMENT ON FUNCTION public.process_single_recurring(UUID) IS
+'Processes a single due recurring transaction by generating a transaction from its template. Returns the new transaction UUID or NULL if not processed.';
+
+COMMENT ON FUNCTION schedule_recurring_processing() IS 'Triggers processing of due recurring transactions and logs the result to audit_logs table. Intended for scheduled execution (e.g., with pg_cron).';
+
+
 COMMENT ON FUNCTION get_recent_transactions(INTEGER) IS 'RLS-compliant recent transactions query';
-COMMENT ON FUNCTION create_recurring_schedule(UUID, recurrence_frequency, INTEGER, DATE, DATE) IS 
-'RLS-compliant function to create recurring transaction schedules';
 COMMENT ON FUNCTION get_income_summary(timestamptz, timestamptz) IS 
 'RLS-compliant function to get income summary by source and account for current user';
 COMMENT ON FUNCTION get_expense_summary(timestamptz, timestamptz) IS 
 'RLS-compliant function to get expense summary by category and account for current user';
 COMMENT ON FUNCTION get_investment_summary(timestamptz, timestamptz) IS 
 'RLS-compliant function to get investment summary by asset type for current user';
+CREATE INDEX IF NOT EXISTS idx_transactions_recurring_user_deleted 
+ON transactions_recurring(user_id, deleted_at) WHERE deleted_at IS NULL;
