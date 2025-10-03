@@ -1370,95 +1370,6 @@ CREATE TRIGGER trg_setup_recurring
     FOR EACH ROW EXECUTE FUNCTION public.setup_recurring_transaction();
 
 -- =========================================
--- 04. Function: cleanup_transaction_details
--- =========================================
--- Purpose:
---   Automatically soft deletes all related transaction detail records
---   whenever a transaction is soft deleted, maintaining data consistency
---   across all transaction tables.
---
--- Behavior:
---   - Checks if a transaction is being soft deleted (OLD.deleted_at IS NULL and NEW.deleted_at IS NOT NULL)
---   - Soft deletes the corresponding row(s) in the relevant transaction detail table:
---       * transactions_income
---       * transactions_expense
---       * transactions_investment
---       * transactions_borrow
---       * transactions_lend
---       * transactions_transfer
---       * transactions_adjustment
---   - Updates the updated_at timestamp for each affected row
---   - Ensures that only non-deleted detail rows are affected
---
--- Parameters:
---   NEW (trigger record) - The row being updated
---   OLD (trigger record) - The previous state of the row
---
--- Returns:
---   NEW - The updated transaction row after cascading soft delete
---
--- Notes:
---   - Trigger applied AFTER UPDATE on transactions
---   - Uses SECURITY DEFINER to enforce consistent behavior regardless of RLS
---   - Maintains referential integrity for soft deletes without hard deletion
--- =========================================
-CREATE OR REPLACE FUNCTION public.cleanup_transaction_details() 
-RETURNS TRIGGER 
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public, pg_catalog
-AS $$
-BEGIN
-    -- When a transaction is soft deleted, also soft delete its related detail record
-    IF OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL THEN
-        CASE OLD.type
-            WHEN 'income' THEN
-                UPDATE public.transactions_income 
-                SET deleted_at = NEW.deleted_at, updated_at = NOW() 
-                WHERE transaction_id = OLD.id AND deleted_at IS NULL;
-
-            WHEN 'expense' THEN
-                UPDATE public.transactions_expense 
-                SET deleted_at = NEW.deleted_at, updated_at = NOW() 
-                WHERE transaction_id = OLD.id AND deleted_at IS NULL;
-
-            WHEN 'investment' THEN
-                UPDATE public.transactions_investment 
-                SET deleted_at = NEW.deleted_at, updated_at = NOW() 
-                WHERE transaction_id = OLD.id AND deleted_at IS NULL;
-
-            WHEN 'borrow' THEN
-                UPDATE public.transactions_borrow 
-                SET deleted_at = NEW.deleted_at, updated_at = NOW() 
-                WHERE transaction_id = OLD.id AND deleted_at IS NULL;
-
-            WHEN 'lend' THEN
-                UPDATE public.transactions_lend 
-                SET deleted_at = NEW.deleted_at, updated_at = NOW() 
-                WHERE transaction_id = OLD.id AND deleted_at IS NULL;
-
-            WHEN 'transfer' THEN
-                UPDATE public.transactions_transfer 
-                SET deleted_at = NEW.deleted_at, updated_at = NOW() 
-                WHERE transaction_id = OLD.id AND deleted_at IS NULL;
-
-            WHEN 'adjustment' THEN
-                UPDATE public.transactions_adjustment 
-                SET deleted_at = NEW.deleted_at, updated_at = NOW() 
-                WHERE transaction_id = OLD.id AND deleted_at IS NULL;
-        END CASE;
-    END IF;
-    
-    RETURN NEW;
-END;
-$$;
-
--- Trigger
-CREATE TRIGGER trg_cleanup_transaction_details
-    AFTER UPDATE ON transactions
-    FOR EACH ROW EXECUTE FUNCTION public.cleanup_transaction_details();
-
--- =========================================
 -- 05. Function: handle_soft_delete_and_reverse_balance
 -- =========================================
 -- Purpose:
@@ -1603,12 +1514,11 @@ DECLARE
     to_acc_type account_type;
     reversal_amount NUMERIC;
 BEGIN
-    -- Loop helper: get converted_amount for the transaction
+    -- Loop helper: get converted_amount for the transaction (allow soft-deleted rows)
     SELECT converted_amount
     INTO reversal_amount
     FROM transactions
-    WHERE id = p_tx_id
-      AND deleted_at IS NULL;
+    WHERE id = p_tx_id;
 
     IF reversal_amount IS NULL THEN
         RAISE WARNING 'Transaction % has no converted amount; skipping reversal', p_tx_id;

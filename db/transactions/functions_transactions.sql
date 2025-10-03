@@ -1381,39 +1381,58 @@ $$;
 -- Note: Uncomment the following line if pg_cron extension is available
 SELECT cron.schedule('process-recurring', '0 0 * * *', 'SELECT schedule_recurring_processing();');
 
+
 -- =========================================
--- 17. Function: compute_transaction_direction
+-- 05. Function: hard_delete_recurring_transaction
 -- =========================================
--- Get Transaction Direction
--- Purpose: Compute transaction direction based on type and amount
--- Parameters: transaction_type, amount
--- Returns: transaction_direction enum
--- Security: INVOKER (pure computation)
--- RLS: N/A (no data access)
-CREATE OR REPLACE FUNCTION compute_transaction_direction(
-    p_type transaction_type, 
-    p_original_amount DECIMAL
-)
-RETURNS transaction_direction
-LANGUAGE sql
-IMMUTABLE
-SECURITY INVOKER
-SET search_path = pg_catalog, public
+-- Hard delete recurring transaction template
+CREATE OR REPLACE FUNCTION hard_delete_recurring_transaction(recurring_id UUID)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
 AS $$
-    SELECT CASE
-        WHEN p_type = 'income' THEN 'inflow'::transaction_direction
-        WHEN p_type = 'expense' THEN 'outflow'::transaction_direction
-        WHEN p_type = 'borrow' AND p_original_amount >= 0 THEN 'inflow'::transaction_direction
-        WHEN p_type = 'borrow' AND p_original_amount < 0 THEN 'outflow'::transaction_direction
-        WHEN p_type = 'lend' AND p_original_amount >= 0 THEN 'outflow'::transaction_direction
-        WHEN p_type = 'lend' AND p_original_amount < 0 THEN 'inflow'::transaction_direction
-        WHEN p_type = 'investment' AND p_original_amount >= 0 THEN 'outflow'::transaction_direction
-        WHEN p_type = 'investment' AND p_original_amount < 0 THEN 'inflow'::transaction_direction
-        WHEN p_type = 'adjustment' AND p_original_amount >= 0 THEN 'inflow'::transaction_direction
-        WHEN p_type = 'adjustment' AND p_original_amount < 0 THEN 'outflow'::transaction_direction
-        WHEN p_type = 'transfer' THEN 'neutral'::transaction_direction
-        ELSE 'unknown'::transaction_direction
-    END;
+DECLARE
+    current_user_id UUID;
+    recurring_owner UUID;
+    template_transaction_id UUID;
+    is_admin BOOLEAN;
+BEGIN
+    current_user_id := auth.uid();
+
+    IF current_user_id IS NULL THEN
+        RAISE EXCEPTION 'Not authenticated';
+    END IF;
+
+    -- Get recurring transaction details
+    SELECT user_id, transaction_template_id
+    INTO recurring_owner, template_transaction_id
+    FROM transactions_recurring
+    WHERE id = recurring_id
+      AND deleted_at IS NULL;
+
+    IF recurring_owner IS NULL THEN
+        RAISE EXCEPTION 'Recurring transaction not found';
+    END IF;
+
+    -- Check permissions
+    is_admin := check_admin_permissions();
+    IF NOT is_admin AND current_user_id != recurring_owner THEN
+        RAISE EXCEPTION 'Permission denied';
+    END IF;
+
+    -- Soft-delete recurring schedule
+    UPDATE transactions_recurring
+    SET deleted_at = NOW()
+    WHERE id = recurring_id;
+
+    -- Hard delete the template transaction if desired
+    IF template_transaction_id IS NOT NULL THEN
+        PERFORM hard_delete_transaction(template_transaction_id);
+    END IF;
+
+    RETURN TRUE;
+END;
 $$;
 
 -- =========================================
@@ -1471,6 +1490,41 @@ BEGIN
 
     RETURN TRUE;
 END;
+$$;
+
+-- =========================================
+-- 17. Function: compute_transaction_direction
+-- =========================================
+-- Get Transaction Direction
+-- Purpose: Compute transaction direction based on type and amount
+-- Parameters: transaction_type, amount
+-- Returns: transaction_direction enum
+-- Security: INVOKER (pure computation)
+-- RLS: N/A (no data access)
+CREATE OR REPLACE FUNCTION compute_transaction_direction(
+    p_type transaction_type, 
+    p_original_amount DECIMAL
+)
+RETURNS transaction_direction
+LANGUAGE sql
+IMMUTABLE
+SECURITY INVOKER
+SET search_path = pg_catalog, public
+AS $$
+    SELECT CASE
+        WHEN p_type = 'income' THEN 'inflow'::transaction_direction
+        WHEN p_type = 'expense' THEN 'outflow'::transaction_direction
+        WHEN p_type = 'borrow' AND p_original_amount >= 0 THEN 'inflow'::transaction_direction
+        WHEN p_type = 'borrow' AND p_original_amount < 0 THEN 'outflow'::transaction_direction
+        WHEN p_type = 'lend' AND p_original_amount >= 0 THEN 'outflow'::transaction_direction
+        WHEN p_type = 'lend' AND p_original_amount < 0 THEN 'inflow'::transaction_direction
+        WHEN p_type = 'investment' AND p_original_amount >= 0 THEN 'outflow'::transaction_direction
+        WHEN p_type = 'investment' AND p_original_amount < 0 THEN 'inflow'::transaction_direction
+        WHEN p_type = 'adjustment' AND p_original_amount >= 0 THEN 'inflow'::transaction_direction
+        WHEN p_type = 'adjustment' AND p_original_amount < 0 THEN 'outflow'::transaction_direction
+        WHEN p_type = 'transfer' THEN 'neutral'::transaction_direction
+        ELSE 'unknown'::transaction_direction
+    END;
 $$;
 
 -- =========================================
@@ -1688,59 +1742,6 @@ BEGIN
     ORDER BY t.created_at DESC
     LIMIT p_limit
     OFFSET p_offset;
-END;
-$$;
-
--- =========================================
--- 05. Function: hard_delete_recurring_transaction
--- =========================================
--- Hard delete recurring transaction template
-CREATE OR REPLACE FUNCTION hard_delete_recurring_transaction(recurring_id UUID)
-RETURNS BOOLEAN
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public
-AS $$
-DECLARE
-    current_user_id UUID;
-    recurring_owner UUID;
-    template_transaction_id UUID;
-    is_admin BOOLEAN;
-BEGIN
-    current_user_id := auth.uid();
-
-    IF current_user_id IS NULL THEN
-        RAISE EXCEPTION 'Not authenticated';
-    END IF;
-
-    -- Get recurring transaction details
-    SELECT user_id, transaction_template_id
-    INTO recurring_owner, template_transaction_id
-    FROM transactions_recurring
-    WHERE id = recurring_id
-      AND deleted_at IS NULL;
-
-    IF recurring_owner IS NULL THEN
-        RAISE EXCEPTION 'Recurring transaction not found';
-    END IF;
-
-    -- Check permissions
-    is_admin := check_admin_permissions();
-    IF NOT is_admin AND current_user_id != recurring_owner THEN
-        RAISE EXCEPTION 'Permission denied';
-    END IF;
-
-    -- Soft-delete recurring schedule
-    UPDATE transactions_recurring
-    SET deleted_at = NOW()
-    WHERE id = recurring_id;
-
-    -- Hard delete the template transaction if desired
-    IF template_transaction_id IS NOT NULL THEN
-        PERFORM hard_delete_transaction(template_transaction_id);
-    END IF;
-
-    RETURN TRUE;
 END;
 $$;
 
