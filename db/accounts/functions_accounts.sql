@@ -688,22 +688,25 @@ $$;
 --   - This function does not permanently remove records; 
 --     they remain for auditing and historical purposes.
 -- =========================================
-CREATE OR REPLACE FUNCTION soft_delete_account(p_account_id UUID)
+CREATE OR REPLACE FUNCTION public.soft_delete_account(p_account_id UUID)
 RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
 DECLARE
+    v_user_id UUID := auth.uid();
+    v_is_admin BOOLEAN := public.check_admin_permissions();
     v_exists BOOLEAN;
 BEGIN
-    -- Ownership check
-    IF NOT public.validate_account_ownership(p_account_id, auth.uid()) THEN
-        RAISE EXCEPTION 'Permission denied: cannot delete this account'
+    -- Validate ownership or admin privilege
+    IF NOT v_is_admin AND NOT public.validate_account_ownership(p_account_id, v_user_id) THEN
+        RAISE EXCEPTION 'Permission denied: user (%s) is not authorized to delete account (%s).',
+            v_user_id, p_account_id
             USING ERRCODE = '42501';
     END IF;
 
-    -- Update accounts (soft delete)
+    -- Perform soft delete
     UPDATE public.accounts
     SET deleted_at = NOW(),
         updated_at = NOW()
@@ -711,14 +714,21 @@ BEGIN
       AND deleted_at IS NULL
     RETURNING TRUE INTO v_exists;
 
-    -- If no row was updated, nothing to delete
+    -- If nothing was updated, either already deleted or nonexistent
     IF NOT FOUND THEN
         RETURN FALSE;
     END IF;
 
-    -- cleanup_specialized_account trigger will automatically 
-    -- soft delete the corresponding specialized account
+    -- Trigger cleanup_specialized_account will handle linked accounts
     RETURN TRUE;
+
+EXCEPTION
+    WHEN unique_violation THEN
+        RAISE EXCEPTION 'Duplicate account ID (%s) detected during soft delete.', p_account_id;
+    WHEN data_exception THEN
+        RAISE EXCEPTION 'Invalid data encountered while soft deleting account (%s): %s', p_account_id, SQLERRM;
+    WHEN OTHERS THEN
+        RAISE EXCEPTION 'Unexpected error during soft delete of account (%s): %s', p_account_id, SQLERRM;
 END;
 $$;
 
