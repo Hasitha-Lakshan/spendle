@@ -1524,112 +1524,127 @@ END;
 $$;
 
 -- =========================================
--- 05. Function: hard_delete_recurring_transaction
+-- 15. Function: hard_delete_transaction
 -- =========================================
--- Hard delete recurring transaction template
-CREATE OR REPLACE FUNCTION hard_delete_recurring_transaction(recurring_id UUID)
+-- Purpose:
+--   Permanently deletes a transaction and all related specialized detail records,
+--   ensuring that only administrators can perform this action on transactions
+--   that have already been soft deleted.
+--
+-- Behavior:
+--   - Retrieves the current user's ID from session context (auth.uid()).
+--   - Verifies the user is authenticated.
+--   - Checks if the current user has administrative privileges via
+--     public.check_admin_permissions().
+--   - Confirms that the specified transaction exists and has been soft deleted
+--     (deleted_at IS NOT NULL).
+--   - Enables a session-level hard delete bypass flag (app.hard_delete = 'on').
+--   - Deletes all related records from specialized transaction detail tables
+--     (income, expense, investment, borrow, lend, transfer, adjustment)
+--     where the record is also soft deleted.
+--   - Deletes related recurring transactions that reference the transaction.
+--   - Deletes the transaction record itself.
+--   - Handles exceptions gracefully, returning FALSE and logging a warning
+--     if deletion fails.
+--
+-- Returns:
+--   BOOLEAN
+--       * TRUE  - if all deletions succeed.
+--       * FALSE - if any deletion fails or an exception occurs.
+--
+-- Notes:
+--   - SECURITY DEFINER ensures this function runs with elevated privileges,
+--     allowing admin overrides while still enforcing RLS rules.
+--   - Strictly enforces that only admins can perform hard deletes,
+--     and only on already soft-deleted transactions.
+--   - Designed for complete cleanup of transaction data in compliance
+--     with row-level security policies and application rules.
+-- =========================================
+CREATE OR REPLACE FUNCTION public.hard_delete_transaction(p_transaction_id UUID)
 RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = pg_catalog, public
 AS $$
 DECLARE
     current_user_id UUID;
-    recurring_owner UUID;
-    template_transaction_id UUID;
+    tx_type transaction_type;
     is_admin BOOLEAN;
 BEGIN
+    -- 1. Authenticate user
     current_user_id := auth.uid();
-
     IF current_user_id IS NULL THEN
         RAISE EXCEPTION 'Not authenticated';
     END IF;
 
-    -- Get recurring transaction details
-    SELECT user_id, transaction_template_id
-    INTO recurring_owner, template_transaction_id
-    FROM transactions_recurring
-    WHERE id = recurring_id
-      AND deleted_at IS NULL;
-
-    IF recurring_owner IS NULL THEN
-        RAISE EXCEPTION 'Recurring transaction not found';
+    -- 2. Check admin privileges
+    is_admin := public.check_admin_permissions();
+    IF NOT is_admin THEN
+        RAISE EXCEPTION 'Permission denied: only admins can hard delete';
     END IF;
 
-    -- Check permissions
-    is_admin := check_admin_permissions();
-    IF NOT is_admin AND current_user_id != recurring_owner THEN
-        RAISE EXCEPTION 'Permission denied';
+    -- 3. Enable hard delete bypass for this session
+    PERFORM set_config('app.hard_delete', 'on', true);
+
+    -- 4. Get transaction type and ensure transaction exists and is soft deleted
+    SELECT type INTO tx_type
+    FROM public.transactions
+    WHERE id = p_transaction_id AND deleted_at IS NOT NULL;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Transaction not found or not soft deleted';
     END IF;
 
-    -- Soft-delete recurring schedule
-    UPDATE transactions_recurring
-    SET deleted_at = NOW()
-    WHERE id = recurring_id;
+    -- 5. Wrap deletion in an atomic block with exception handling
+    BEGIN
+        -- 5a. Delete specialized transaction detail records if they are soft deleted
+        CASE tx_type
+            WHEN 'income' THEN
+                DELETE FROM public.transactions_income
+                WHERE transaction_id = p_transaction_id AND deleted_at IS NOT NULL;
 
-    -- Hard delete the template transaction if desired
-    IF template_transaction_id IS NOT NULL THEN
-        PERFORM hard_delete_transaction(template_transaction_id);
-    END IF;
+            WHEN 'expense' THEN
+                DELETE FROM public.transactions_expense
+                WHERE transaction_id = p_transaction_id AND deleted_at IS NOT NULL;
 
-    RETURN TRUE;
-END;
-$$;
+            WHEN 'investment' THEN
+                DELETE FROM public.transactions_investment
+                WHERE transaction_id = p_transaction_id AND deleted_at IS NOT NULL;
 
--- =========================================
--- 04. Function: hard_delete_transaction
--- =========================================
--- Hard delete transaction (and all related data)
-CREATE OR REPLACE FUNCTION hard_delete_transaction(transaction_id UUID)
-RETURNS BOOLEAN
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public
-AS $$
-DECLARE
-    current_user_id UUID;
-    transaction_owner UUID;
-    transaction_type transaction_type;
-    is_admin BOOLEAN;
-BEGIN
-    current_user_id := auth.uid();
+            WHEN 'borrow' THEN
+                DELETE FROM public.transactions_borrow
+                WHERE transaction_id = p_transaction_id AND deleted_at IS NOT NULL;
 
-    IF current_user_id IS NULL THEN
-        RAISE EXCEPTION 'Not authenticated';
-    END IF;
+            WHEN 'lend' THEN
+                DELETE FROM public.transactions_lend
+                WHERE transaction_id = p_transaction_id AND deleted_at IS NOT NULL;
 
-    -- Get transaction details
-    SELECT user_id, type INTO transaction_owner, transaction_type
-    FROM transactions
-    WHERE id = transaction_id;
+            WHEN 'transfer' THEN
+                DELETE FROM public.transactions_transfer
+                WHERE transaction_id = p_transaction_id AND deleted_at IS NOT NULL;
 
-    IF transaction_owner IS NULL THEN
-        RAISE EXCEPTION 'Transaction not found';
-    END IF;
+            WHEN 'adjustment' THEN
+                DELETE FROM public.transactions_adjustment
+                WHERE transaction_id = p_transaction_id AND deleted_at IS NOT NULL;
 
-    -- Check permissions
-    is_admin := check_admin_permissions();
-    IF NOT is_admin AND current_user_id != transaction_owner THEN
-        RAISE EXCEPTION 'Permission denied';
-    END IF;
+            ELSE
+                RAISE WARNING 'Unknown transaction type %, skipping specialized deletion', tx_type;
+        END CASE;
 
-    -- Delete from transaction detail tables
-    DELETE FROM transactions_income WHERE transaction_id = transaction_id;
-    DELETE FROM transactions_expense WHERE transaction_id = transaction_id;
-    DELETE FROM transactions_investment WHERE transaction_id = transaction_id;
-    DELETE FROM transactions_borrow WHERE transaction_id = transaction_id;
-    DELETE FROM transactions_lend WHERE transaction_id = transaction_id;
-    DELETE FROM transactions_transfer WHERE transaction_id = transaction_id;
-    DELETE FROM transactions_adjustment WHERE transaction_id = transaction_id;
+        -- 5b. Delete related recurring transactions
+        DELETE FROM public.transactions_recurring
+        WHERE transaction_template_id = p_transaction_id AND deleted_at IS NOT NULL;
 
-    -- Delete the main transaction record
-    DELETE FROM transactions WHERE id = transaction_id RETURNING id INTO transaction_id;
+        -- 5c. Delete transaction record itself
+        DELETE FROM public.transactions
+        WHERE id = p_transaction_id AND deleted_at IS NOT NULL;
 
-    IF transaction_id IS NULL THEN
-        RAISE EXCEPTION 'Transaction deletion failed';
-    END IF;
+        RETURN TRUE;
 
-    RETURN TRUE;
+    EXCEPTION WHEN OTHERS THEN
+        RAISE WARNING 'Hard delete failed for transaction %, error: %', p_transaction_id, SQLERRM;
+        RETURN FALSE;
+    END;
 END;
 $$;
 
@@ -2241,6 +2256,7 @@ GRANT EXECUTE ON FUNCTION public.generate_transaction_from_template(UUID) TO aut
 GRANT EXECUTE ON FUNCTION schedule_recurring_processing() TO authenticated;
 GRANT EXECUTE ON FUNCTION public.soft_delete_transaction(UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.validate_transaction_ownership(UUID, UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.hard_delete_transaction(UUID) TO authenticated;
 
 GRANT EXECUTE ON FUNCTION get_user_transaction_count(UUID, transaction_type, DATE, DATE) TO authenticated;
 GRANT EXECUTE ON FUNCTION get_recent_transactions(INTEGER) TO authenticated;
@@ -2302,6 +2318,11 @@ COMMENT ON FUNCTION public.soft_delete_transaction(UUID) IS
 
 COMMENT ON FUNCTION public.validate_transaction_ownership(UUID, UUID) IS
 'Checks if the given user owns the transaction and it is not soft deleted.';
+
+COMMENT ON FUNCTION public.hard_delete_transaction(UUID) IS
+'Hard deletes a transaction and all related detail records (income, expense, investment, borrow, lend, transfer, adjustment) and recurring transactions.
+Only available to admins. Requires transaction to be soft deleted (deleted_at IS NOT NULL).
+Runs with SECURITY DEFINER privileges. Returns TRUE on success, FALSE on failure.';
 
 
 COMMENT ON FUNCTION get_recent_transactions(INTEGER) IS 'RLS-compliant recent transactions query';
