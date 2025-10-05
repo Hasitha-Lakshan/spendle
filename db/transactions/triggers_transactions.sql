@@ -376,6 +376,11 @@ DECLARE
     v_amount NUMERIC;
     v_account_type account_type;
 BEGIN
+    -- SKIP processing if this is a soft delete
+    IF NEW.deleted_at IS NOT NULL THEN
+        RETURN NEW;
+    END IF;
+
     -- Get transaction converted amount
     SELECT converted_amount INTO v_amount
     FROM public.transactions
@@ -421,7 +426,7 @@ BEGIN
             UPDATE accounts SET updated_at = NOW() WHERE id = NEW.to_account;
 
             IF v_account_type IN ('credit_card','loan') THEN
-            -- Paying to credit card or loan reduces balance owed
+                -- Paying to credit card or loan reduces balance owed
                 PERFORM set_account_balance(v_account_type, NEW.to_account, -v_amount);
             ELSE
                 -- Regular inflow
@@ -545,6 +550,11 @@ DECLARE
     v_exchange_rate NUMERIC;
     v_user_id UUID;
 BEGIN
+    -- SKIP processing if this is a soft delete
+    IF NEW.deleted_at IS NOT NULL THEN
+        RETURN NEW;
+    END IF;
+
     v_user_id := COALESCE(
         NULLIF(current_setting('app.system_user_id', true), '')::uuid,
         auth.uid()
@@ -1370,7 +1380,7 @@ CREATE TRIGGER trg_setup_recurring
     FOR EACH ROW EXECUTE FUNCTION public.setup_recurring_transaction();
 
 -- =========================================
--- 05. Function: handle_soft_delete_and_reverse_balance
+-- 05. Function: process_soft_delete_transaction
 -- =========================================
 -- Purpose:
 --   Handles comprehensive processing when a transaction is soft deleted,
@@ -1388,7 +1398,7 @@ CREATE TRIGGER trg_setup_recurring
 --       * transactions_transfer
 --       * transactions_adjustment
 --   - Updates updated_at timestamps for all affected detail rows
---   - Calls reverse_balance_on_soft_delete_core() to adjust account balances accordingly
+--   - Calls reverse_transaction_balance_on_soft_delete() to adjust account balances accordingly
 --   - Ensures that balances reflect the reversal of the deleted transaction
 --
 -- Parameters:
@@ -1403,7 +1413,7 @@ CREATE TRIGGER trg_setup_recurring
 --   - Uses SECURITY DEFINER to enforce consistent behavior regardless of RLS
 --   - Maintains both referential integrity and correct financial balances during soft deletes
 -- =========================================
-CREATE OR REPLACE FUNCTION public.handle_soft_delete_and_reverse_balance()
+CREATE OR REPLACE FUNCTION public.process_soft_delete_transaction()
 RETURNS TRIGGER 
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -1412,47 +1422,62 @@ AS $$
 BEGIN
     -- Only process if this is a soft delete (deleted_at being set)
     IF OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL THEN
+        BEGIN
+            -- 1. Soft delete related transaction details
+            CASE OLD.type
+                WHEN 'income' THEN
+                    UPDATE public.transactions_income
+                    SET deleted_at = NEW.deleted_at, updated_at = NOW()
+                    WHERE transaction_id = OLD.id AND deleted_at IS NULL;
 
-        -- 1. Soft delete related transaction details
-        CASE OLD.type
-            WHEN 'income' THEN
-                UPDATE public.transactions_income
-                SET deleted_at = NEW.deleted_at, updated_at = NOW()
-                WHERE transaction_id = OLD.id AND deleted_at IS NULL;
+                WHEN 'expense' THEN
+                    UPDATE public.transactions_expense
+                    SET deleted_at = NEW.deleted_at, updated_at = NOW()
+                    WHERE transaction_id = OLD.id AND deleted_at IS NULL;
 
-            WHEN 'expense' THEN
-                UPDATE public.transactions_expense
-                SET deleted_at = NEW.deleted_at, updated_at = NOW()
-                WHERE transaction_id = OLD.id AND deleted_at IS NULL;
+                WHEN 'investment' THEN
+                    UPDATE public.transactions_investment
+                    SET deleted_at = NEW.deleted_at, updated_at = NOW()
+                    WHERE transaction_id = OLD.id AND deleted_at IS NULL;
 
-            WHEN 'investment' THEN
-                UPDATE public.transactions_investment
-                SET deleted_at = NEW.deleted_at, updated_at = NOW()
-                WHERE transaction_id = OLD.id AND deleted_at IS NULL;
+                WHEN 'borrow' THEN
+                    UPDATE public.transactions_borrow
+                    SET deleted_at = NEW.deleted_at, updated_at = NOW()
+                    WHERE transaction_id = OLD.id AND deleted_at IS NULL;
 
-            WHEN 'borrow' THEN
-                UPDATE public.transactions_borrow
-                SET deleted_at = NEW.deleted_at, updated_at = NOW()
-                WHERE transaction_id = OLD.id AND deleted_at IS NULL;
+                WHEN 'lend' THEN
+                    UPDATE public.transactions_lend
+                    SET deleted_at = NEW.deleted_at, updated_at = NOW()
+                    WHERE transaction_id = OLD.id AND deleted_at IS NULL;
 
-            WHEN 'lend' THEN
-                UPDATE public.transactions_lend
-                SET deleted_at = NEW.deleted_at, updated_at = NOW()
-                WHERE transaction_id = OLD.id AND deleted_at IS NULL;
+                WHEN 'transfer' THEN
+                    UPDATE public.transactions_transfer
+                    SET deleted_at = NEW.deleted_at, updated_at = NOW()
+                    WHERE transaction_id = OLD.id AND deleted_at IS NULL;
 
-            WHEN 'transfer' THEN
-                UPDATE public.transactions_transfer
-                SET deleted_at = NEW.deleted_at, updated_at = NOW()
-                WHERE transaction_id = OLD.id AND deleted_at IS NULL;
+                WHEN 'adjustment' THEN
+                    UPDATE public.transactions_adjustment
+                    SET deleted_at = NEW.deleted_at, updated_at = NOW()
+                    WHERE transaction_id = OLD.id AND deleted_at IS NULL;
 
-            WHEN 'adjustment' THEN
-                UPDATE public.transactions_adjustment
-                SET deleted_at = NEW.deleted_at, updated_at = NOW()
-                WHERE transaction_id = OLD.id AND deleted_at IS NULL;
-        END CASE;
+                ELSE
+                    RAISE WARNING 'Unknown transaction type % for ID %', OLD.type, OLD.id;
+            END CASE;
 
-        -- 2. Reverse balances for this transaction
-        PERFORM reverse_balance_on_soft_delete_core(OLD.id, OLD.type);
+            -- 2. Soft delete any recurring definition linked to this transaction
+            UPDATE public.transactions_recurring
+            SET deleted_at = NEW.deleted_at, updated_at = NOW()
+            WHERE transaction_template_id = OLD.id AND deleted_at IS NULL;
+
+            -- 3. Reverse balances for this transaction
+            PERFORM reverse_transaction_balance_on_soft_delete(OLD.id, OLD.type);
+
+            RAISE NOTICE 'Transaction % of type % was successfully soft deleted and related data processed.',
+                OLD.id, OLD.type;
+        EXCEPTION
+            WHEN OTHERS THEN
+                RAISE WARNING 'Error processing soft delete for transaction %: %', OLD.id, SQLERRM;
+        END;
     END IF;
 
     RETURN NEW;
@@ -1460,13 +1485,13 @@ END;
 $$;
 
 -- Trigger
-CREATE TRIGGER trg_handle_soft_delete_and_reverse_balance
+CREATE TRIGGER trg_process_soft_delete_transaction
 AFTER UPDATE ON transactions
 FOR EACH ROW
-EXECUTE FUNCTION public.handle_soft_delete_and_reverse_balance();
+EXECUTE FUNCTION public.process_soft_delete_transaction();
 
 -- =========================================
--- 06. Function: reverse_balance_on_soft_delete_core
+-- 06. Function: reverse_transaction_balance_on_soft_delete
 -- =========================================
 -- Purpose:
 --   Reverses the balances of accounts affected by a transaction when the
@@ -1497,9 +1522,9 @@ EXECUTE FUNCTION public.handle_soft_delete_and_reverse_balance();
 --   - Updates the updated_at timestamp for all affected accounts
 --   - Ensures financial integrity by reversing balances accurately across all transaction types
 -- =========================================
-CREATE OR REPLACE FUNCTION public.reverse_balance_on_soft_delete_core(
+CREATE OR REPLACE FUNCTION public.reverse_transaction_balance_on_soft_delete(
     p_tx_id UUID,
-    p_tx_type TEXT
+    p_tx_type transaction_type
 )
 RETURNS VOID
 LANGUAGE plpgsql
@@ -1507,392 +1532,195 @@ SECURITY DEFINER
 SET search_path = public, pg_catalog
 AS $$
 DECLARE
-    tx_details RECORD;
-    transfer_details RECORD;
-    acc_type account_type;
-    from_acc_type account_type;
-    to_acc_type account_type;
-    reversal_amount NUMERIC;
+    v_original_amount NUMERIC;
+    v_converted_amount NUMERIC;
+    v_to_account_type account_type;
+    v_from_account_type account_type;
+    v_to_account_id UUID;
+    v_from_account_id UUID;
+    v_transfer_fee NUMERIC;
 BEGIN
-    -- Loop helper: get converted_amount for the transaction (allow soft-deleted rows)
-    SELECT converted_amount
-    INTO reversal_amount
-    FROM transactions
-    WHERE id = p_tx_id;
+    BEGIN
+        -- Fetch transaction amounts
+        SELECT original_amount, converted_amount
+        INTO v_original_amount, v_converted_amount
+        FROM public.transactions
+        WHERE id = p_tx_id;
 
-    IF reversal_amount IS NULL THEN
-        RAISE WARNING 'Transaction % has no converted amount; skipping reversal', p_tx_id;
-        RETURN;
-    END IF;
-
-    -- Handle different transaction types
-    IF p_tx_type = 'income' THEN
-        FOR tx_details IN
-            SELECT * FROM transactions_income WHERE transaction_id = p_tx_id
-        LOOP
-            SELECT type INTO acc_type
-            FROM public.accounts
-            WHERE id = tx_details.account_id AND deleted_at IS NULL;
-
-            UPDATE public.accounts SET updated_at = NOW()
-            WHERE id = tx_details.account_id;
-
-            PERFORM reverse_account_balance(acc_type, tx_details.account_id, reversal_amount);
-        END LOOP;
-
-    ELSIF p_tx_type = 'expense' THEN
-        FOR tx_details IN
-            SELECT * FROM transactions_expense WHERE transaction_id = p_tx_id
-        LOOP
-            SELECT type INTO acc_type
-            FROM public.accounts
-            WHERE id = tx_details.account_id AND deleted_at IS NULL;
-
-            UPDATE public.accounts SET updated_at = NOW()
-            WHERE id = tx_details.account_id;
-
-            PERFORM reverse_account_balance(acc_type, tx_details.account_id, reversal_amount);
-        END LOOP;
-
-    ELSIF p_tx_type = 'investment' THEN
-        FOR tx_details IN
-            SELECT * FROM transactions_investment WHERE transaction_id = p_tx_id
-        LOOP
-            -- Reverse main investment account
-            SELECT type INTO acc_type
-            FROM public.accounts
-            WHERE id = tx_details.investment_account_id AND deleted_at IS NULL;
-
-            UPDATE public.accounts SET updated_at = NOW()
-            WHERE id = tx_details.investment_account_id;
-
-            PERFORM reverse_account_balance(acc_type, tx_details.investment_account_id, reversal_amount);
-
-            -- Reverse funding account if exists
-            IF tx_details.funding_account_id IS NOT NULL THEN
-                SELECT type INTO acc_type
-                FROM public.accounts
-                WHERE id = tx_details.funding_account_id AND deleted_at IS NULL;
-
-                UPDATE public.accounts SET updated_at = NOW()
-                WHERE id = tx_details.funding_account_id;
-
-                PERFORM reverse_account_balance(acc_type, tx_details.funding_account_id, reversal_amount);
-            END IF;
-        END LOOP;
-
-    ELSIF p_tx_type = 'adjustment' THEN
-        FOR tx_details IN
-            SELECT * FROM transactions_adjustment WHERE transaction_id = p_tx_id
-        LOOP
-            SELECT type INTO acc_type
-            FROM public.accounts
-            WHERE id = tx_details.account_id AND deleted_at IS NULL;
-
-            UPDATE public.accounts SET updated_at = NOW()
-            WHERE id = tx_details.account_id;
-
-            PERFORM reverse_account_balance(acc_type, tx_details.account_id, reversal_amount);
-        END LOOP;
-
-    ELSIF p_tx_type = 'borrow' THEN
-        FOR tx_details IN
-            SELECT * FROM transactions_borrow WHERE transaction_id = p_tx_id
-        LOOP
-            -- Reverse loan account
-            SELECT type INTO acc_type
-            FROM public.accounts
-            WHERE id = tx_details.loan_account_id AND deleted_at IS NULL;
-
-            UPDATE public.accounts SET updated_at = NOW()
-            WHERE id = tx_details.loan_account_id;
-
-            PERFORM reverse_account_balance(acc_type, tx_details.loan_account_id, reversal_amount);
-
-            -- Reverse disbursement account if exists
-            IF tx_details.disbursement_account_id IS NOT NULL THEN
-                SELECT type INTO acc_type
-                FROM public.accounts
-                WHERE id = tx_details.disbursement_account_id AND deleted_at IS NULL;
-
-                UPDATE public.accounts SET updated_at = NOW()
-                WHERE id = tx_details.disbursement_account_id;
-
-                PERFORM reverse_account_balance(acc_type, tx_details.disbursement_account_id, reversal_amount);
-            END IF;
-        END LOOP;
-
-    ELSIF p_tx_type = 'lend' THEN
-        FOR tx_details IN
-            SELECT * FROM transactions_lend WHERE transaction_id = p_tx_id
-        LOOP
-            -- Reverse receivable account
-            SELECT type INTO acc_type
-            FROM public.accounts
-            WHERE id = tx_details.receivable_account_id AND deleted_at IS NULL;
-
-            UPDATE public.accounts SET updated_at = NOW()
-            WHERE id = tx_details.receivable_account_id;
-
-            PERFORM reverse_account_balance(acc_type, tx_details.receivable_account_id, reversal_amount);
-
-            -- Reverse funding account if exists
-            IF tx_details.funding_account_id IS NOT NULL THEN
-                SELECT type INTO acc_type
-                FROM public.accounts
-                WHERE id = tx_details.funding_account_id AND deleted_at IS NULL;
-
-                UPDATE public.accounts SET updated_at = NOW()
-                WHERE id = tx_details.funding_account_id;
-
-                PERFORM reverse_account_balance(acc_type, tx_details.funding_account_id, reversal_amount);
-            END IF;
-        END LOOP;
-
-    ELSIF p_tx_type = 'transfer' THEN
-        -- Handle transfer separately
-        SELECT * INTO transfer_details
-        FROM public.transactions_transfer
-        WHERE transaction_id = p_tx_id
-          AND deleted_at IS NULL;
-
-        IF NOT FOUND THEN
-            RAISE WARNING 'Transfer transaction % not found for reversal', p_tx_id;
-            RETURN;
+        IF v_original_amount IS NULL OR v_converted_amount IS NULL THEN
+            RAISE EXCEPTION 'Transaction % missing amounts; reversal skipped.', p_tx_id;
         END IF;
 
-        SELECT type INTO from_acc_type FROM public.accounts WHERE id = transfer_details.from_account;
-        SELECT type INTO to_acc_type FROM public.accounts WHERE id = transfer_details.to_account;
+        -- Use CASE for consistent pattern matching
+        CASE p_tx_type
 
-        UPDATE public.accounts
-        SET updated_at = NOW()
-        WHERE id IN (transfer_details.from_account, transfer_details.to_account);
+            WHEN 'income' THEN
+                -- Reverse income: subtract converted amount from account balance
+                SELECT account_id INTO v_to_account_id
+                FROM transactions_income
+                WHERE transaction_id = p_tx_id;
 
-        PERFORM reverse_transfer_balances(from_acc_type, to_acc_type, transfer_details);
+                IF NOT FOUND THEN
+                    RAISE EXCEPTION 'No income details found for transaction %.', p_tx_id;
+                END IF;
 
-    ELSE
-        RAISE WARNING 'Unknown transaction type %, skipping reversal', p_tx_type;
-    END IF;
+                SELECT type INTO v_to_account_type
+                FROM accounts
+                WHERE id = v_to_account_id AND deleted_at IS NULL;
 
-END;
-$$;
+                UPDATE accounts SET updated_at = NOW() WHERE id = v_to_account_id;
+                PERFORM set_account_balance(v_to_account_type, v_to_account_id, -v_converted_amount);
 
--- =========================================
--- 07. Function: reverse_account_balance
--- =========================================
--- Purpose:
---   Reverses the balance or relevant field of a specific account based on
---   its account type. Typically used during transaction soft deletes to
---   maintain accurate financial records.
---
--- Behavior:
---   - Determines the account type (cash, bank, wallet, crypto, credit_card,
---     investment, loan, receivable)
---   - Subtracts the specified amount from the appropriate field:
---       * balance for cash, bank, wallet, crypto
---       * current_balance for credit_card
---       * portfolio_value for investment
---       * outstanding_amount for loan
---       * amount_due for receivable
---   - Updates the updated_at timestamp for the affected account
---   - Raises an exception if the account type is unknown
---
--- Parameters:
---   p_acc_type    account_type - Type of the account
---   p_account_id  UUID         - ID of the account to update
---   p_amount      NUMERIC      - Amount to reverse/subtract
---
--- Returns:
---   VOID - This function performs balance reversal and does not return a value
---
--- Notes:
---   - Uses SECURITY DEFINER to enforce consistent behavior regardless of RLS
---   - Ensures financial integrity by accurately reversing balances for all account types
--- =========================================
-CREATE OR REPLACE FUNCTION public.reverse_account_balance(
-    p_acc_type account_type,
-    p_account_id UUID,
-    p_amount NUMERIC
-)
-RETURNS VOID
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public, pg_catalog
-AS $$
-BEGIN
-    CASE p_acc_type
-        WHEN 'cash' THEN
-            UPDATE public.cash_accounts
-            SET balance = balance - p_amount, updated_at = NOW()
-            WHERE account_id = p_account_id;
-        WHEN 'bank' THEN
-            UPDATE public.bank_accounts
-            SET balance = balance - p_amount, updated_at = NOW()
-            WHERE account_id = p_account_id;
-        WHEN 'wallet' THEN
-            UPDATE public.wallet_accounts
-            SET balance = balance - p_amount, updated_at = NOW()
-            WHERE account_id = p_account_id;
-        WHEN 'crypto' THEN
-            UPDATE public.crypto_accounts
-            SET balance = balance - p_amount, updated_at = NOW()
-            WHERE account_id = p_account_id;
-        WHEN 'credit_card' THEN
-            UPDATE public.credit_card_accounts
-            SET current_balance = current_balance - p_amount, updated_at = NOW()
-            WHERE account_id = p_account_id;
-        WHEN 'investment' THEN
-            UPDATE public.investment_accounts
-            SET portfolio_value = portfolio_value - p_amount, updated_at = NOW()
-            WHERE account_id = p_account_id;
-        WHEN 'loan' THEN
-            UPDATE public.loan_accounts
-            SET outstanding_amount = outstanding_amount - p_amount, updated_at = NOW()
-            WHERE account_id = p_account_id;
-        WHEN 'receivable' THEN
-            UPDATE public.receivable_accounts
-            SET amount_due = amount_due - p_amount, updated_at = NOW()
-            WHERE account_id = p_account_id;
-        ELSE
-            RAISE EXCEPTION 'Unknown account type in reverse_account_balance: %', p_acc_type;
-    END CASE;
-END;
-$$;
+            WHEN 'expense' THEN
+                -- Reverse expense: add converted amount (or subtract for credit cards)
+                SELECT account_id INTO v_from_account_id
+                FROM transactions_expense
+                WHERE transaction_id = p_tx_id;
 
--- =========================================
--- 09. Function: reverse_transfer_balances
--- =========================================
--- Purpose:
---   Reverses the balances of both accounts involved in a transfer transaction
---   when the transfer is soft deleted or otherwise needs reversal. Ensures that
---   funds and fees are correctly restored or deducted according to account type.
---
--- Behavior:
---   - Adjusts the "from_account" by adding back the transfer amount plus any fees:
---       * Handles all account types: cash, bank, wallet, crypto, credit_card, loan, investment, receivable
---       * Updates updated_at timestamp
---       * Raises an exception for unknown from_account types
---   - Adjusts the "to_account" by subtracting the transfer amount:
---       * Handles all account types: cash, bank, wallet, crypto, credit_card, loan, investment, receivable
---       * Updates updated_at timestamp
---       * Raises an exception for unknown to_account types
---
--- Parameters:
---   p_from_acc_type account_type - Type of the source account
---   p_to_acc_type   account_type - Type of the destination account
---   p_transfer      RECORD       - The transfer record containing amount, fees, and account IDs
---
--- Returns:
---   VOID - This function performs balance reversals and does not return a value
---
--- Notes:
---   - Uses SECURITY DEFINER to ensure consistent behavior regardless of RLS
---   - Ensures financial integrity by accurately reversing transfers across all account types
---   - Correctly handles fees for the source account during reversal
--- =========================================
-CREATE OR REPLACE FUNCTION public.reverse_transfer_balances(
-    p_from_acc_type account_type,
-    p_to_acc_type account_type,
-    p_transfer RECORD
-)
-RETURNS VOID
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public, pg_catalog
-AS $$
-BEGIN
-    -- Reverse "from" account (add back amount + fees if any)
-    CASE p_from_acc_type
-        WHEN 'cash' THEN
-            UPDATE public.cash_accounts
-            SET balance = balance + p_transfer.amount + p_transfer.fees,
-                updated_at = NOW()
-            WHERE account_id = p_transfer.from_account;
-        WHEN 'bank' THEN
-            UPDATE public.bank_accounts
-            SET balance = balance + p_transfer.amount + p_transfer.fees,
-                updated_at = NOW()
-            WHERE account_id = p_transfer.from_account;
-        WHEN 'wallet' THEN
-            UPDATE public.wallet_accounts
-            SET balance = balance + p_transfer.amount + p_transfer.fees,
-                updated_at = NOW()
-            WHERE account_id = p_transfer.from_account;
-        WHEN 'crypto' THEN
-            UPDATE public.crypto_accounts
-            SET balance = balance + p_transfer.amount + p_transfer.fees,
-                updated_at = NOW()
-            WHERE account_id = p_transfer.from_account;
-        WHEN 'credit_card' THEN
-            UPDATE public.credit_card_accounts
-            SET current_balance = current_balance - (p_transfer.amount + p_transfer.fees),
-                updated_at = NOW()
-            WHERE account_id = p_transfer.from_account;
-        WHEN 'loan' THEN
-            UPDATE public.loan_accounts
-            SET outstanding_amount = outstanding_amount + p_transfer.amount,
-                updated_at = NOW()
-            WHERE account_id = p_transfer.from_account;
-        WHEN 'investment' THEN
-            UPDATE public.investment_accounts
-            SET portfolio_value = portfolio_value + p_transfer.amount + p_transfer.fees,
-                updated_at = NOW()
-            WHERE account_id = p_transfer.from_account;
-        WHEN 'receivable' THEN
-            UPDATE public.receivable_accounts
-            SET amount_due = amount_due + p_transfer.amount,
-                updated_at = NOW()
-            WHERE account_id = p_transfer.from_account;
-        ELSE
-            RAISE EXCEPTION 'Unknown from_account type in reverse_transfer_balances: %', p_from_acc_type;
-    END CASE;
+                IF NOT FOUND THEN
+                    RAISE EXCEPTION 'No expense details found for transaction %.', p_tx_id;
+                END IF;
 
-    -- Reverse "to" account (subtract amount)
-    CASE p_to_acc_type
-        WHEN 'cash' THEN
-            UPDATE public.cash_accounts
-            SET balance = balance - p_transfer.amount,
-                updated_at = NOW()
-            WHERE account_id = p_transfer.to_account;
-        WHEN 'bank' THEN
-            UPDATE public.bank_accounts
-            SET balance = balance - p_transfer.amount,
-                updated_at = NOW()
-            WHERE account_id = p_transfer.to_account;
-        WHEN 'wallet' THEN
-            UPDATE public.wallet_accounts
-            SET balance = balance - p_transfer.amount,
-                updated_at = NOW()
-            WHERE account_id = p_transfer.to_account;
-        WHEN 'crypto' THEN
-            UPDATE public.crypto_accounts
-            SET balance = balance - p_transfer.amount,
-                updated_at = NOW()
-            WHERE account_id = p_transfer.to_account;
-        WHEN 'credit_card' THEN
-            UPDATE public.credit_card_accounts
-            SET current_balance = current_balance + p_transfer.amount,
-                updated_at = NOW()
-            WHERE account_id = p_transfer.to_account;
-        WHEN 'loan' THEN
-            UPDATE public.loan_accounts
-            SET outstanding_amount = outstanding_amount - p_transfer.amount,
-                updated_at = NOW()
-            WHERE account_id = p_transfer.to_account;
-        WHEN 'investment' THEN
-            UPDATE public.investment_accounts
-            SET portfolio_value = portfolio_value - p_transfer.amount,
-                updated_at = NOW()
-            WHERE account_id = p_transfer.to_account;
-        WHEN 'receivable' THEN
-            UPDATE public.receivable_accounts
-            SET amount_due = amount_due - p_transfer.amount,
-                updated_at = NOW()
-            WHERE account_id = p_transfer.to_account;
-        ELSE
-            RAISE EXCEPTION 'Unknown to_account type in reverse_transfer_balances: %', p_to_acc_type;
-    END CASE;
+                SELECT type INTO v_from_account_type
+                FROM accounts
+                WHERE id = v_from_account_id AND deleted_at IS NULL;
 
+                UPDATE accounts SET updated_at = NOW() WHERE id = v_from_account_id;
+
+                IF v_from_account_type = 'credit_card' THEN
+                    PERFORM set_account_balance(v_from_account_type, v_from_account_id, -v_converted_amount);
+                ELSE
+                    PERFORM set_account_balance(v_from_account_type, v_from_account_id, v_converted_amount);
+                END IF;
+
+            WHEN 'investment' THEN
+                -- Reverse investment: subtract converted amount from investment account, add original amount to funding account
+                SELECT investment_account_id, funding_account_id
+                INTO v_to_account_id, v_from_account_id
+                FROM transactions_investment
+                WHERE transaction_id = p_tx_id;
+
+                IF NOT FOUND THEN
+                    RAISE EXCEPTION 'No investment details found for transaction %.', p_tx_id;
+                END IF;
+
+                IF v_to_account_id IS NOT NULL THEN
+                    SELECT type INTO v_to_account_type
+                    FROM accounts WHERE id = v_to_account_id AND deleted_at IS NULL;
+                    UPDATE accounts SET updated_at = NOW() WHERE id = v_to_account_id;
+                    PERFORM set_account_balance(v_to_account_type, v_to_account_id, -v_converted_amount);
+                END IF;
+
+                IF v_from_account_id IS NOT NULL THEN
+                    SELECT type INTO v_from_account_type
+                    FROM accounts WHERE id = v_from_account_id AND deleted_at IS NULL;
+                    UPDATE accounts SET updated_at = NOW() WHERE id = v_from_account_id;
+                    PERFORM set_account_balance(v_from_account_type, v_from_account_id, v_original_amount);
+                END IF;
+
+            WHEN 'adjustment' THEN
+                -- Reverse adjustment: subtract converted amount
+                SELECT account_id INTO v_to_account_id
+                FROM transactions_adjustment
+                WHERE transaction_id = p_tx_id;
+
+                IF NOT FOUND THEN
+                    RAISE EXCEPTION 'No adjustment details found for transaction %.', p_tx_id;
+                END IF;
+
+                SELECT type INTO v_to_account_type
+                FROM accounts WHERE id = v_to_account_id AND deleted_at IS NULL;
+
+                UPDATE accounts SET updated_at = NOW() WHERE id = v_to_account_id;
+                PERFORM set_account_balance(v_to_account_type, v_to_account_id, v_converted_amount);
+
+            WHEN 'borrow' THEN
+                -- Reverse borrow: subtract original amount from loan account, subtract converted amount from disbursement account
+                SELECT disbursement_account_id, loan_account_id
+                INTO v_to_account_id, v_from_account_id
+                FROM transactions_borrow
+                WHERE transaction_id = p_tx_id;
+
+                IF NOT FOUND THEN
+                    RAISE EXCEPTION 'No borrow details found for transaction %.', p_tx_id;
+                END IF;
+
+                IF v_to_account_id IS NOT NULL THEN
+                    SELECT type INTO v_to_account_type FROM accounts WHERE id = v_to_account_id AND deleted_at IS NULL;
+                    UPDATE accounts SET updated_at = NOW() WHERE id = v_to_account_id;
+                    PERFORM set_account_balance(v_to_account_type, v_to_account_id, -v_converted_amount);
+                END IF;
+
+                IF v_from_account_id IS NOT NULL THEN
+                    SELECT type INTO v_from_account_type FROM accounts WHERE id = v_from_account_id AND deleted_at IS NULL;
+                    UPDATE accounts SET updated_at = NOW() WHERE id = v_from_account_id;
+                    PERFORM set_account_balance(v_from_account_type, v_from_account_id, -v_original_amount);
+                END IF;
+
+            WHEN 'lend' THEN
+                -- Reverse lend: subtract converted amount from receivable account, add original amount to funding account
+                SELECT receivable_account_id, funding_account_id
+                INTO v_to_account_id, v_from_account_id
+                FROM transactions_lend
+                WHERE transaction_id = p_tx_id;
+
+                IF NOT FOUND THEN
+                    RAISE EXCEPTION 'No lend details found for transaction %.', p_tx_id;
+                END IF;
+
+                IF v_to_account_id IS NOT NULL THEN
+                    SELECT type INTO v_to_account_type FROM accounts WHERE id = v_to_account_id AND deleted_at IS NULL;
+                    UPDATE accounts SET updated_at = NOW() WHERE id = v_to_account_id;
+                    PERFORM set_account_balance(v_to_account_type, v_to_account_id, -v_converted_amount);
+                END IF;
+
+                IF v_from_account_id IS NOT NULL THEN
+                    SELECT type INTO v_from_account_type FROM accounts WHERE id = v_from_account_id AND deleted_at IS NULL;
+                    UPDATE accounts SET updated_at = NOW() WHERE id = v_from_account_id;
+                    PERFORM set_account_balance(v_from_account_type, v_from_account_id, v_original_amount);
+                END IF;
+
+            WHEN 'transfer' THEN
+                -- Reverse transfer: reverse debit and credit accounts including fees
+                SELECT to_account, from_account, fees
+                INTO v_to_account_id, v_from_account_id, v_transfer_fee
+                FROM public.transactions_transfer
+                WHERE transaction_id = p_tx_id;
+
+                IF NOT FOUND THEN
+                    RAISE EXCEPTION 'Transfer transaction % not found for reversal.', p_tx_id;
+                END IF;
+
+                -- From account (outflow)
+                SELECT type INTO v_to_account_type FROM public.accounts WHERE id = v_to_account_id AND deleted_at IS NULL;
+                UPDATE accounts SET updated_at = NOW() WHERE id = v_to_account_id;
+
+                IF v_to_account_type IN ('credit_card','loan') THEN
+                    PERFORM set_account_balance(v_to_account_type, v_to_account_id, v_converted_amount);
+                ELSE
+                    PERFORM set_account_balance(v_to_account_type, v_to_account_id, -v_converted_amount);
+                END IF;
+
+                -- To account (inflow)
+                SELECT type INTO v_from_account_type FROM public.accounts WHERE id = v_from_account_id AND deleted_at IS NULL;
+                UPDATE accounts SET updated_at = NOW() WHERE id = v_from_account_id;
+
+                IF v_from_account_type IN ('credit_card','loan') THEN
+                    PERFORM set_account_balance(v_from_account_type, v_from_account_id, -(v_original_amount + COALESCE(v_transfer_fee, 0)));
+                ELSE
+                    PERFORM set_account_balance(v_from_account_type, v_from_account_id, v_original_amount + COALESCE(v_transfer_fee, 0));
+                END IF;
+
+            ELSE
+                RAISE EXCEPTION 'Unknown transaction type % for reversal', p_tx_type;
+        END CASE;
+
+        RAISE NOTICE 'Reversal completed for transaction % of type %.', p_tx_id, p_tx_type;
+
+    EXCEPTION
+        WHEN OTHERS THEN
+            RAISE WARNING 'Error reversing balances for transaction %: %', p_tx_id, SQLERRM;
+    END;
 END;
 $$;
 
@@ -1903,9 +1731,7 @@ $$;
 GRANT EXECUTE ON FUNCTION validate_transaction_user() TO authenticated;
 GRANT EXECUTE ON FUNCTION validate_transfer_accounts() TO authenticated;
 GRANT EXECUTE ON FUNCTION apply_transaction_balance() TO authenticated;
-GRANT EXECUTE ON FUNCTION handle_soft_delete_and_reverse_balance() TO authenticated;
-GRANT EXECUTE ON FUNCTION reverse_account_balance(account_type, uuid, numeric) TO authenticated;
-GRANT EXECUTE ON FUNCTION reverse_transfer_balances(account_type, account_type, record) TO authenticated;
+GRANT EXECUTE ON FUNCTION process_soft_delete_transaction() TO authenticated;
 GRANT EXECUTE ON FUNCTION setup_recurring_transaction() TO authenticated;
 GRANT EXECUTE ON FUNCTION validate_and_apply_exchange_rate() TO authenticated;
 

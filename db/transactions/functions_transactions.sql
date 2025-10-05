@@ -1381,6 +1381,147 @@ $$;
 -- Note: Uncomment the following line if pg_cron extension is available
 SELECT cron.schedule('process-recurring', '0 0 * * *', 'SELECT schedule_recurring_processing();');
 
+-- =========================================
+-- 13. Function: validate_transaction_ownership
+-- =========================================
+-- Purpose:
+--   Checks whether a given transaction belongs to a specific user and is not soft deleted.
+--
+-- Behavior:
+--   - Uses COALESCE to determine the effective user ID:
+--       * If p_user_id is provided, uses that.
+--       * Otherwise, uses the current session's authenticated user ID (auth.uid()).
+--   - Queries the transactions table to verify:
+--       * The transaction exists with the given ID.
+--       * The transaction belongs to the determined user.
+--       * The transaction is not soft deleted (deleted_at IS NULL).
+--   - Returns a BOOLEAN indicating ownership status.
+--
+-- Returns:
+--   BOOLEAN - TRUE if the transaction exists, belongs to the user, and is not deleted;
+--             FALSE otherwise.
+--
+-- Notes:
+--   - SECURITY INVOKER ensures this function runs with the privileges of the caller.
+--   - Useful as a shared helper function to enforce row-level ownership checks
+--     before performing sensitive operations like updates or deletes.
+-- =========================================
+CREATE OR REPLACE FUNCTION public.validate_transaction_ownership(
+    p_transaction_id UUID,
+    p_user_id UUID DEFAULT NULL
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = pg_catalog, public
+STABLE
+AS $$
+DECLARE
+    v_user_id UUID;
+    v_exists BOOLEAN;
+BEGIN
+    v_user_id := COALESCE(p_user_id, auth.uid());
+
+    SELECT EXISTS(
+        SELECT 1 FROM transactions t
+        WHERE t.id = p_transaction_id
+          AND t.user_id = v_user_id
+          AND t.deleted_at IS NULL
+    ) INTO v_exists;
+
+    RETURN v_exists;
+END;
+$$;
+
+-- =========================================
+-- 14. Function: soft_delete_transaction
+-- =========================================
+-- Purpose:
+--   Performs a soft delete of a transaction, ensuring that only the transaction owner
+--   or an administrator can delete it. Returns a descriptive text message indicating
+--   the result of the operation.
+--
+-- Behavior:
+--   - Retrieves the current user's ID from session context (auth.uid()).
+--   - Checks if the transaction exists and determines whether it is already soft deleted.
+--   - Checks if the current user has ownership of the transaction or has admin rights.
+--   - If ownership or admin rights are confirmed, performs a soft delete by updating
+--     the deleted_at and updated_at timestamps.
+--   - Returns a clear text result indicating success, already deleted status, or raises
+--     a permission or error exception.
+--
+-- Returns:
+--   TEXT - Possible values:
+--       * 'Transaction (%) deleted successfully'
+--       * 'Transaction (%) is already deleted'
+--       * Raises an exception if permission denied, transaction not found, or an error occurs.
+--
+-- Notes:
+--   - SECURITY DEFINER ensures this function executes with elevated privileges, allowing
+--     admin overrides while still enforcing ownership rules.
+--   - Uses public.check_admin_permissions() to determine if the current user is an admin.
+--   - Designed for safe deletion with explicit ownership/admin checks and clear feedback.
+-- =========================================
+CREATE OR REPLACE FUNCTION public.soft_delete_transaction(p_transaction_id UUID)
+RETURNS TEXT
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+    v_user_id UUID := auth.uid();
+    v_deleted_at TIMESTAMP;
+    v_updated BOOLEAN;
+    v_is_admin BOOLEAN := public.check_admin_permissions();
+BEGIN
+    -- Check if transaction exists and its deleted_at
+    SELECT deleted_at
+    INTO v_deleted_at
+    FROM public.transactions
+    WHERE id = p_transaction_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Transaction (%s) does not exist', p_transaction_id
+            USING ERRCODE = 'P0001';
+    END IF;
+
+    -- If already soft deleted
+    IF v_deleted_at IS NOT NULL THEN
+        RETURN format('Transaction (%s) is already deleted', p_transaction_id);
+    END IF;
+
+    -- Validate ownership OR admin rights
+    IF NOT v_is_admin AND NOT public.validate_transaction_ownership(p_transaction_id, v_user_id) THEN
+        RAISE EXCEPTION 'Permission denied: user (%s) is not authorized to delete transaction (%s).',
+            v_user_id, p_transaction_id
+            USING ERRCODE = '42501';
+    END IF;
+
+    -- Perform soft delete
+    UPDATE public.transactions
+    SET deleted_at = NOW(),
+        updated_at = NOW()
+    WHERE id = p_transaction_id
+      AND deleted_at IS NULL
+    RETURNING TRUE INTO v_updated;
+
+    -- Double check for race condition
+    IF NOT FOUND THEN
+        RETURN format('Transaction (%s) is already deleted', p_transaction_id);
+    END IF;
+
+    -- Successful deletion
+    RETURN format('Transaction (%s) deleted successfully', p_transaction_id);
+
+EXCEPTION
+    WHEN unique_violation THEN
+        RAISE EXCEPTION 'Duplicate transaction ID (%s) detected during soft delete.', p_transaction_id;
+    WHEN data_exception THEN
+        RAISE EXCEPTION 'Invalid data encountered while soft deleting transaction (%s): %s', p_transaction_id, SQLERRM;
+    WHEN OTHERS THEN
+        RAISE EXCEPTION 'Unexpected error during soft delete of transaction (%s): %s', p_transaction_id, SQLERRM;
+END;
+$$;
 
 -- =========================================
 -- 05. Function: hard_delete_recurring_transaction
@@ -2098,6 +2239,8 @@ GRANT EXECUTE ON FUNCTION create_recurring_transaction(TEXT, JSONB, recurrence_f
 GRANT EXECUTE ON FUNCTION process_recurring_transactions() TO authenticated;
 GRANT EXECUTE ON FUNCTION public.generate_transaction_from_template(UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION schedule_recurring_processing() TO authenticated;
+GRANT EXECUTE ON FUNCTION public.soft_delete_transaction(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.validate_transaction_ownership(UUID, UUID) TO authenticated;
 
 GRANT EXECUTE ON FUNCTION get_user_transaction_count(UUID, transaction_type, DATE, DATE) TO authenticated;
 GRANT EXECUTE ON FUNCTION get_recent_transactions(INTEGER) TO authenticated;
@@ -2153,6 +2296,12 @@ Fetches the recurring rule and template transaction, inserts a new transaction r
 copies type-specific details, advances the next_occurrence date, and returns the new transaction UUID.';
 
 COMMENT ON FUNCTION schedule_recurring_processing() IS 'Triggers processing of due recurring transactions and logs the result to audit_logs table. Intended for scheduled execution (e.g., with pg_cron).';
+
+COMMENT ON FUNCTION public.soft_delete_transaction(UUID) IS
+'Soft deletes a transaction by setting deleted_at and updated_at. Requires transaction ownership. Checks ownership via validate_transaction_ownership().';
+
+COMMENT ON FUNCTION public.validate_transaction_ownership(UUID, UUID) IS
+'Checks if the given user owns the transaction and it is not soft deleted.';
 
 
 COMMENT ON FUNCTION get_recent_transactions(INTEGER) IS 'RLS-compliant recent transactions query';
