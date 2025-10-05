@@ -1008,10 +1008,10 @@ $$;
 CREATE OR REPLACE FUNCTION create_recurring_transaction(
     p_transaction_type TEXT,                  -- 'income', 'expense', 'investment', etc.
     p_params JSONB,                           -- transaction-specific params
-    p_frequency recurrence_frequency,
-    p_interval INT DEFAULT 1,
-    p_start_date DATE DEFAULT CURRENT_DATE,
-    p_end_date DATE DEFAULT NULL
+    p_frequency recurrence_frequency,         -- how often it recurs (daily, weekly, monthly, etc.)
+    p_interval INT DEFAULT 1,                 -- interval multiplier (e.g., every 2 weeks)
+    p_start_date DATE DEFAULT CURRENT_DATE,   -- start of recurrence
+    p_end_date DATE DEFAULT NULL              -- optional end of recurrence
 )
 RETURNS UUID
 LANGUAGE plpgsql
@@ -1022,13 +1022,13 @@ DECLARE
     v_recurring_id UUID;
     v_user_id UUID;
 BEGIN
-    -- Get current authenticated user
+    -- 1. Get current authenticated user
     v_user_id := auth.uid();
     IF v_user_id IS NULL THEN
         RAISE EXCEPTION 'No authenticated user found';
     END IF;
 
-    -- Dynamically call the correct create_*_transaction function
+    -- 2. Dynamically call the correct create_*_transaction function
     CASE p_transaction_type
         WHEN 'income' THEN
             v_transaction_id := create_income_transaction(
@@ -1110,7 +1110,10 @@ BEGIN
             RAISE EXCEPTION 'Unsupported recurring transaction type: %', p_transaction_type;
     END CASE;
 
-    -- Link transaction as a recurring template
+    -- 3. Mark the created transaction as a recurring template
+    UPDATE transactions SET is_recurring = TRUE, updated_at = now() WHERE id = v_transaction_id;
+
+    -- 4. Link transaction as a recurring template entry in transactions_recurring
     INSERT INTO transactions_recurring (
         transaction_template_id,
         frequency,
@@ -1137,6 +1140,7 @@ BEGIN
     )
     RETURNING id INTO v_recurring_id;
 
+    -- 5. Return the template transaction ID
     RETURN v_transaction_id;
 END;
 $$;
@@ -1184,7 +1188,7 @@ DECLARE
     new_tx_id UUID;
     template_tx RECORD;
 BEGIN
-    -- Fetch the recurring rule
+    -- 1. Fetch the recurring rule that is due to execute
     SELECT *
     INTO rec
     FROM transactions_recurring
@@ -1194,10 +1198,10 @@ BEGIN
       AND (end_date IS NULL OR next_occurrence <= end_date);
 
     IF NOT FOUND THEN
-        RETURN NULL; -- nothing to process
+        RETURN NULL; -- No due recurrence to process
     END IF;
 
-    -- Fetch the template transaction
+    -- 2. Fetch the associated template transaction
     SELECT *
     INTO template_tx
     FROM transactions
@@ -1209,11 +1213,12 @@ BEGIN
         RETURN NULL;
     END IF;
 
-    -- Insert new transaction (base), including fees
+    -- 3. Insert new transaction (base), inheriting all monetary details including fees.
+    --    The new transaction is non-recurring (is_recurring = FALSE).
     INSERT INTO transactions (
         user_id, type, original_amount, original_currency,
         exchange_rate, converted_amount, fees, notes,
-        created_at, updated_at
+        is_recurring, created_at, updated_at
     )
     VALUES (
         template_tx.user_id,
@@ -1222,18 +1227,19 @@ BEGIN
         template_tx.original_currency,
         template_tx.exchange_rate,
         template_tx.converted_amount,
-        COALESCE(template_tx.fees, 0), -- store fees from template
+        COALESCE(template_tx.fees, 0), -- carry over fees from template
         COALESCE(template_tx.notes, '') || ' [Auto-recurring ' || rec.id::text || ']',
+        FALSE,                         -- explicitly mark this as a non-recurring instance
         NOW(),
         NOW()
     )
     RETURNING id INTO new_tx_id;
 
-    -- Copy type-specific details and ensure fees are retained
+    -- 4. Copy type-specific details from the template to the new transaction.
     CASE template_tx.type
         WHEN 'income' THEN
             INSERT INTO transactions_income (transaction_id, account_id, source_id, notes, created_at, updated_at)
-            SELECT new_tx_id, account_id, source_id, 'Auto-generated from recurring', NOW(), NOW()
+            SELECT new_tx_id, account_id, source_id, 'Auto-generated from recurring income', NOW(), NOW()
             FROM transactions_income WHERE transaction_id = template_tx.id AND deleted_at IS NULL;
 
         WHEN 'expense' THEN
@@ -1246,8 +1252,8 @@ BEGIN
                 asset_type, asset_symbol, platform, risk_level,
                 created_at, updated_at)
             SELECT new_tx_id, investment_account_id, funding_account_id,
-                asset_type, asset_symbol, platform, risk_level,
-                NOW(), NOW()
+                   asset_type, asset_symbol, platform, risk_level,
+                   NOW(), NOW()
             FROM transactions_investment WHERE transaction_id = template_tx.id AND deleted_at IS NULL;
 
         WHEN 'adjustment' THEN
@@ -1257,9 +1263,9 @@ BEGIN
 
         WHEN 'borrow' THEN
             INSERT INTO transactions_borrow (transaction_id, loan_account_id, disbursement_account_id,
-                                             lender_id, notes, created_at, updated_at)
-            SELECT new_tx_id, loan_account_id, disbursement_account_id, 
-            lender_id, 'Auto-generated from recurring borrow', NOW(), NOW()
+                lender_id, notes, created_at, updated_at)
+            SELECT new_tx_id, loan_account_id, disbursement_account_id,
+                   lender_id, 'Auto-generated from recurring borrow', NOW(), NOW()
             FROM transactions_borrow WHERE transaction_id = template_tx.id AND deleted_at IS NULL;
 
         WHEN 'lend' THEN
@@ -1267,19 +1273,19 @@ BEGIN
                 counterparty_id, interest_rate, due_date, collateral,
                 notes, created_at, updated_at)
             SELECT new_tx_id, receivable_account_id, funding_account_id,
-                counterparty_id, interest_rate, due_date, collateral,
-                'Auto-generated from recurring lend', NOW(), NOW()
+                   counterparty_id, interest_rate, due_date, collateral,
+                   'Auto-generated from recurring lend', NOW(), NOW()
             FROM transactions_lend WHERE transaction_id = template_tx.id AND deleted_at IS NULL;
 
         WHEN 'transfer' THEN
             INSERT INTO transactions_transfer (transaction_id, from_account, to_account, transfer_method, notes,
-            created_at, updated_at)
+                created_at, updated_at)
             SELECT new_tx_id, from_account, to_account, transfer_method,
-                'Auto-generated from recurring transfer', NOW(), NOW()
+                   'Auto-generated from recurring transfer', NOW(), NOW()
             FROM transactions_transfer WHERE transaction_id = template_tx.id AND deleted_at IS NULL;
     END CASE;
 
-    -- Advance next_occurrence based on frequency
+    -- 5. Advance next_occurrence based on recurrence frequency and interval
     UPDATE transactions_recurring
     SET next_occurrence = CASE rec.frequency::TEXT
             WHEN 'daily'   THEN rec.next_occurrence + (rec.interval || ' days')::interval
@@ -1290,6 +1296,7 @@ BEGIN
         updated_at = NOW()
     WHERE id = rec.id;
 
+    -- 6. Return the newly created transaction ID
     RETURN new_tx_id;
 END;
 $$;

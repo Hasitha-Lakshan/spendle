@@ -284,6 +284,7 @@ CREATE TABLE transactions (
   converted_amount DECIMAL(36,18),
   fees DECIMAL(36,18) DEFAULT 0,          -- <-- NEW COLUMN
   notes TEXT,
+  is_recurring BOOLEAN NOT NULL DEFAULT FALSE,
   deleted_at timestamptz NULL DEFAULT NULL,
   created_at timestamptz DEFAULT now(),
   updated_at timestamptz DEFAULT now(),

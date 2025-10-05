@@ -252,7 +252,9 @@ BEGIN
         'original_amount', NEW.original_amount,
         'original_currency', NEW.original_currency,
         'exchange_rate', NEW.exchange_rate,
-        'converted_amount', NEW.converted_amount
+        'converted_amount', NEW.converted_amount,
+        'fees', NEW.fees,
+        'is_recurring', NEW.is_recurring
     );
     RETURN NEW;
 END;
@@ -1328,7 +1330,7 @@ SECURITY DEFINER
 SET search_path = public, pg_catalog
 AS $$
 BEGIN
-    -- 1. Auto‑populate action_by if not provided
+    -- 1. Auto-populate action_by if not provided
     IF NEW.action_by IS NULL THEN
         NEW.action_by := auth.uid();
 
@@ -1339,14 +1341,16 @@ BEGIN
     END IF;
 
     -- 2. Validate that template transaction exists, belongs to user, and is active
+    --    Also ensure it is correctly marked as a recurring transaction template.
     IF NOT EXISTS (
         SELECT 1 
         FROM transactions 
         WHERE id = NEW.transaction_template_id 
           AND user_id = NEW.user_id
           AND deleted_at IS NULL
+          AND is_recurring = TRUE
     ) THEN
-        RAISE EXCEPTION 'Template transaction does not exist, is deleted, or access denied';
+        RAISE EXCEPTION 'Template transaction does not exist, is deleted, access denied, or not marked as recurring';
     END IF;
 
     -- 3. Validate recurrence interval
@@ -1368,21 +1372,23 @@ BEGIN
         END IF;
     END IF;
 
-    -- 6. Ensure amounts and currencies are valid
+    -- 6. Ensure amounts, currencies, and fees are valid
     IF NOT EXISTS (
         SELECT 1
         FROM transactions t
         WHERE t.id = NEW.transaction_template_id
           AND t.original_amount IS NOT NULL
           AND t.original_currency IS NOT NULL
+          AND t.fees IS NOT NULL
     ) THEN
-        RAISE EXCEPTION 'Template transaction must have original_amount and original_currency';
+        RAISE EXCEPTION 'Template transaction must have valid amount, currency, and fees defined';
     END IF;
 
     RETURN NEW;
 END;
 $$;
 
+-- Trigger
 CREATE TRIGGER trg_setup_recurring
     BEFORE INSERT ON transactions_recurring
     FOR EACH ROW EXECUTE FUNCTION public.setup_recurring_transaction();
