@@ -38,6 +38,7 @@ CREATE OR REPLACE FUNCTION create_income_transaction(
     p_account_id UUID,
     p_amount DECIMAL,
     p_currency VARCHAR DEFAULT 'USD',
+    p_fees DECIMAL DEFAULT 0,           -- <-- NEW: fees for the transaction
     p_source_id UUID DEFAULT NULL,
     p_notes TEXT DEFAULT NULL
 )
@@ -64,6 +65,11 @@ BEGIN
         RAISE EXCEPTION 'Income amount must be positive';
     END IF;
 
+    -- Validate fees (fees cannot be negative)
+    IF p_fees < 0 THEN
+        RAISE EXCEPTION 'Fees cannot be negative';
+    END IF;
+
     -- Get account currency
     SELECT currency INTO v_account_currency
     FROM accounts
@@ -84,6 +90,7 @@ BEGIN
         original_currency,
         exchange_rate,
         converted_amount,
+        fees,                     -- <-- NEW: store fees
         notes
     ) VALUES (
         v_user_id,
@@ -92,6 +99,7 @@ BEGIN
         p_currency,
         v_exchange_rate,
         p_amount * v_exchange_rate,
+        p_fees,                   -- <-- NEW: store fees
         p_notes
     )
     RETURNING id INTO v_transaction_id;
@@ -155,6 +163,7 @@ CREATE OR REPLACE FUNCTION create_expense_transaction(
     p_account_id UUID,
     p_amount DECIMAL,
     p_currency VARCHAR DEFAULT 'USD',
+    p_fees DECIMAL DEFAULT 0,                    -- <-- NEW: fees for the transaction
     p_category_id UUID DEFAULT NULL,
     p_payment_method payment_method DEFAULT 'other',
     p_notes TEXT DEFAULT NULL
@@ -182,6 +191,11 @@ BEGIN
         RAISE EXCEPTION 'Expense amount must be positive';
     END IF;
 
+    -- Validate fees (fees cannot be negative)
+    IF p_fees < 0 THEN
+        RAISE EXCEPTION 'Fees cannot be negative';
+    END IF;
+
     -- Get account currency
     SELECT currency INTO v_account_currency 
     FROM accounts 
@@ -202,6 +216,7 @@ BEGIN
         original_currency,
         exchange_rate, 
         converted_amount, 
+        fees,                                -- <-- NEW: store fees
         notes
     ) VALUES (
         v_user_id, 
@@ -210,6 +225,7 @@ BEGIN
         p_currency,
         v_exchange_rate, 
         p_amount * v_exchange_rate, 
+        p_fees,                              -- <-- NEW: store fees
         p_notes
     )
     RETURNING id INTO v_transaction_id;
@@ -276,6 +292,7 @@ CREATE OR REPLACE FUNCTION create_investment_transaction(
     p_funding_account_id UUID,              -- account providing the funds
     p_investment_account_id UUID,           -- account receiving the investment
     p_amount DECIMAL,
+    p_fees DECIMAL DEFAULT 0,               -- <-- NEW: fees for the transaction
     p_asset_type VARCHAR DEFAULT NULL,
     p_asset_symbol VARCHAR DEFAULT NULL,
     p_platform VARCHAR DEFAULT NULL,
@@ -305,6 +322,11 @@ BEGIN
     -- Validate amount is positive
     IF p_amount <= 0 THEN
         RAISE EXCEPTION 'Investment amount must be positive';
+    END IF;
+
+    -- Validate fees (fees cannot be negative)
+    IF p_fees < 0 THEN
+        RAISE EXCEPTION 'Fees cannot be negative';
     END IF;
 
     -- Get funding account currency
@@ -337,6 +359,7 @@ BEGIN
         original_currency,
         exchange_rate, 
         converted_amount, 
+        fees,                              -- <-- NEW: store fees
         notes
     ) VALUES (
         v_user_id, 
@@ -345,6 +368,7 @@ BEGIN
         v_funding_account_currency,
         v_exchange_rate, 
         v_converted_amount, 
+        p_fees,                            -- <-- NEW: store fees
         p_notes
     )
     RETURNING id INTO v_transaction_id;
@@ -417,6 +441,7 @@ CREATE OR REPLACE FUNCTION create_borrow_transaction(
     p_loan_account_id UUID,             -- Loan liability account
     p_disbursement_account_id UUID,     -- Account where borrowed funds go (cash, bank, wallet)
     p_amount DECIMAL,
+    p_fees DECIMAL DEFAULT 0,           -- <-- NEW: fees for the transaction
     p_notes TEXT DEFAULT NULL
 )
 RETURNS UUID
@@ -442,6 +467,11 @@ BEGIN
     -- Validate amount
     IF p_amount <= 0 THEN
         RAISE EXCEPTION 'Borrow amount must be positive';
+    END IF;
+
+    -- Validate fees (fees cannot be negative)
+    IF p_fees < 0 THEN
+        RAISE EXCEPTION 'Fees cannot be negative';
     END IF;
 
     -- Get loan account currency
@@ -474,6 +504,7 @@ BEGIN
         original_currency,
         exchange_rate,
         converted_amount,
+        fees,                       -- <-- NEW: store fees
         notes
     )
     VALUES (
@@ -483,6 +514,7 @@ BEGIN
         v_loan_account_currency,
         v_exchange_rate,
         v_converted_amount,
+        p_fees,                     -- <-- NEW: store fees
         p_notes
     )
     RETURNING id INTO v_transaction_id;
@@ -552,6 +584,7 @@ CREATE OR REPLACE FUNCTION create_lend_transaction(
     p_receivable_account_id UUID,       -- Where the receivable is tracked (loan asset)
     p_funding_account_id UUID,          -- Account providing funds (cash, bank, wallet)
     p_amount DECIMAL,
+    p_fees DECIMAL DEFAULT 0,           -- <-- NEW: fees for the transaction
     p_counterparty_id UUID DEFAULT NULL,
     p_interest_rate DECIMAL(5,2) DEFAULT NULL,
     p_due_date DATE DEFAULT NULL,
@@ -581,6 +614,11 @@ BEGIN
     -- Validate amount is positive
     IF p_amount <= 0 THEN
         RAISE EXCEPTION 'Lend amount must be positive';
+    END IF;
+
+    -- Validate fees (fees cannot be negative)
+    IF p_fees < 0 THEN
+        RAISE EXCEPTION 'Fees cannot be negative';
     END IF;
 
     -- Get receivable account currency (loan asset)
@@ -613,6 +651,7 @@ BEGIN
         original_currency,
         exchange_rate,
         converted_amount,
+        fees,                              -- <-- NEW: store fees
         notes
     )
     VALUES (
@@ -622,6 +661,7 @@ BEGIN
         v_funding_account_currency,
         v_exchange_rate,
         v_converted_amount,
+        p_fees,                            -- <-- NEW: store fees
         p_notes
     )
     RETURNING id INTO v_transaction_id;
@@ -694,6 +734,7 @@ CREATE OR REPLACE FUNCTION create_adjustment_transaction(
     p_account_id UUID,
     p_amount DECIMAL,
     p_currency VARCHAR DEFAULT 'USD',
+    p_fees DECIMAL DEFAULT 0,           -- <-- NEW: fees for the adjustment transaction
     p_reason TEXT DEFAULT NULL,
     p_notes TEXT DEFAULT NULL
 )
@@ -820,7 +861,7 @@ CREATE OR REPLACE FUNCTION create_transfer_transaction(
     p_to_account UUID,
     p_amount DECIMAL,
     p_transfer_method transfer_method DEFAULT 'other',
-    p_fees DECIMAL DEFAULT 0,
+    p_fees DECIMAL DEFAULT 0,            -- fees for this transfer transaction
     p_notes TEXT DEFAULT NULL
 )
 RETURNS UUID
@@ -846,6 +887,11 @@ BEGIN
     -- Validate amount
     IF p_amount <= 0 THEN
         RAISE EXCEPTION 'Transfer amount must be positive';
+    END IF;
+
+    -- Validate fees (fees cannot be negative)
+    IF p_fees < 0 THEN
+        RAISE EXCEPTION 'Fees cannot be negative';
     END IF;
 
     -- Prevent self-transfer
@@ -883,6 +929,7 @@ BEGIN
         original_currency,
         exchange_rate,
         converted_amount,
+        fees,                               -- <-- NEW: store fees in main transactions table
         notes
     )
     VALUES (
@@ -892,6 +939,7 @@ BEGIN
         v_from_account_currency,
         v_exchange_rate,
         v_converted_amount,
+        p_fees,                             -- <-- store fees value
         p_notes
     )
     RETURNING id INTO v_transaction_id;
@@ -902,7 +950,6 @@ BEGIN
         from_account,
         to_account,
         transfer_method,
-        fees,
         created_at,
         updated_at
     )
@@ -911,7 +958,6 @@ BEGIN
         p_from_account,
         p_to_account,
         p_transfer_method,
-        COALESCE(p_fees, 0),
         now(),
         now()
     );
@@ -976,18 +1022,20 @@ DECLARE
     v_recurring_id UUID;
     v_user_id UUID;
 BEGIN
+    -- Get current authenticated user
     v_user_id := auth.uid();
     IF v_user_id IS NULL THEN
         RAISE EXCEPTION 'No authenticated user found';
     END IF;
 
-    -- Dynamically call the correct create_*_transaction
+    -- Dynamically call the correct create_*_transaction function
     CASE p_transaction_type
         WHEN 'income' THEN
             v_transaction_id := create_income_transaction(
                 (p_params->>'account_id')::UUID,
                 (p_params->>'amount')::DECIMAL,
                 COALESCE(p_params->>'currency','USD'),
+                COALESCE((p_params->>'fees')::DECIMAL, 0),      -- support fees
                 (p_params->>'source_id')::UUID,
                 p_params->>'notes'
             );
@@ -997,6 +1045,7 @@ BEGIN
                 (p_params->>'account_id')::UUID,
                 (p_params->>'amount')::DECIMAL,
                 COALESCE(p_params->>'currency','USD'),
+                COALESCE((p_params->>'fees')::DECIMAL, 0),      -- support fees
                 (p_params->>'category_id')::UUID,
                 COALESCE((p_params->>'payment_method')::payment_method, 'other'),
                 p_params->>'notes'
@@ -1007,6 +1056,7 @@ BEGIN
                 (p_params->>'funding_account_id')::UUID,
                 (p_params->>'investment_account_id')::UUID,
                 (p_params->>'amount')::DECIMAL,
+                COALESCE((p_params->>'fees')::DECIMAL, 0),      -- support fees
                 p_params->>'asset_type',
                 p_params->>'asset_symbol',
                 p_params->>'platform',
@@ -1019,6 +1069,7 @@ BEGIN
                 (p_params->>'loan_account_id')::UUID,
                 (p_params->>'disbursement_account_id')::UUID,
                 (p_params->>'amount')::DECIMAL,
+                COALESCE((p_params->>'fees')::DECIMAL, 0),      -- support fees
                 p_params->>'notes'
             );
 
@@ -1027,6 +1078,7 @@ BEGIN
                 (p_params->>'receivable_account_id')::UUID,
                 (p_params->>'funding_account_id')::UUID,
                 (p_params->>'amount')::DECIMAL,
+                COALESCE((p_params->>'fees')::DECIMAL, 0),      -- support fees
                 (p_params->>'counterparty_id')::UUID,
                 (p_params->>'interest_rate')::DECIMAL,
                 (p_params->>'due_date')::DATE,
@@ -1039,6 +1091,7 @@ BEGIN
                 (p_params->>'account_id')::UUID,
                 (p_params->>'amount')::DECIMAL,
                 COALESCE(p_params->>'currency','USD'),
+                COALESCE((p_params->>'fees')::DECIMAL, 0),      -- support fees
                 p_params->>'reason',
                 p_params->>'notes'
             );
@@ -1049,7 +1102,7 @@ BEGIN
                 (p_params->>'to_account')::UUID,
                 (p_params->>'amount')::DECIMAL,
                 COALESCE((p_params->>'transfer_method')::transfer_method, 'other'),
-                COALESCE((p_params->>'fees')::DECIMAL, 0),
+                COALESCE((p_params->>'fees')::DECIMAL, 0),      -- support fees
                 p_params->>'notes'
             );
 
@@ -1057,7 +1110,7 @@ BEGIN
             RAISE EXCEPTION 'Unsupported recurring transaction type: %', p_transaction_type;
     END CASE;
 
-    -- Link as recurring
+    -- Link transaction as a recurring template
     INSERT INTO transactions_recurring (
         transaction_template_id,
         frequency,
@@ -1156,10 +1209,10 @@ BEGIN
         RETURN NULL;
     END IF;
 
-    -- Insert new transaction (base)
+    -- Insert new transaction (base), including fees
     INSERT INTO transactions (
         user_id, type, original_amount, original_currency,
-        exchange_rate, converted_amount, notes,
+        exchange_rate, converted_amount, fees, notes,
         created_at, updated_at
     )
     VALUES (
@@ -1169,13 +1222,14 @@ BEGIN
         template_tx.original_currency,
         template_tx.exchange_rate,
         template_tx.converted_amount,
+        COALESCE(template_tx.fees, 0), -- store fees from template
         COALESCE(template_tx.notes, '') || ' [Auto-recurring ' || rec.id::text || ']',
         NOW(),
         NOW()
     )
     RETURNING id INTO new_tx_id;
 
-    -- Copy type-specific details
+    -- Copy type-specific details and ensure fees are retained
     CASE template_tx.type
         WHEN 'income' THEN
             INSERT INTO transactions_income (transaction_id, account_id, source_id, notes, created_at, updated_at)
@@ -1189,11 +1243,11 @@ BEGIN
 
         WHEN 'investment' THEN
             INSERT INTO transactions_investment (transaction_id, investment_account_id, funding_account_id,
-                                                 asset_type, asset_symbol, platform, risk_level,
-                                                 created_at, updated_at)
+                asset_type, asset_symbol, platform, risk_level,
+                created_at, updated_at)
             SELECT new_tx_id, investment_account_id, funding_account_id,
-                   asset_type, asset_symbol, platform, risk_level,
-                   NOW(), NOW()
+                asset_type, asset_symbol, platform, risk_level,
+                NOW(), NOW()
             FROM transactions_investment WHERE transaction_id = template_tx.id AND deleted_at IS NULL;
 
         WHEN 'adjustment' THEN
@@ -1204,28 +1258,28 @@ BEGIN
         WHEN 'borrow' THEN
             INSERT INTO transactions_borrow (transaction_id, loan_account_id, disbursement_account_id,
                                              lender_id, notes, created_at, updated_at)
-            SELECT new_tx_id, loan_account_id, disbursement_account_id,
-                   lender_id, 'Auto-generated from recurring borrow', NOW(), NOW()
+            SELECT new_tx_id, loan_account_id, disbursement_account_id, 
+            lender_id, 'Auto-generated from recurring borrow', NOW(), NOW()
             FROM transactions_borrow WHERE transaction_id = template_tx.id AND deleted_at IS NULL;
 
         WHEN 'lend' THEN
             INSERT INTO transactions_lend (transaction_id, receivable_account_id, funding_account_id,
-                                           counterparty_id, interest_rate, due_date, collateral,
-                                           notes, created_at, updated_at)
+                counterparty_id, interest_rate, due_date, collateral,
+                notes, created_at, updated_at)
             SELECT new_tx_id, receivable_account_id, funding_account_id,
-                   counterparty_id, interest_rate, due_date, collateral,
-                   'Auto-generated from recurring lend', NOW(), NOW()
+                counterparty_id, interest_rate, due_date, collateral,
+                'Auto-generated from recurring lend', NOW(), NOW()
             FROM transactions_lend WHERE transaction_id = template_tx.id AND deleted_at IS NULL;
 
         WHEN 'transfer' THEN
-            INSERT INTO transactions_transfer (transaction_id, from_account, to_account, transfer_method, fees, notes,
-                                               created_at, updated_at)
-            SELECT new_tx_id, from_account, to_account, transfer_method, COALESCE(fees,0),
-                   'Auto-generated from recurring transfer', NOW(), NOW()
+            INSERT INTO transactions_transfer (transaction_id, from_account, to_account, transfer_method, notes,
+            created_at, updated_at)
+            SELECT new_tx_id, from_account, to_account, transfer_method,
+                'Auto-generated from recurring transfer', NOW(), NOW()
             FROM transactions_transfer WHERE transaction_id = template_tx.id AND deleted_at IS NULL;
     END CASE;
 
-    -- Advance next_occurrence
+    -- Advance next_occurrence based on frequency
     UPDATE transactions_recurring
     SET next_occurrence = CASE rec.frequency::TEXT
             WHEN 'daily'   THEN rec.next_occurrence + (rec.interval || ' days')::interval

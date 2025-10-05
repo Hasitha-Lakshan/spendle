@@ -282,6 +282,7 @@ CREATE TABLE transactions (
   original_currency VARCHAR(10) NOT NULL,
   exchange_rate DECIMAL(36,18),
   converted_amount DECIMAL(36,18),
+  fees DECIMAL(36,18) DEFAULT 0,          -- <-- NEW COLUMN
   notes TEXT,
   deleted_at timestamptz NULL DEFAULT NULL,
   created_at timestamptz DEFAULT now(),
@@ -378,7 +379,6 @@ CREATE TABLE transactions_transfer (
   from_account UUID NOT NULL REFERENCES accounts(id),
   to_account UUID NOT NULL REFERENCES accounts(id),
   transfer_method transfer_method DEFAULT 'other',
-  fees DECIMAL(36,18) DEFAULT 0,
   created_at timestamptz DEFAULT now(),
   updated_at timestamptz DEFAULT now(),
   deleted_at timestamptz NULL DEFAULT NULL,

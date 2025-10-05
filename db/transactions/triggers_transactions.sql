@@ -373,16 +373,20 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 DECLARE
-    v_amount NUMERIC;
-    v_account_type account_type;
+    v_original_amount NUMERIC;
+    v_converted_amount NUMERIC;
+    v_fees NUMERIC;
+    v_to_account_type account_type;
+    v_from_account_type account_type;
 BEGIN
     -- SKIP processing if this is a soft delete
     IF NEW.deleted_at IS NOT NULL THEN
         RETURN NEW;
     END IF;
 
-    -- Get transaction converted amount
-    SELECT converted_amount INTO v_amount
+    -- Fetch transaction amounts and fees
+    SELECT original_amount, converted_amount, COALESCE(fees, 0)
+    INTO v_original_amount, v_converted_amount, v_fees
     FROM public.transactions
     WHERE id = NEW.transaction_id
       AND deleted_at IS NULL;
@@ -395,87 +399,91 @@ BEGIN
     CASE TG_TABLE_NAME
 
         WHEN 'transactions_income' THEN
-            SELECT type INTO v_account_type FROM accounts WHERE id = NEW.account_id;
+            SELECT type INTO v_to_account_type FROM accounts WHERE id = NEW.account_id;
             UPDATE accounts SET updated_at = NOW() WHERE id = NEW.account_id;
-            PERFORM set_account_balance(v_account_type, NEW.account_id, v_amount);
+            -- Income inflow reduced by fees
+            PERFORM set_account_balance(v_to_account_type, NEW.account_id, v_converted_amount - COALESCE(v_fees, 0));
 
         WHEN 'transactions_expense' THEN
-            SELECT type INTO v_account_type FROM accounts WHERE id = NEW.account_id;
+            SELECT type INTO v_from_account_type FROM accounts WHERE id = NEW.account_id;
             UPDATE accounts SET updated_at = NOW() WHERE id = NEW.account_id;
-            IF v_account_type = 'credit_card' THEN
-                PERFORM set_account_balance(v_account_type, NEW.account_id, v_amount);
+            IF v_from_account_type = 'credit_card' THEN
+                -- Credit card expense increases balance owed including fees
+                PERFORM set_account_balance(v_from_account_type, NEW.account_id, v_converted_amount + COALESCE(v_fees, 0));
             ELSE
-                PERFORM set_account_balance(v_account_type, NEW.account_id, -v_amount);
+                -- Regular expense outflow increases by fees
+                PERFORM set_account_balance(v_from_account_type, NEW.account_id, -(v_converted_amount + COALESCE(v_fees, 0)));
             END IF;
 
         WHEN 'transactions_transfer' THEN
             -- From account (outflow including fees)
-            SELECT type INTO v_account_type FROM accounts WHERE id = NEW.from_account;
+            SELECT type INTO v_from_account_type FROM accounts WHERE id = NEW.from_account;
             UPDATE accounts SET updated_at = NOW() WHERE id = NEW.from_account;
 
-            IF v_account_type IN ('credit_card','loan') THEN
+            IF v_from_account_type IN ('credit_card','loan') THEN
                 -- Paying with credit card or loan increases balance owed
-                PERFORM set_account_balance(v_account_type, NEW.from_account, v_amount + COALESCE(NEW.fees,0));
+                PERFORM set_account_balance(v_from_account_type, NEW.from_account, v_original_amount + COALESCE(v_fees, 0));
             ELSE
                 -- Regular outflow
-                PERFORM set_account_balance(v_account_type, NEW.from_account, -(v_amount + COALESCE(NEW.fees,0)));
+                PERFORM set_account_balance(v_from_account_type, NEW.from_account, -(v_original_amount + COALESCE(v_fees, 0)));
             END IF;
 
             -- To account (inflow)
-            SELECT type INTO v_account_type FROM accounts WHERE id = NEW.to_account;
+            SELECT type INTO v_to_account_type FROM accounts WHERE id = NEW.to_account;
             UPDATE accounts SET updated_at = NOW() WHERE id = NEW.to_account;
 
-            IF v_account_type IN ('credit_card','loan') THEN
+            IF v_to_account_type IN ('credit_card','loan') THEN
                 -- Paying to credit card or loan reduces balance owed
-                PERFORM set_account_balance(v_account_type, NEW.to_account, -v_amount);
+                PERFORM set_account_balance(v_to_account_type, NEW.to_account, -v_converted_amount);
             ELSE
                 -- Regular inflow
-                PERFORM set_account_balance(v_account_type, NEW.to_account, v_amount);
+                PERFORM set_account_balance(v_to_account_type, NEW.to_account, v_converted_amount);
             END IF;
 
         WHEN 'transactions_investment' THEN
             -- Investment account increases
-            SELECT type INTO v_account_type FROM accounts WHERE id = NEW.investment_account_id;
+            SELECT type INTO v_to_account_type FROM accounts WHERE id = NEW.investment_account_id;
             UPDATE accounts SET updated_at = NOW() WHERE id = NEW.investment_account_id;
-            PERFORM set_account_balance(v_account_type, NEW.investment_account_id, v_amount);
+            PERFORM set_account_balance(v_to_account_type, NEW.investment_account_id, v_converted_amount);
 
-            -- Funding account decreases
+            -- Funding account decreases (including fees)
             IF NEW.funding_account_id IS NOT NULL THEN
-                SELECT type INTO v_account_type FROM accounts WHERE id = NEW.funding_account_id;
+                SELECT type INTO v_from_account_type FROM accounts WHERE id = NEW.funding_account_id;
                 UPDATE accounts SET updated_at = NOW() WHERE id = NEW.funding_account_id;
-                PERFORM set_account_balance(v_account_type, NEW.funding_account_id, -v_amount);
+                PERFORM set_account_balance(v_from_account_type, NEW.funding_account_id, -(v_original_amount + COALESCE(v_fees, 0)));
             END IF;
 
         WHEN 'transactions_borrow' THEN
             -- Loan account increases
-            SELECT type INTO v_account_type FROM accounts WHERE id = NEW.loan_account_id;
+            SELECT type INTO v_from_account_type FROM accounts WHERE id = NEW.loan_account_id;
             UPDATE accounts SET updated_at = NOW() WHERE id = NEW.loan_account_id;
-            PERFORM set_account_balance(v_account_type, NEW.loan_account_id, v_amount);
+            PERFORM set_account_balance(v_from_account_type, NEW.loan_account_id, v_original_amount + COALESCE(v_fees, 0));
 
-            -- Disbursement account increases
+            -- Disbursement account increases (reduced by fees)
             IF NEW.disbursement_account_id IS NOT NULL THEN
-                SELECT type INTO v_account_type FROM accounts WHERE id = NEW.disbursement_account_id;
+                SELECT type INTO v_to_account_type FROM accounts WHERE id = NEW.disbursement_account_id;
                 UPDATE accounts SET updated_at = NOW() WHERE id = NEW.disbursement_account_id;
-                PERFORM set_account_balance(v_account_type, NEW.disbursement_account_id, v_amount);
+                PERFORM set_account_balance(v_to_account_type, NEW.disbursement_account_id, v_converted_amount);
             END IF;
 
         WHEN 'transactions_lend' THEN
             -- Receivable account increases
-            SELECT type INTO v_account_type FROM accounts WHERE id = NEW.receivable_account_id;
+            SELECT type INTO v_to_account_type FROM accounts WHERE id = NEW.receivable_account_id;
             UPDATE accounts SET updated_at = NOW() WHERE id = NEW.receivable_account_id;
-            PERFORM set_account_balance(v_account_type, NEW.receivable_account_id, v_amount);
+            PERFORM set_account_balance(v_to_account_type, NEW.receivable_account_id, v_converted_amount);
 
-            -- Funding account decreases
+            -- Funding account decreases (including fees)
             IF NEW.funding_account_id IS NOT NULL THEN
-                SELECT type INTO v_account_type FROM accounts WHERE id = NEW.funding_account_id;
+                SELECT type INTO v_from_account_type FROM accounts WHERE id = NEW.funding_account_id;
                 UPDATE accounts SET updated_at = NOW() WHERE id = NEW.funding_account_id;
-                PERFORM set_account_balance(v_account_type, NEW.funding_account_id, -v_amount);
+                PERFORM set_account_balance(v_from_account_type, NEW.funding_account_id, -(v_original_amount + COALESCE(v_fees, 0)));
             END IF;
 
         WHEN 'transactions_adjustment' THEN
-            SELECT type INTO v_account_type FROM accounts WHERE id = NEW.account_id;
+            SELECT type INTO v_to_account_type FROM accounts WHERE id = NEW.account_id;
             UPDATE accounts SET updated_at = NOW() WHERE id = NEW.account_id;
-            PERFORM set_account_balance(v_account_type, NEW.account_id, v_amount);
+            -- Adjustment reduced by fees
+            PERFORM set_account_balance(v_to_account_type, NEW.account_id, v_converted_amount);
 
     END CASE;
 
@@ -1534,16 +1542,16 @@ AS $$
 DECLARE
     v_original_amount NUMERIC;
     v_converted_amount NUMERIC;
+    v_fees NUMERIC;
     v_to_account_type account_type;
     v_from_account_type account_type;
     v_to_account_id UUID;
     v_from_account_id UUID;
-    v_transfer_fee NUMERIC;
 BEGIN
     BEGIN
-        -- Fetch transaction amounts
-        SELECT original_amount, converted_amount
-        INTO v_original_amount, v_converted_amount
+        -- Fetch transaction amounts and fees
+        SELECT original_amount, converted_amount, COALESCE(fees, 0)
+        INTO v_original_amount, v_converted_amount, v_fees
         FROM public.transactions
         WHERE id = p_tx_id;
 
@@ -1555,7 +1563,7 @@ BEGIN
         CASE p_tx_type
 
             WHEN 'income' THEN
-                -- Reverse income: subtract converted amount from account balance
+                -- Reverse income: subtract converted amount + fees from account balance
                 SELECT account_id INTO v_to_account_id
                 FROM transactions_income
                 WHERE transaction_id = p_tx_id;
@@ -1569,10 +1577,10 @@ BEGIN
                 WHERE id = v_to_account_id AND deleted_at IS NULL;
 
                 UPDATE accounts SET updated_at = NOW() WHERE id = v_to_account_id;
-                PERFORM set_account_balance(v_to_account_type, v_to_account_id, -v_converted_amount);
+                PERFORM set_account_balance(v_to_account_type, v_to_account_id, -v_converted_amount + COALESCE(v_fees, 0));
 
             WHEN 'expense' THEN
-                -- Reverse expense: add converted amount (or subtract for credit cards)
+                -- Reverse expense: add converted amount - fees (if any)
                 SELECT account_id INTO v_from_account_id
                 FROM transactions_expense
                 WHERE transaction_id = p_tx_id;
@@ -1588,13 +1596,13 @@ BEGIN
                 UPDATE accounts SET updated_at = NOW() WHERE id = v_from_account_id;
 
                 IF v_from_account_type = 'credit_card' THEN
-                    PERFORM set_account_balance(v_from_account_type, v_from_account_id, -v_converted_amount);
+                    PERFORM set_account_balance(v_from_account_type, v_from_account_id, -(v_converted_amount + COALESCE(v_fees, 0)));
                 ELSE
-                    PERFORM set_account_balance(v_from_account_type, v_from_account_id, v_converted_amount);
+                    PERFORM set_account_balance(v_from_account_type, v_from_account_id, v_converted_amount + COALESCE(v_fees, 0));
                 END IF;
 
             WHEN 'investment' THEN
-                -- Reverse investment: subtract converted amount from investment account, add original amount to funding account
+                -- Reverse investment: subtract converted amount + fees from investment account, add original amount to funding account
                 SELECT investment_account_id, funding_account_id
                 INTO v_to_account_id, v_from_account_id
                 FROM transactions_investment
@@ -1615,11 +1623,11 @@ BEGIN
                     SELECT type INTO v_from_account_type
                     FROM accounts WHERE id = v_from_account_id AND deleted_at IS NULL;
                     UPDATE accounts SET updated_at = NOW() WHERE id = v_from_account_id;
-                    PERFORM set_account_balance(v_from_account_type, v_from_account_id, v_original_amount);
+                    PERFORM set_account_balance(v_from_account_type, v_from_account_id, v_original_amount + COALESCE(v_fees, 0));
                 END IF;
 
             WHEN 'adjustment' THEN
-                -- Reverse adjustment: subtract converted amount
+                -- Reverse adjustment: subtract converted amount + fees
                 SELECT account_id INTO v_to_account_id
                 FROM transactions_adjustment
                 WHERE transaction_id = p_tx_id;
@@ -1632,10 +1640,10 @@ BEGIN
                 FROM accounts WHERE id = v_to_account_id AND deleted_at IS NULL;
 
                 UPDATE accounts SET updated_at = NOW() WHERE id = v_to_account_id;
-                PERFORM set_account_balance(v_to_account_type, v_to_account_id, v_converted_amount);
+                PERFORM set_account_balance(v_to_account_type, v_to_account_id, -v_converted_amount);
 
             WHEN 'borrow' THEN
-                -- Reverse borrow: subtract original amount from loan account, subtract converted amount from disbursement account
+                -- Reverse borrow: subtract original amount + fees from loan account, subtract converted amount from disbursement account
                 SELECT disbursement_account_id, loan_account_id
                 INTO v_to_account_id, v_from_account_id
                 FROM transactions_borrow
@@ -1646,19 +1654,21 @@ BEGIN
                 END IF;
 
                 IF v_to_account_id IS NOT NULL THEN
-                    SELECT type INTO v_to_account_type FROM accounts WHERE id = v_to_account_id AND deleted_at IS NULL;
+                    SELECT type INTO v_to_account_type
+                    FROM accounts WHERE id = v_to_account_id AND deleted_at IS NULL;
                     UPDATE accounts SET updated_at = NOW() WHERE id = v_to_account_id;
                     PERFORM set_account_balance(v_to_account_type, v_to_account_id, -v_converted_amount);
                 END IF;
 
                 IF v_from_account_id IS NOT NULL THEN
-                    SELECT type INTO v_from_account_type FROM accounts WHERE id = v_from_account_id AND deleted_at IS NULL;
+                    SELECT type INTO v_from_account_type
+                    FROM accounts WHERE id = v_from_account_id AND deleted_at IS NULL;
                     UPDATE accounts SET updated_at = NOW() WHERE id = v_from_account_id;
-                    PERFORM set_account_balance(v_from_account_type, v_from_account_id, -v_original_amount);
+                    PERFORM set_account_balance(v_from_account_type, v_from_account_id, -(v_original_amount + COALESCE(v_fees, 0)));
                 END IF;
 
             WHEN 'lend' THEN
-                -- Reverse lend: subtract converted amount from receivable account, add original amount to funding account
+                -- Reverse lend: subtract converted amount + fees from receivable account, add original amount to funding account
                 SELECT receivable_account_id, funding_account_id
                 INTO v_to_account_id, v_from_account_id
                 FROM transactions_lend
@@ -1669,21 +1679,23 @@ BEGIN
                 END IF;
 
                 IF v_to_account_id IS NOT NULL THEN
-                    SELECT type INTO v_to_account_type FROM accounts WHERE id = v_to_account_id AND deleted_at IS NULL;
+                    SELECT type INTO v_to_account_type
+                    FROM accounts WHERE id = v_to_account_id AND deleted_at IS NULL;
                     UPDATE accounts SET updated_at = NOW() WHERE id = v_to_account_id;
                     PERFORM set_account_balance(v_to_account_type, v_to_account_id, -v_converted_amount);
                 END IF;
 
                 IF v_from_account_id IS NOT NULL THEN
-                    SELECT type INTO v_from_account_type FROM accounts WHERE id = v_from_account_id AND deleted_at IS NULL;
+                    SELECT type INTO v_from_account_type
+                    FROM accounts WHERE id = v_from_account_id AND deleted_at IS NULL;
                     UPDATE accounts SET updated_at = NOW() WHERE id = v_from_account_id;
-                    PERFORM set_account_balance(v_from_account_type, v_from_account_id, v_original_amount);
+                    PERFORM set_account_balance(v_from_account_type, v_from_account_id, v_original_amount + COALESCE(v_fees, 0));
                 END IF;
 
             WHEN 'transfer' THEN
                 -- Reverse transfer: reverse debit and credit accounts including fees
                 SELECT to_account, from_account, fees
-                INTO v_to_account_id, v_from_account_id, v_transfer_fee
+                INTO v_to_account_id, v_from_account_id, v_fees
                 FROM public.transactions_transfer
                 WHERE transaction_id = p_tx_id;
 
@@ -1692,7 +1704,10 @@ BEGIN
                 END IF;
 
                 -- From account (outflow)
-                SELECT type INTO v_to_account_type FROM public.accounts WHERE id = v_to_account_id AND deleted_at IS NULL;
+                SELECT type INTO v_to_account_type
+                FROM public.accounts
+                WHERE id = v_to_account_id AND deleted_at IS NULL;
+
                 UPDATE accounts SET updated_at = NOW() WHERE id = v_to_account_id;
 
                 IF v_to_account_type IN ('credit_card','loan') THEN
@@ -1702,13 +1717,16 @@ BEGIN
                 END IF;
 
                 -- To account (inflow)
-                SELECT type INTO v_from_account_type FROM public.accounts WHERE id = v_from_account_id AND deleted_at IS NULL;
+                SELECT type INTO v_from_account_type
+                FROM public.accounts
+                WHERE id = v_from_account_id AND deleted_at IS NULL;
+
                 UPDATE accounts SET updated_at = NOW() WHERE id = v_from_account_id;
 
                 IF v_from_account_type IN ('credit_card','loan') THEN
-                    PERFORM set_account_balance(v_from_account_type, v_from_account_id, -(v_original_amount + COALESCE(v_transfer_fee, 0)));
+                    PERFORM set_account_balance(v_from_account_type, v_from_account_id, -(v_original_amount + COALESCE(v_fees, 0)));
                 ELSE
-                    PERFORM set_account_balance(v_from_account_type, v_from_account_id, v_original_amount + COALESCE(v_transfer_fee, 0));
+                    PERFORM set_account_balance(v_from_account_type, v_from_account_id, v_original_amount + COALESCE(v_fees, 0));
                 END IF;
 
             ELSE
