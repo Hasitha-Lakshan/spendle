@@ -28,7 +28,7 @@
 --   UUID - ID of the newly created transaction
 --
 -- Notes:
---   - SECURITY INVOKER ensures the function runs with the privileges
+--   - SECURITY DEFINER ensures the function runs with the privileges
 --     of the calling user and respects RLS policies
 --   - Trigger functions on transactions and transactions_income
 --     handle validation and account balance updates
@@ -44,7 +44,7 @@ CREATE OR REPLACE FUNCTION create_income_transaction(
 )
 RETURNS UUID
 LANGUAGE plpgsql
-SECURITY INVOKER
+SECURITY DEFINER
 SET search_path = pg_catalog, public
 VOLATILE
 AS $$
@@ -153,7 +153,7 @@ $$;
 --   UUID - ID of the newly created transaction
 --
 -- Notes:
---   - SECURITY INVOKER ensures the function runs with the privileges
+--   - SECURITY DEFINER ensures the function runs with the privileges
 --     of the calling user and respects RLS policies
 --   - Trigger functions on transactions and transactions_expense
 --     handle validation and account balance updates
@@ -170,7 +170,7 @@ CREATE OR REPLACE FUNCTION create_expense_transaction(
 )
 RETURNS UUID
 LANGUAGE plpgsql
-SECURITY INVOKER
+SECURITY DEFINER
 SET search_path = pg_catalog, public
 VOLATILE
 AS $$
@@ -283,7 +283,7 @@ $$;
 --   UUID - ID of the newly created investment transaction
 --
 -- Notes:
---   - SECURITY INVOKER ensures the function runs with the privileges
+--   - SECURITY DEFINER ensures the function runs with the privileges
 --     of the calling user and respects RLS policies
 --   - Trigger functions handle account validations and balance updates
 --   - Exchange rates are dynamically calculated using get_exchange_rate()
@@ -301,7 +301,7 @@ CREATE OR REPLACE FUNCTION create_investment_transaction(
 )
 RETURNS UUID
 LANGUAGE plpgsql
-SECURITY INVOKER
+SECURITY DEFINER
 SET search_path = pg_catalog, public
 VOLATILE
 AS $$
@@ -431,7 +431,7 @@ $$;
 --   UUID - ID of the newly created borrow transaction
 --
 -- Notes:
---   - SECURITY INVOKER ensures the function runs with the privileges
+--   - SECURITY DEFINER ensures the function runs with the privileges
 --     of the calling user and respects RLS policies
 --   - Trigger functions handle validation of account ownership and
 --     updating account balances
@@ -446,7 +446,7 @@ CREATE OR REPLACE FUNCTION create_borrow_transaction(
 )
 RETURNS UUID
 LANGUAGE plpgsql
-SECURITY INVOKER
+SECURITY DEFINER
 SET search_path = pg_catalog, public
 VOLATILE
 AS $$
@@ -574,7 +574,7 @@ $$;
 --   UUID - ID of the newly created lend transaction
 --
 -- Notes:
---   - SECURITY INVOKER ensures the function runs with the privileges
+--   - SECURITY DEFINER ensures the function runs with the privileges
 --     of the calling user and respects RLS policies
 --   - Trigger functions handle validation of account ownership and
 --     updating account balances
@@ -593,7 +593,7 @@ CREATE OR REPLACE FUNCTION create_lend_transaction(
 )
 RETURNS UUID
 LANGUAGE plpgsql
-SECURITY INVOKER
+SECURITY DEFINER
 SET search_path = pg_catalog, public
 VOLATILE
 AS $$
@@ -724,7 +724,7 @@ $$;
 --   UUID - ID of the newly created adjustment transaction
 --
 -- Notes:
---   - SECURITY INVOKER ensures the function runs with the privileges
+--   - SECURITY DEFINER ensures the function runs with the privileges
 --     of the calling user and respects RLS policies
 --   - Trigger functions validate account ownership and
 --     apply the adjustment to account balances
@@ -740,7 +740,7 @@ CREATE OR REPLACE FUNCTION create_adjustment_transaction(
 )
 RETURNS UUID
 LANGUAGE plpgsql
-SECURITY INVOKER
+SECURITY DEFINER
 SET search_path = pg_catalog, public
 VOLATILE
 AS $$
@@ -850,7 +850,7 @@ $$;
 --   UUID - ID of the newly created transfer transaction
 --
 -- Notes:
---   - SECURITY INVOKER ensures the function runs with the privileges
+--   - SECURITY DEFINER ensures the function runs with the privileges
 --     of the calling user and respects RLS policies
 --   - Trigger functions validate account ownership and apply balance updates
 --   - Exchange rates are dynamically retrieved using get_exchange_rate()
@@ -866,7 +866,7 @@ CREATE OR REPLACE FUNCTION create_transfer_transaction(
 )
 RETURNS UUID
 LANGUAGE plpgsql
-SECURITY INVOKER
+SECURITY DEFINER
 SET search_path = pg_catalog, public
 VOLATILE
 AS $$
@@ -1000,12 +1000,12 @@ $$;
 --   UUID - ID of the newly created recurring transaction
 --
 -- Notes:
---   - SECURITY INVOKER ensures the function executes with the privileges of the caller,
+--   - SECURITY DEFINER ensures the function executes with the privileges of the caller,
 --     respecting Row Level Security (RLS) policies.
 --   - Relies on existing create_*_transaction functions for specific transaction creation.
 --   - Ensures the user is authenticated before creating transactions.
 -- =========================================
-CREATE OR REPLACE FUNCTION create_recurring_transaction(
+CREATE OR REPLACE FUNCTION public.create_recurring_transaction(
     p_transaction_type TEXT,                  -- 'income', 'expense', 'investment', etc.
     p_params JSONB,                           -- transaction-specific params
     p_frequency recurrence_frequency,         -- how often it recurs (daily, weekly, monthly, etc.)
@@ -1015,7 +1015,8 @@ CREATE OR REPLACE FUNCTION create_recurring_transaction(
 )
 RETURNS UUID
 LANGUAGE plpgsql
-SECURITY INVOKER
+SECURITY DEFINER
+SET search_path = public, pg_catalog
 AS $$
 DECLARE
     v_transaction_id UUID;
@@ -1035,7 +1036,7 @@ BEGIN
                 (p_params->>'account_id')::UUID,
                 (p_params->>'amount')::DECIMAL,
                 COALESCE(p_params->>'currency','USD'),
-                COALESCE((p_params->>'fees')::DECIMAL, 0),      -- support fees
+                COALESCE((p_params->>'fees')::DECIMAL, 0),
                 (p_params->>'source_id')::UUID,
                 p_params->>'notes'
             );
@@ -1045,7 +1046,7 @@ BEGIN
                 (p_params->>'account_id')::UUID,
                 (p_params->>'amount')::DECIMAL,
                 COALESCE(p_params->>'currency','USD'),
-                COALESCE((p_params->>'fees')::DECIMAL, 0),      -- support fees
+                COALESCE((p_params->>'fees')::DECIMAL, 0),
                 (p_params->>'category_id')::UUID,
                 COALESCE((p_params->>'payment_method')::payment_method, 'other'),
                 p_params->>'notes'
@@ -1056,7 +1057,7 @@ BEGIN
                 (p_params->>'funding_account_id')::UUID,
                 (p_params->>'investment_account_id')::UUID,
                 (p_params->>'amount')::DECIMAL,
-                COALESCE((p_params->>'fees')::DECIMAL, 0),      -- support fees
+                COALESCE((p_params->>'fees')::DECIMAL, 0),
                 p_params->>'asset_type',
                 p_params->>'asset_symbol',
                 p_params->>'platform',
@@ -1069,7 +1070,7 @@ BEGIN
                 (p_params->>'loan_account_id')::UUID,
                 (p_params->>'disbursement_account_id')::UUID,
                 (p_params->>'amount')::DECIMAL,
-                COALESCE((p_params->>'fees')::DECIMAL, 0),      -- support fees
+                COALESCE((p_params->>'fees')::DECIMAL, 0),
                 p_params->>'notes'
             );
 
@@ -1078,7 +1079,7 @@ BEGIN
                 (p_params->>'receivable_account_id')::UUID,
                 (p_params->>'funding_account_id')::UUID,
                 (p_params->>'amount')::DECIMAL,
-                COALESCE((p_params->>'fees')::DECIMAL, 0),      -- support fees
+                COALESCE((p_params->>'fees')::DECIMAL, 0),
                 (p_params->>'counterparty_id')::UUID,
                 (p_params->>'interest_rate')::DECIMAL,
                 (p_params->>'due_date')::DATE,
@@ -1091,7 +1092,7 @@ BEGIN
                 (p_params->>'account_id')::UUID,
                 (p_params->>'amount')::DECIMAL,
                 COALESCE(p_params->>'currency','USD'),
-                COALESCE((p_params->>'fees')::DECIMAL, 0),      -- support fees
+                COALESCE((p_params->>'fees')::DECIMAL, 0),
                 p_params->>'reason',
                 p_params->>'notes'
             );
@@ -1102,7 +1103,7 @@ BEGIN
                 (p_params->>'to_account')::UUID,
                 (p_params->>'amount')::DECIMAL,
                 COALESCE((p_params->>'transfer_method')::transfer_method, 'other'),
-                COALESCE((p_params->>'fees')::DECIMAL, 0),      -- support fees
+                COALESCE((p_params->>'fees')::DECIMAL, 0),
                 p_params->>'notes'
             );
 
@@ -1706,6 +1707,298 @@ BEGIN
         RAISE WARNING 'Hard delete failed for transaction %, error: %', p_transaction_id, SQLERRM;
         RETURN FALSE;
     END;
+END;
+$$;
+
+-- =========================================
+-- 16. Function: has_transaction_changed
+-- =========================================
+-- Purpose:
+--   Determines whether key fields of a transaction have changed, indicating
+--   that the transaction’s balance effect may need to be reversed and reapplied.
+--
+-- Behavior:
+--   - Compares the new transaction values against the existing transaction record.
+--   - Checks for changes in the following fields:
+--       * account_id
+--       * original_currency
+--       * original_amount
+--       * fees
+--   - Returns TRUE if any of these fields have changed, otherwise FALSE.
+--
+-- Parameters:
+--   old RECORD       - The existing transaction record before update.
+--   new_account_id UUID   - New account_id to compare.
+--   new_currency VARCHAR  - New currency to compare.
+--   new_amount NUMERIC    - New amount to compare.
+--   new_fees NUMERIC      - New fees to compare.
+--
+-- Returns:
+--   BOOLEAN - TRUE if any relevant field has changed, FALSE otherwise.
+--
+-- Notes:
+--   - SECURITY DEFINER allows execution with elevated privileges.
+--   - Used by balance adjustment triggers and update functions to detect
+--     when a transaction’s balance should be recalculated.
+-- =========================================
+CREATE OR REPLACE FUNCTION public.has_transaction_changed(
+    old RECORD, 
+    new_account_id UUID, 
+    new_currency VARCHAR, 
+    new_amount NUMERIC, 
+    new_fees NUMERIC
+) RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_catalog
+AS $$
+BEGIN
+    RETURN (
+        -- account_id changed
+        (new_account_id IS NOT NULL AND new_account_id <> old.account_id)
+
+        -- currency changed
+        OR (new_currency IS NOT NULL AND new_currency <> old.original_currency)
+
+        -- amount changed
+        OR (new_amount IS NOT NULL AND new_amount <> old.original_amount)
+
+        -- fees changed
+        OR (new_fees IS NOT NULL AND new_fees <> old.fees)
+    );
+END;
+$$;
+
+-- =========================================
+-- 17. Function: get_transaction_table_name
+-- =========================================
+-- Purpose:
+--   Maps a given transaction type string to the corresponding transaction
+--   table name in the database. This allows generic functions and triggers
+--   to determine the correct table to operate on based on transaction type.
+--
+-- Behavior:
+--   - Takes a transaction type as input.
+--   - Normalizes the input by trimming spaces and converting to lowercase.
+--   - Returns the corresponding table name for the transaction type:
+--       * 'income'      → transactions_income
+--       * 'expense'     → transactions_expense
+--       * 'investment'  → transactions_investment
+--       * 'borrow'      → transactions_borrow
+--       * 'lend'        → transactions_lend
+--       * 'transfer'    → transactions_transfer
+--       * 'adjustment'  → transactions_adjustment
+--   - Raises an exception if the transaction type is unrecognized, with a hint
+--     showing valid transaction types.
+--
+-- Parameters:
+--   p_transaction_type TEXT - The transaction type to map.
+--
+-- Returns:
+--   TEXT - The name of the transaction table corresponding to the given type.
+--
+-- Notes:
+--   - Marked IMMUTABLE because it returns the same result for the same input.
+--   - SECURITY INVOKER ensures function runs with privileges of the caller.
+--   - Used in dynamic SQL contexts where transaction type determines table name.
+-- =========================================
+CREATE OR REPLACE FUNCTION public.get_transaction_table_name(
+    p_transaction_type TEXT
+)
+RETURNS TEXT
+LANGUAGE plpgsql
+IMMUTABLE
+SECURITY INVOKER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+    CASE LOWER(TRIM(p_transaction_type))
+        WHEN 'income' THEN
+            RETURN 'transactions_income';
+        WHEN 'expense' THEN
+            RETURN 'transactions_expense';
+        WHEN 'investment' THEN
+            RETURN 'transactions_investment';
+        WHEN 'borrow' THEN
+            RETURN 'transactions_borrow';
+        WHEN 'lend' THEN
+            RETURN 'transactions_lend';
+        WHEN 'transfer' THEN
+            RETURN 'transactions_transfer';
+        WHEN 'adjustment' THEN
+            RETURN 'transactions_adjustment';
+        ELSE
+            RAISE EXCEPTION 'Unknown transaction type: %', p_transaction_type
+                USING HINT = 'Expected one of: income, expense, investment, borrow, lend, transfer, adjustment.';
+    END CASE;
+END;
+$$;
+
+-- =========================================
+-- 18. Function: update_income_transaction
+-- =========================================
+-- Purpose:
+--   Updates an existing income transaction and its associated account details,
+--   ensuring balance adjustments are handled correctly if relevant fields change.
+--
+-- Behavior:
+--   - Retrieves the existing transaction and income record by transaction ID,
+--     validating ownership based on the current authenticated user.
+--   - Determines if relevant details (account, currency, amount, fees) have changed.
+--   - If balance-affecting changes are detected, reverses the previous transaction's balance
+--     using reverse_transaction_balance().
+--   - Validates the new account and retrieves its currency.
+--   - Calculates the updated exchange rate and converted amount using get_exchange_rate().
+--   - Updates the transactions table with new values (amount, currency, fees, notes, etc.).
+--   - Updates the transactions_income table with any changes to account_id or source_id.
+--   - If balance-affecting changes occurred, reapplies the transaction balance using apply_transaction_balance().
+--   - Returns a JSON object containing the updated transaction and income record.
+--
+-- Parameters:
+--   p_transaction_id UUID     - The ID of the transaction to update.
+--   p_account_id UUID         - (Optional) New account ID for the transaction.
+--   p_amount NUMERIC          - (Optional) New amount for the transaction.
+--   p_currency VARCHAR        - (Optional) New currency for the transaction.
+--   p_fees NUMERIC            - (Optional) New fees for the transaction.
+--   p_source_id UUID          - (Optional) New income source ID.
+--   p_notes TEXT              - (Optional) Updated transaction notes.
+--
+-- Returns:
+--   JSON - A JSON object containing:
+--     * 'transaction' → Updated transaction record.
+--     * 'income'       → Updated income transaction details.
+--     * 'error'        → Error message if operation failed.
+--
+-- Notes:
+--   - SECURITY DEFINER allows privilege escalation for balance updates while
+--     enforcing ownership rules.
+--   - Uses has_transaction_changed() to detect changes that affect balances.
+--   - Uses get_transaction_table_name() to determine the correct income table dynamically.
+--   - Handles exceptions gracefully, returning error information in JSON format.
+-- =========================================
+CREATE OR REPLACE FUNCTION public.update_income_transaction(
+    p_transaction_id UUID,
+    p_account_id UUID DEFAULT NULL,
+    p_amount NUMERIC DEFAULT NULL,
+    p_currency VARCHAR DEFAULT NULL,
+    p_fees NUMERIC DEFAULT NULL,
+    p_source_id UUID DEFAULT NULL,
+    p_notes TEXT DEFAULT NULL
+)
+RETURNS JSON
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_catalog
+AS $$
+DECLARE
+    v_user_id UUID := auth.uid();
+    v_existing RECORD;
+    v_old_account_id UUID;
+    v_account_currency VARCHAR;
+    v_exchange_rate NUMERIC;
+    v_converted_amount NUMERIC;
+    v_transaction_type TEXT;
+    v_table_name TEXT;
+    v_result JSON;
+    v_balance_changed BOOLEAN;
+BEGIN
+    -- Fetch existing transaction and income details
+    SELECT t.*, i.account_id, i.source_id
+    INTO v_existing
+    FROM transactions t
+    JOIN transactions_income i ON i.transaction_id = t.id
+    WHERE t.id = p_transaction_id
+      AND t.user_id = v_user_id
+      AND t.deleted_at IS NULL;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Transaction not found or access denied';
+    END IF;
+
+    v_old_account_id := v_existing.account_id;
+    v_transaction_type := v_existing.type;
+
+    -- Get table name dynamically (e.g. "transactions_income")
+    v_table_name := public.get_transaction_table_name(v_transaction_type);
+
+    -- Check if the transaction details affect balances
+    v_balance_changed := has_transaction_changed(
+        v_existing,
+        p_account_id,
+        p_currency,
+        p_amount,
+        p_fees
+    );
+
+    -- If account/balance affecting details changed, reverse previous balance
+    IF v_balance_changed THEN
+        PERFORM public.reverse_transaction_balance(p_transaction_id, v_transaction_type::transaction_type);
+    END IF;
+
+    -- Get new account currency (validate ownership)
+    SELECT currency INTO v_account_currency
+    FROM accounts
+    WHERE id = COALESCE(p_account_id, v_existing.account_id)
+      AND user_id = v_user_id
+      AND deleted_at IS NULL;
+
+    IF v_account_currency IS NULL THEN
+        RAISE EXCEPTION 'New account not found or invalid';
+    END IF;
+
+    -- Calculate updated exchange rate and converted amount
+    v_exchange_rate := get_exchange_rate(
+        COALESCE(p_currency, v_existing.original_currency),
+        v_account_currency
+    );
+    v_converted_amount := COALESCE(p_amount, v_existing.original_amount) * v_exchange_rate;
+
+    -- Update transactions table
+    UPDATE transactions
+    SET
+        original_amount   = COALESCE(p_amount, v_existing.original_amount),
+        original_currency = COALESCE(p_currency, v_existing.original_currency),
+        exchange_rate     = v_exchange_rate,
+        converted_amount  = v_converted_amount,
+        fees              = COALESCE(p_fees, v_existing.fees),
+        notes             = COALESCE(p_notes, v_existing.notes),
+        updated_at        = NOW()
+    WHERE id = p_transaction_id;
+
+    -- Update income-specific details
+    UPDATE transactions_income
+    SET
+        account_id = COALESCE(p_account_id, v_existing.account_id),
+        source_id  = COALESCE(p_source_id, v_existing.source_id),
+        updated_at = NOW()
+    WHERE transaction_id = p_transaction_id;
+
+    -- Only reapply transaction balance if balance-related changes happened
+    IF v_balance_changed THEN
+    PERFORM public.apply_transaction_balance(
+        v_table_name,
+        (SELECT i FROM transactions_income i WHERE i.transaction_id = p_transaction_id)
+    );
+    END IF;
+
+    -- Return the updated record
+    SELECT json_build_object(
+        'transaction', row_to_json(t),
+        'income', row_to_json(i)
+    )
+    INTO v_result
+    FROM transactions t
+    JOIN transactions_income i ON i.transaction_id = t.id
+    WHERE t.id = p_transaction_id;
+
+    RETURN v_result;
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object(
+            'error', SQLERRM,
+            'transaction_id', p_transaction_id
+        );
 END;
 $$;
 
@@ -2318,6 +2611,9 @@ GRANT EXECUTE ON FUNCTION schedule_recurring_processing() TO authenticated;
 GRANT EXECUTE ON FUNCTION public.soft_delete_transaction(UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.validate_transaction_ownership(UUID, UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.hard_delete_transaction(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.has_transaction_changed(record, uuid, varchar, numeric, numeric) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_transaction_table_name(TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.update_income_transaction(UUID, UUID, NUMERIC, VARCHAR, NUMERIC, UUID, TEXT) TO authenticated;
 
 GRANT EXECUTE ON FUNCTION get_user_transaction_count(UUID, transaction_type, DATE, DATE) TO authenticated;
 GRANT EXECUTE ON FUNCTION get_recent_transactions(INTEGER) TO authenticated;
@@ -2384,6 +2680,15 @@ COMMENT ON FUNCTION public.hard_delete_transaction(UUID) IS
 'Hard deletes a transaction and all related detail records (income, expense, investment, borrow, lend, transfer, adjustment) and recurring transactions.
 Only available to admins. Requires transaction to be soft deleted (deleted_at IS NOT NULL).
 Runs with SECURITY DEFINER privileges. Returns TRUE on success, FALSE on failure.';
+
+COMMENT ON FUNCTION public.update_income_transaction(UUID, UUID, NUMERIC, VARCHAR, NUMERIC, UUID, TEXT)
+IS 'RLS-compliant function to update income transactions with balance reversal, revalidation, and exchange recalculation.';
+
+COMMENT ON FUNCTION public.has_transaction_changed(record, uuid, varchar, numeric, numeric) IS
+    'Helper function to detect if a transaction’s key properties (account, currency, amount, fees) have changed. Used in update_income_transaction to decide whether to reverse balances.';
+
+COMMENT ON FUNCTION public.get_transaction_table_name(TEXT)
+IS 'Returns the correct transaction table name given a transaction type string.';
 
 
 COMMENT ON FUNCTION get_recent_transactions(INTEGER) IS 'RLS-compliant recent transactions query';

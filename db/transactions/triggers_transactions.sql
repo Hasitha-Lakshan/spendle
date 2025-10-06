@@ -154,31 +154,31 @@ $$;
 
 -- Apply to all transaction detail tables
 CREATE TRIGGER trg_tx_income_validate
-    BEFORE INSERT ON transactions_income
+    BEFORE INSERT OR UPDATE ON transactions_income
     FOR EACH ROW EXECUTE FUNCTION validate_transaction_user();
 
 CREATE TRIGGER trg_tx_expense_validate
-    BEFORE INSERT ON transactions_expense
+    BEFORE INSERT OR UPDATE ON transactions_expense
     FOR EACH ROW EXECUTE FUNCTION validate_transaction_user();
 
 CREATE TRIGGER trg_tx_investment_validate
-    BEFORE INSERT ON transactions_investment
+    BEFORE INSERT OR UPDATE ON transactions_investment
     FOR EACH ROW EXECUTE FUNCTION validate_transaction_user();
 
 CREATE TRIGGER trg_tx_adjustment_validate
-    BEFORE INSERT ON transactions_adjustment
+    BEFORE INSERT OR UPDATE ON transactions_adjustment
     FOR EACH ROW EXECUTE FUNCTION validate_transaction_user();
 
 CREATE TRIGGER trg_tx_borrow_validate
-    BEFORE INSERT ON transactions_borrow
+    BEFORE INSERT OR UPDATE ON transactions_borrow
     FOR EACH ROW EXECUTE FUNCTION validate_transaction_user();
 
 CREATE TRIGGER trg_tx_lend_validate
-    BEFORE INSERT ON transactions_lend
+    BEFORE INSERT OR UPDATE ON transactions_lend
     FOR EACH ROW EXECUTE FUNCTION validate_transaction_user();
 
 CREATE TRIGGER trg_tx_transfer_validate
-    BEFORE INSERT ON transactions_transfer
+    BEFORE INSERT OR UPDATE ON transactions_transfer
     FOR EACH ROW EXECUTE FUNCTION validate_transaction_user();
 
 -- =========================================
@@ -341,35 +341,45 @@ SELECT cron.schedule(
 -- 03. Function: apply_transaction_balance
 -- =========================================
 -- Purpose:
---   Automatically updates the balances or relevant fields of accounts
---   whenever a transaction row is inserted. Ensures that all account types
---   reflect the correct amounts based on transaction activity.
+--   Applies a transaction’s balance impact to the relevant account(s) based on
+--   the transaction type and details. This function is typically called by
+--   trigger functions after INSERT or UPDATE operations on transaction detail tables.
 --
 -- Behavior:
---   - Retrieves the transaction amount and user_id
---   - Validates that the transaction and account exist and belong to the current user
---   - Updates the main accounts table timestamp
---   - Updates the appropriate account table field depending on:
---       * Transaction type (income, expense, investment, adjustment, borrow, lend)
---       * Account type (cash, bank, wallet, crypto, credit_card, investment, loan, receivable)
---   - Skips transfer transactions (handled separately)
---   - Raises exceptions if access is denied or accounts/transactions are missing
+--   - Skips processing if the provided record is marked as soft deleted.
+--   - Retrieves the original amount, converted amount, and fees from the transactions table.
+--   - Determines which type of transaction table fired the trigger and processes accordingly:
+--       * Income: Increases account balance reduced by fees.
+--       * Expense: Decreases account balance including fees; special handling for credit cards.
+--       * Transfer: Adjusts balances for both from_account (outflow) and to_account (inflow),
+--         with special rules for credit cards and loans.
+--       * Investment: Increases investment account balance; decreases funding account balance
+--         including fees.
+--       * Borrow: Increases loan account balance and the disbursement account balance.
+--       * Lend: Increases receivable account balance and decreases funding account balance.
+--       * Adjustment: Applies an adjustment amount to an account.
+--   - Updates the account’s updated_at timestamp for all affected accounts.
+--   - Calls set_account_balance() to perform the actual balance modification logic.
 --
 -- Parameters:
---   NEW (trigger record) - The newly inserted transaction row
+--   p_table_name TEXT - Name of the transaction-specific table triggering this function
+--                        (e.g., "transactions_income", "transactions_expense").
+--   p_new RECORD       - The NEW record from the trigger containing transaction details.
 --
 -- Returns:
---   NEW - The original row after updating account balances
+--   VOID - This function does not return a value; it modifies account balances in place.
 --
 -- Notes:
---   - Trigger is applied AFTER INSERT on all transaction detail tables:
---       transactions_income, transactions_expense, transactions_investment,
---       transactions_adjustment, transactions_borrow, transactions_lend
---   - Uses SECURITY DEFINER to ensure consistent balance updates regardless of RLS
---   - Handles all account types and transaction types with specific field updates
+--   - SECURITY DEFINER allows this function to run with elevated privileges for balance updates.
+--   - Ensures consistency of balances across multiple account types and transaction types.
+--   - Relies on correct table naming and trigger execution context to apply balances accurately.
+--   - Uses COALESCE for fees to ensure calculations handle NULL values safely.
 -- =========================================
-CREATE OR REPLACE FUNCTION public.apply_transaction_balance()
-RETURNS TRIGGER 
+CREATE OR REPLACE FUNCTION public.apply_transaction_balance(
+    p_table_name TEXT,
+    p_new RECORD
+)
+RETURNS VOID
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public
@@ -382,15 +392,15 @@ DECLARE
     v_from_account_type account_type;
 BEGIN
     -- SKIP processing if this is a soft delete
-    IF NEW.deleted_at IS NOT NULL THEN
-        RETURN NEW;
+    IF p_new.deleted_at IS NOT NULL THEN
+        RETURN;
     END IF;
 
     -- Fetch transaction amounts and fees
     SELECT original_amount, converted_amount, COALESCE(fees, 0)
     INTO v_original_amount, v_converted_amount, v_fees
     FROM public.transactions
-    WHERE id = NEW.transaction_id
+    WHERE id = p_new.transaction_id
       AND deleted_at IS NULL;
 
     IF NOT FOUND THEN
@@ -398,129 +408,194 @@ BEGIN
     END IF;
 
     -- Apply logic based on which table fired the trigger
-    CASE TG_TABLE_NAME
+    CASE p_table_name
 
         WHEN 'transactions_income' THEN
-            SELECT type INTO v_to_account_type FROM accounts WHERE id = NEW.account_id;
-            UPDATE accounts SET updated_at = NOW() WHERE id = NEW.account_id;
             -- Income inflow reduced by fees
-            PERFORM set_account_balance(v_to_account_type, NEW.account_id, v_converted_amount - COALESCE(v_fees, 0));
+            SELECT type INTO v_to_account_type FROM accounts WHERE id = p_new.account_id;
+            UPDATE accounts SET updated_at = NOW() WHERE id = p_new.account_id;
+            PERFORM set_account_balance(v_to_account_type, p_new.account_id, v_converted_amount - COALESCE(v_fees, 0));
 
         WHEN 'transactions_expense' THEN
-            SELECT type INTO v_from_account_type FROM accounts WHERE id = NEW.account_id;
-            UPDATE accounts SET updated_at = NOW() WHERE id = NEW.account_id;
+            -- Expense outflow increases balance owed (includes fees for credit cards)
+            SELECT type INTO v_from_account_type FROM accounts WHERE id = p_new.account_id;
+            UPDATE accounts SET updated_at = NOW() WHERE id = p_new.account_id;
+
             IF v_from_account_type = 'credit_card' THEN
                 -- Credit card expense increases balance owed including fees
-                PERFORM set_account_balance(v_from_account_type, NEW.account_id, v_converted_amount + COALESCE(v_fees, 0));
+                PERFORM set_account_balance(v_from_account_type, p_new.account_id, v_converted_amount + COALESCE(v_fees, 0));
             ELSE
                 -- Regular expense outflow increases by fees
-                PERFORM set_account_balance(v_from_account_type, NEW.account_id, -(v_converted_amount + COALESCE(v_fees, 0)));
+                PERFORM set_account_balance(v_from_account_type, p_new.account_id, -(v_converted_amount + COALESCE(v_fees, 0)));
             END IF;
 
         WHEN 'transactions_transfer' THEN
             -- From account (outflow including fees)
-            SELECT type INTO v_from_account_type FROM accounts WHERE id = NEW.from_account;
-            UPDATE accounts SET updated_at = NOW() WHERE id = NEW.from_account;
+            SELECT type INTO v_from_account_type FROM accounts WHERE id = p_new.from_account;
+            UPDATE accounts SET updated_at = NOW() WHERE id = p_new.from_account;
 
             IF v_from_account_type IN ('credit_card','loan') THEN
                 -- Paying with credit card or loan increases balance owed
-                PERFORM set_account_balance(v_from_account_type, NEW.from_account, v_original_amount + COALESCE(v_fees, 0));
+                PERFORM set_account_balance(v_from_account_type, p_new.from_account, v_original_amount + COALESCE(v_fees, 0));
             ELSE
                 -- Regular outflow
-                PERFORM set_account_balance(v_from_account_type, NEW.from_account, -(v_original_amount + COALESCE(v_fees, 0)));
+                PERFORM set_account_balance(v_from_account_type, p_new.from_account, -(v_original_amount + COALESCE(v_fees, 0)));
             END IF;
 
             -- To account (inflow)
-            SELECT type INTO v_to_account_type FROM accounts WHERE id = NEW.to_account;
-            UPDATE accounts SET updated_at = NOW() WHERE id = NEW.to_account;
+            SELECT type INTO v_to_account_type FROM accounts WHERE id = p_new.to_account;
+            UPDATE accounts SET updated_at = NOW() WHERE id = p_new.to_account;
 
             IF v_to_account_type IN ('credit_card','loan') THEN
                 -- Paying to credit card or loan reduces balance owed
-                PERFORM set_account_balance(v_to_account_type, NEW.to_account, -v_converted_amount);
+                PERFORM set_account_balance(v_to_account_type, p_new.to_account, -v_converted_amount);
             ELSE
                 -- Regular inflow
-                PERFORM set_account_balance(v_to_account_type, NEW.to_account, v_converted_amount);
+                PERFORM set_account_balance(v_to_account_type, p_new.to_account, v_converted_amount);
             END IF;
 
         WHEN 'transactions_investment' THEN
             -- Investment account increases
-            SELECT type INTO v_to_account_type FROM accounts WHERE id = NEW.investment_account_id;
-            UPDATE accounts SET updated_at = NOW() WHERE id = NEW.investment_account_id;
-            PERFORM set_account_balance(v_to_account_type, NEW.investment_account_id, v_converted_amount);
+            SELECT type INTO v_to_account_type FROM accounts WHERE id = p_new.investment_account_id;
+            UPDATE accounts SET updated_at = NOW() WHERE id = p_new.investment_account_id;
+            PERFORM set_account_balance(v_to_account_type, p_new.investment_account_id, v_converted_amount);
 
             -- Funding account decreases (including fees)
-            IF NEW.funding_account_id IS NOT NULL THEN
-                SELECT type INTO v_from_account_type FROM accounts WHERE id = NEW.funding_account_id;
-                UPDATE accounts SET updated_at = NOW() WHERE id = NEW.funding_account_id;
-                PERFORM set_account_balance(v_from_account_type, NEW.funding_account_id, -(v_original_amount + COALESCE(v_fees, 0)));
+            IF p_new.funding_account_id IS NOT NULL THEN
+                SELECT type INTO v_from_account_type FROM accounts WHERE id = p_new.funding_account_id;
+                UPDATE accounts SET updated_at = NOW() WHERE id = p_new.funding_account_id;
+                PERFORM set_account_balance(v_from_account_type, p_new.funding_account_id, -(v_original_amount + COALESCE(v_fees, 0)));
             END IF;
 
         WHEN 'transactions_borrow' THEN
             -- Loan account increases
-            SELECT type INTO v_from_account_type FROM accounts WHERE id = NEW.loan_account_id;
-            UPDATE accounts SET updated_at = NOW() WHERE id = NEW.loan_account_id;
-            PERFORM set_account_balance(v_from_account_type, NEW.loan_account_id, v_original_amount + COALESCE(v_fees, 0));
+            SELECT type INTO v_from_account_type FROM accounts WHERE id = p_new.loan_account_id;
+            UPDATE accounts SET updated_at = NOW() WHERE id = p_new.loan_account_id;
+            PERFORM set_account_balance(v_from_account_type, p_new.loan_account_id, v_original_amount + COALESCE(v_fees, 0));
 
             -- Disbursement account increases (reduced by fees)
-            IF NEW.disbursement_account_id IS NOT NULL THEN
-                SELECT type INTO v_to_account_type FROM accounts WHERE id = NEW.disbursement_account_id;
-                UPDATE accounts SET updated_at = NOW() WHERE id = NEW.disbursement_account_id;
-                PERFORM set_account_balance(v_to_account_type, NEW.disbursement_account_id, v_converted_amount);
+            IF p_new.disbursement_account_id IS NOT NULL THEN
+                SELECT type INTO v_to_account_type FROM accounts WHERE id = p_new.disbursement_account_id;
+                UPDATE accounts SET updated_at = NOW() WHERE id = p_new.disbursement_account_id;
+                PERFORM set_account_balance(v_to_account_type, p_new.disbursement_account_id, v_converted_amount);
             END IF;
 
         WHEN 'transactions_lend' THEN
             -- Receivable account increases
-            SELECT type INTO v_to_account_type FROM accounts WHERE id = NEW.receivable_account_id;
-            UPDATE accounts SET updated_at = NOW() WHERE id = NEW.receivable_account_id;
-            PERFORM set_account_balance(v_to_account_type, NEW.receivable_account_id, v_converted_amount);
+            SELECT type INTO v_to_account_type FROM accounts WHERE id = p_new.receivable_account_id;
+            UPDATE accounts SET updated_at = NOW() WHERE id = p_new.receivable_account_id;
+            PERFORM set_account_balance(v_to_account_type, p_new.receivable_account_id, v_converted_amount);
 
             -- Funding account decreases (including fees)
-            IF NEW.funding_account_id IS NOT NULL THEN
-                SELECT type INTO v_from_account_type FROM accounts WHERE id = NEW.funding_account_id;
-                UPDATE accounts SET updated_at = NOW() WHERE id = NEW.funding_account_id;
-                PERFORM set_account_balance(v_from_account_type, NEW.funding_account_id, -(v_original_amount + COALESCE(v_fees, 0)));
+            IF p_new.funding_account_id IS NOT NULL THEN
+                SELECT type INTO v_from_account_type FROM accounts WHERE id = p_new.funding_account_id;
+                UPDATE accounts SET updated_at = NOW() WHERE id = p_new.funding_account_id;
+                PERFORM set_account_balance(v_from_account_type, p_new.funding_account_id, -(v_original_amount + COALESCE(v_fees, 0)));
             END IF;
 
         WHEN 'transactions_adjustment' THEN
-            SELECT type INTO v_to_account_type FROM accounts WHERE id = NEW.account_id;
-            UPDATE accounts SET updated_at = NOW() WHERE id = NEW.account_id;
             -- Adjustment reduced by fees
-            PERFORM set_account_balance(v_to_account_type, NEW.account_id, v_converted_amount);
+            SELECT type INTO v_to_account_type FROM accounts WHERE id = p_new.account_id;
+            UPDATE accounts SET updated_at = NOW() WHERE id = p_new.account_id;
+            PERFORM set_account_balance(v_to_account_type, p_new.account_id, v_converted_amount);
 
     END CASE;
 
+END;
+$$;
+
+-- =========================================
+-- 04. Function: apply_transaction_balance_trigger
+-- =========================================
+-- Purpose:
+--   Acts as a trigger wrapper function to call apply_transaction_balance()
+--   for different transaction-specific tables. This function centralizes
+--   balance update logic for all transaction types, avoiding duplicate code.
+--
+-- Behavior:
+--   - Receives trigger execution context (TG_TABLE_NAME) and the NEW record.
+--   - Passes the table name and record to apply_transaction_balance().
+--   - Returns the NEW record to allow normal trigger processing flow.
+--
+-- Parameters:
+--   None explicitly declared — uses trigger variables:
+--     * TG_TABLE_NAME — system variable containing the name of the table
+--       that fired the trigger.
+--     * NEW — the new row being inserted or updated.
+--
+-- Returns:
+--   The NEW record (trigger requirement for AFTER INSERT triggers).
+--
+-- Notes:
+--   - SECURITY DEFINER ensures execution with elevated privileges for balance updates.
+--   - This function must be attached to each transaction table via a trigger.
+--   - Supports the following transaction types via triggers:
+--       * transactions_income
+--       * transactions_expense
+--       * transactions_investment
+--       * transactions_adjustment
+--       * transactions_borrow
+--       * transactions_lend
+--       * transactions_transfer
+--   - Each trigger is defined as AFTER INSERT to ensure the transaction row exists.
+--   - Centralized trigger function ensures consistent balance processing logic.
+--
+-- Triggers Created:
+--   trg_tx_income_balance
+--   trg_tx_expense_balance
+--   trg_tx_investment_balance
+--   trg_tx_adjustment_balance
+--   trg_tx_borrow_balance
+--   trg_tx_lend_balance
+--   trg_tx_transfer_balance
+-- =========================================
+CREATE OR REPLACE FUNCTION public.apply_transaction_balance_trigger()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+    PERFORM public.apply_transaction_balance(TG_TABLE_NAME, NEW);
     RETURN NEW;
 END;
 $$;
 
 -- Attach triggers to all transaction tables
+-- Income
 CREATE TRIGGER trg_tx_income_balance
     AFTER INSERT ON transactions_income
-    FOR EACH ROW EXECUTE FUNCTION apply_transaction_balance();
+    FOR EACH ROW EXECUTE FUNCTION apply_transaction_balance_trigger();
 
+-- Expense
 CREATE TRIGGER trg_tx_expense_balance
     AFTER INSERT ON transactions_expense
-    FOR EACH ROW EXECUTE FUNCTION apply_transaction_balance();
+    FOR EACH ROW EXECUTE FUNCTION apply_transaction_balance_trigger();
 
+-- Investment
 CREATE TRIGGER trg_tx_investment_balance
     AFTER INSERT ON transactions_investment
-    FOR EACH ROW EXECUTE FUNCTION apply_transaction_balance();
+    FOR EACH ROW EXECUTE FUNCTION apply_transaction_balance_trigger();
 
+-- Adjustment
 CREATE TRIGGER trg_tx_adjustment_balance
     AFTER INSERT ON transactions_adjustment
-    FOR EACH ROW EXECUTE FUNCTION apply_transaction_balance();
+    FOR EACH ROW EXECUTE FUNCTION apply_transaction_balance_trigger();
 
+-- Borrow
 CREATE TRIGGER trg_tx_borrow_balance
     AFTER INSERT ON transactions_borrow
-    FOR EACH ROW EXECUTE FUNCTION apply_transaction_balance();
+    FOR EACH ROW EXECUTE FUNCTION apply_transaction_balance_trigger();
 
+-- Lend
 CREATE TRIGGER trg_tx_lend_balance
     AFTER INSERT ON transactions_lend
-    FOR EACH ROW EXECUTE FUNCTION apply_transaction_balance();
+    FOR EACH ROW EXECUTE FUNCTION apply_transaction_balance_trigger();
 
+-- Transfer
 CREATE TRIGGER trg_tx_transfer_balance
     AFTER INSERT ON transactions_transfer
-    FOR EACH ROW EXECUTE FUNCTION apply_transaction_balance();
+    FOR EACH ROW EXECUTE FUNCTION apply_transaction_balance_trigger();
 
 -- =========================================
 -- 03. Function: validate_and_apply_exchange_rate
@@ -1412,7 +1487,7 @@ CREATE TRIGGER trg_setup_recurring
 --       * transactions_transfer
 --       * transactions_adjustment
 --   - Updates updated_at timestamps for all affected detail rows
---   - Calls reverse_transaction_balance_on_soft_delete() to adjust account balances accordingly
+--   - Calls reverse_transaction_balance() to adjust account balances accordingly
 --   - Ensures that balances reflect the reversal of the deleted transaction
 --
 -- Parameters:
@@ -1484,7 +1559,7 @@ BEGIN
             WHERE transaction_template_id = OLD.id AND deleted_at IS NULL;
 
             -- 3. Reverse balances for this transaction
-            PERFORM reverse_transaction_balance_on_soft_delete(OLD.id, OLD.type);
+            PERFORM reverse_transaction_balance(OLD.id, OLD.type);
 
             RAISE NOTICE 'Transaction % of type % was successfully soft deleted and related data processed.',
                 OLD.id, OLD.type;
@@ -1505,7 +1580,7 @@ FOR EACH ROW
 EXECUTE FUNCTION public.process_soft_delete_transaction();
 
 -- =========================================
--- 06. Function: reverse_transaction_balance_on_soft_delete
+-- 06. Function: reverse_transaction_balance
 -- =========================================
 -- Purpose:
 --   Reverses the balances of accounts affected by a transaction when the
@@ -1536,7 +1611,7 @@ EXECUTE FUNCTION public.process_soft_delete_transaction();
 --   - Updates the updated_at timestamp for all affected accounts
 --   - Ensures financial integrity by reversing balances accurately across all transaction types
 -- =========================================
-CREATE OR REPLACE FUNCTION public.reverse_transaction_balance_on_soft_delete(
+CREATE OR REPLACE FUNCTION public.reverse_transaction_balance(
     p_tx_id UUID,
     p_tx_type transaction_type
 )
@@ -1754,7 +1829,8 @@ $$;
 -- =========================================
 GRANT EXECUTE ON FUNCTION validate_transaction_user() TO authenticated;
 GRANT EXECUTE ON FUNCTION validate_transfer_accounts() TO authenticated;
-GRANT EXECUTE ON FUNCTION apply_transaction_balance() TO authenticated;
+GRANT EXECUTE ON FUNCTION public.apply_transaction_balance(TEXT, RECORD) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.apply_transaction_balance_trigger() TO authenticated;
 GRANT EXECUTE ON FUNCTION process_soft_delete_transaction() TO authenticated;
 GRANT EXECUTE ON FUNCTION setup_recurring_transaction() TO authenticated;
 GRANT EXECUTE ON FUNCTION validate_and_apply_exchange_rate() TO authenticated;
@@ -1762,4 +1838,9 @@ GRANT EXECUTE ON FUNCTION validate_and_apply_exchange_rate() TO authenticated;
 -- =========================================
 -- COMMENTS AND DOCUMENTATION
 -- =========================================
-COMMENT ON FUNCTION apply_transaction_balance() IS 'RLS-compliant balance updates for transaction operations';
+COMMENT ON FUNCTION public.apply_transaction_balance(TEXT, RECORD) 
+IS 'Core balance update logic for transactions, called by triggers or manually';
+
+COMMENT ON FUNCTION public.apply_transaction_balance_trigger() 
+IS 'Trigger wrapper function that calls apply_transaction_balance() for transaction tables';
+
