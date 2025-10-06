@@ -2002,6 +2002,950 @@ EXCEPTION
 END;
 $$;
 
+CREATE OR REPLACE FUNCTION public.update_expense_transaction(
+    p_transaction_id UUID,
+    p_account_id UUID DEFAULT NULL,
+    p_amount NUMERIC DEFAULT NULL,
+    p_currency VARCHAR DEFAULT NULL,
+    p_fees NUMERIC DEFAULT NULL,
+    p_category_id UUID DEFAULT NULL,
+    p_payment_method payment_method DEFAULT NULL,
+    p_notes TEXT DEFAULT NULL
+)
+RETURNS JSON
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_catalog
+AS $$
+DECLARE
+    v_user_id UUID := auth.uid();
+    v_existing RECORD;
+    v_old_account_id UUID;
+    v_account_currency VARCHAR;
+    v_exchange_rate NUMERIC;
+    v_converted_amount NUMERIC;
+    v_transaction_type TEXT;
+    v_table_name TEXT;
+    v_result JSON;
+    v_balance_changed BOOLEAN;
+BEGIN
+    -- Fetch existing transaction and expense details
+    SELECT t.*, e.account_id, e.category_id, e.payment_method
+    INTO v_existing
+    FROM transactions t
+    JOIN transactions_expense e ON e.transaction_id = t.id
+    WHERE t.id = p_transaction_id
+      AND t.user_id = v_user_id
+      AND t.deleted_at IS NULL;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Transaction not found or access denied';
+    END IF;
+
+    v_old_account_id := v_existing.account_id;
+    v_transaction_type := v_existing.type;
+
+    -- Get table name dynamically (e.g. "transactions_expense")
+    v_table_name := public.get_transaction_table_name(v_transaction_type);
+
+    -- Check if the transaction details affect balances
+    v_balance_changed := has_transaction_changed(
+        v_existing,
+        p_account_id,
+        p_currency,
+        p_amount,
+        p_fees
+    );
+
+    -- If account/balance affecting details changed, reverse previous balance
+    IF v_balance_changed THEN
+        PERFORM public.reverse_transaction_balance(p_transaction_id, v_transaction_type::transaction_type);
+    END IF;
+
+    -- Get new account currency (validate ownership)
+    SELECT currency INTO v_account_currency
+    FROM accounts
+    WHERE id = COALESCE(p_account_id, v_existing.account_id)
+      AND user_id = v_user_id
+      AND deleted_at IS NULL;
+
+    IF v_account_currency IS NULL THEN
+        RAISE EXCEPTION 'New account not found or invalid';
+    END IF;
+
+    -- Calculate updated exchange rate and converted amount
+    v_exchange_rate := get_exchange_rate(
+        COALESCE(p_currency, v_existing.original_currency),
+        v_account_currency
+    );
+    v_converted_amount := COALESCE(p_amount, v_existing.original_amount) * v_exchange_rate;
+
+    -- Update transactions table
+    UPDATE transactions
+    SET
+        original_amount   = COALESCE(p_amount, v_existing.original_amount),
+        original_currency = COALESCE(p_currency, v_existing.original_currency),
+        exchange_rate     = v_exchange_rate,
+        converted_amount  = v_converted_amount,
+        fees              = COALESCE(p_fees, v_existing.fees),
+        notes             = COALESCE(p_notes, v_existing.notes),
+        updated_at        = NOW()
+    WHERE id = p_transaction_id;
+
+    -- Update expense-specific details
+    UPDATE transactions_expense
+    SET
+        account_id     = COALESCE(p_account_id, v_existing.account_id),
+        category_id    = COALESCE(p_category_id, v_existing.category_id),
+        payment_method = COALESCE(p_payment_method, v_existing.payment_method),
+        updated_at     = NOW()
+    WHERE transaction_id = p_transaction_id;
+
+    -- Only reapply transaction balance if balance-related changes happened
+    IF v_balance_changed THEN
+        PERFORM public.apply_transaction_balance(
+            v_table_name,
+            (SELECT e FROM transactions_expense e WHERE e.transaction_id = p_transaction_id)
+        );
+    END IF;
+
+    -- Return the updated record
+    SELECT json_build_object(
+        'transaction', row_to_json(t),
+        'expense', row_to_json(e)
+    )
+    INTO v_result
+    FROM transactions t
+    JOIN transactions_expense e ON e.transaction_id = t.id
+    WHERE t.id = p_transaction_id;
+
+    RETURN v_result;
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object(
+            'error', SQLERRM,
+            'transaction_id', p_transaction_id
+        );
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.update_investment_transaction(
+    p_transaction_id UUID,
+    p_funding_account_id UUID DEFAULT NULL,
+    p_investment_account_id UUID DEFAULT NULL,
+    p_amount NUMERIC DEFAULT NULL,
+    p_currency VARCHAR DEFAULT NULL,
+    p_fees NUMERIC DEFAULT NULL,
+    p_asset_type VARCHAR DEFAULT NULL,
+    p_asset_symbol VARCHAR DEFAULT NULL,
+    p_platform VARCHAR DEFAULT NULL,
+    p_risk_level risk_level DEFAULT NULL,
+    p_notes TEXT DEFAULT NULL
+)
+RETURNS JSON
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_catalog
+AS $$
+DECLARE
+    v_user_id UUID := auth.uid();
+    v_existing RECORD;
+    v_old_funding_account_id UUID;
+    v_old_investment_account_id UUID;
+    v_account_currency VARCHAR;
+    v_exchange_rate NUMERIC;
+    v_converted_amount NUMERIC;
+    v_transaction_type TEXT;
+    v_table_name TEXT;
+    v_result JSON;
+    v_balance_changed BOOLEAN;
+BEGIN
+    -- Fetch existing transaction and investment details
+    SELECT t.*, i.funding_account_id, i.investment_account_id
+    INTO v_existing
+    FROM transactions t
+    JOIN transactions_investment i ON i.transaction_id = t.id
+    WHERE t.id = p_transaction_id
+      AND t.deleted_at IS NULL
+      AND t.user_id = v_user_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Transaction not found or access denied';
+    END IF;
+
+    v_old_funding_account_id    := v_existing.funding_account_id;
+    v_old_investment_account_id := v_existing.investment_account_id;
+    v_transaction_type          := v_existing.type;
+
+    -- Get table name dynamically
+    v_table_name := public.get_transaction_table_name(v_transaction_type);
+
+    -- Check if the transaction details affect balances
+    v_balance_changed := (
+        has_transaction_changed(
+            v_existing,
+            p_funding_account_id,
+            p_currency,
+            p_amount,
+            p_fees
+        ) OR
+        (p_investment_account_id IS NOT NULL AND p_investment_account_id <> v_existing.investment_account_id)
+    );
+
+    -- Reverse previous balance if necessary
+    IF v_balance_changed THEN
+        PERFORM public.reverse_transaction_balance(p_transaction_id, v_transaction_type::transaction_type);
+    END IF;
+
+    -- Get currency of funding account (if changed)
+    SELECT currency INTO v_account_currency
+    FROM accounts
+    WHERE id = COALESCE(p_funding_account_id, v_existing.funding_account_id)
+      AND user_id = v_user_id
+      AND deleted_at IS NULL;
+
+    IF v_account_currency IS NULL THEN
+        RAISE EXCEPTION 'Funding account not found or invalid';
+    END IF;
+
+    -- Calculate updated exchange rate and converted amount
+    v_exchange_rate := get_exchange_rate(
+        COALESCE(p_currency, v_existing.original_currency),
+        v_account_currency
+    );
+
+    v_converted_amount := COALESCE(p_amount, v_existing.original_amount) * v_exchange_rate;
+
+    -- Update transactions table
+    UPDATE transactions
+    SET
+        original_amount   = COALESCE(p_amount, v_existing.original_amount),
+        original_currency = COALESCE(p_currency, v_existing.original_currency),
+        exchange_rate     = v_exchange_rate,
+        converted_amount  = v_converted_amount,
+        fees              = COALESCE(p_fees, v_existing.fees),
+        notes             = COALESCE(p_notes, v_existing.notes),
+        updated_at        = NOW()
+    WHERE id = p_transaction_id;
+
+    -- Update investment-specific details
+    UPDATE transactions_investment
+    SET
+        funding_account_id     = COALESCE(p_funding_account_id, v_existing.funding_account_id),
+        investment_account_id  = COALESCE(p_investment_account_id, v_existing.investment_account_id),
+        asset_type             = COALESCE(p_asset_type, v_existing.asset_type),
+        asset_symbol           = COALESCE(p_asset_symbol, v_existing.asset_symbol),
+        platform               = COALESCE(p_platform, v_existing.platform),
+        risk_level             = COALESCE(p_risk_level, v_existing.risk_level),
+        updated_at             = NOW()
+    WHERE transaction_id = p_transaction_id;
+
+    -- Reapply transaction balance if balance-related changes happened
+    IF v_balance_changed THEN
+        PERFORM public.apply_transaction_balance(
+            v_table_name,
+            (SELECT i FROM transactions_investment i WHERE i.transaction_id = p_transaction_id)
+        );
+    END IF;
+
+    -- Return updated transaction
+    SELECT json_build_object(
+        'transaction', row_to_json(t),
+        'investment', row_to_json(i)
+    )
+    INTO v_result
+    FROM transactions t
+    JOIN transactions_investment i ON i.transaction_id = t.id
+    WHERE t.id = p_transaction_id;
+
+    RETURN v_result;
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object(
+            'error', SQLERRM,
+            'transaction_id', p_transaction_id
+        );
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.update_adjustment_transaction(
+    p_transaction_id UUID,
+    p_account_id UUID DEFAULT NULL,
+    p_amount NUMERIC DEFAULT NULL,
+    p_currency VARCHAR DEFAULT NULL,
+    p_fees NUMERIC DEFAULT NULL,
+    p_reason TEXT DEFAULT NULL
+)
+RETURNS JSON
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_catalog
+AS $$
+DECLARE
+    v_user_id UUID := auth.uid();
+    v_existing RECORD;
+    v_old_account_id UUID;
+    v_account_currency VARCHAR;
+    v_exchange_rate NUMERIC;
+    v_converted_amount NUMERIC;
+    v_transaction_type TEXT;
+    v_table_name TEXT;
+    v_result JSON;
+    v_balance_changed BOOLEAN;
+BEGIN
+    -- Fetch existing transaction and adjustment details
+    SELECT t.*, a.account_id, a.reason
+    INTO v_existing
+    FROM transactions t
+    JOIN transactions_adjustment a ON a.transaction_id = t.id
+    WHERE t.id = p_transaction_id
+      AND t.user_id = v_user_id
+      AND t.deleted_at IS NULL;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Adjustment transaction not found or access denied';
+    END IF;
+
+    v_old_account_id := v_existing.account_id;
+    v_transaction_type := v_existing.type;
+
+    -- Get table name dynamically (e.g. "transactions_adjustment")
+    v_table_name := public.get_transaction_table_name(v_transaction_type);
+
+    -- Check if transaction details affect balances
+    v_balance_changed := has_transaction_changed(
+        v_existing,
+        p_account_id,
+        p_currency,
+        p_amount,
+        p_fees
+    );
+
+    -- If account/balance affecting details changed, reverse previous balance
+    IF v_balance_changed THEN
+        PERFORM public.reverse_transaction_balance(p_transaction_id, v_transaction_type::transaction_type);
+    END IF;
+
+    -- Get new account currency (validate ownership)
+    SELECT currency INTO v_account_currency
+    FROM accounts
+    WHERE id = COALESCE(p_account_id, v_existing.account_id)
+      AND user_id = v_user_id
+      AND deleted_at IS NULL;
+
+    IF v_account_currency IS NULL THEN
+        RAISE EXCEPTION 'New account not found or invalid';
+    END IF;
+
+    -- Calculate updated exchange rate and converted amount
+    v_exchange_rate := get_exchange_rate(
+        COALESCE(p_currency, v_existing.original_currency),
+        v_account_currency
+    );
+    v_converted_amount := COALESCE(p_amount, v_existing.original_amount) * v_exchange_rate;
+
+    -- Update transactions table
+    UPDATE transactions
+    SET
+        original_amount   = COALESCE(p_amount, v_existing.original_amount),
+        original_currency = COALESCE(p_currency, v_existing.original_currency),
+        exchange_rate     = v_exchange_rate,
+        converted_amount  = v_converted_amount,
+        fees              = COALESCE(p_fees, v_existing.fees),
+        notes             = COALESCE(p_reason, v_existing.notes),
+        updated_at        = NOW()
+    WHERE id = p_transaction_id;
+
+    -- Update adjustment-specific details
+    UPDATE transactions_adjustment
+    SET
+        account_id = COALESCE(p_account_id, v_existing.account_id),
+        reason     = COALESCE(p_reason, v_existing.reason),
+        updated_at = NOW()
+    WHERE transaction_id = p_transaction_id;
+
+    -- Reapply balance if changed
+    IF v_balance_changed THEN
+        PERFORM public.apply_transaction_balance(
+            v_table_name,
+            (SELECT a FROM transactions_adjustment a WHERE a.transaction_id = p_transaction_id)
+        );
+    END IF;
+
+    -- Return updated record
+    SELECT json_build_object(
+        'transaction', row_to_json(t),
+        'adjustment', row_to_json(a)
+    )
+    INTO v_result
+    FROM transactions t
+    JOIN transactions_adjustment a ON a.transaction_id = t.id
+    WHERE t.id = p_transaction_id;
+
+    RETURN v_result;
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object(
+            'error', SQLERRM,
+            'transaction_id', p_transaction_id
+        );
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.update_borrow_transaction(
+    p_transaction_id UUID,
+    p_loan_account_id UUID DEFAULT NULL,
+    p_disbursement_account_id UUID DEFAULT NULL,
+    p_amount NUMERIC DEFAULT NULL,
+    p_currency VARCHAR DEFAULT NULL,
+    p_fees NUMERIC DEFAULT NULL,
+    p_notes TEXT DEFAULT NULL
+)
+RETURNS JSON
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_catalog
+AS $$
+DECLARE
+    v_user_id UUID := auth.uid();
+    v_existing RECORD;
+    v_old_loan_account_id UUID;
+    v_old_disbursement_account_id UUID;
+    v_account_currency VARCHAR;
+    v_exchange_rate NUMERIC;
+    v_converted_amount NUMERIC;
+    v_transaction_type TEXT;
+    v_table_name TEXT;
+    v_result JSON;
+    v_balance_changed BOOLEAN;
+BEGIN
+    -- Fetch existing transaction and borrow details
+    SELECT t.*, b.loan_account_id, b.disbursement_account_id
+    INTO v_existing
+    FROM transactions t
+    JOIN transactions_borrow b ON b.transaction_id = t.id
+    WHERE t.id = p_transaction_id
+      AND t.user_id = v_user_id
+      AND t.deleted_at IS NULL;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Transaction not found or access denied';
+    END IF;
+
+    v_old_loan_account_id := v_existing.loan_account_id;
+    v_old_disbursement_account_id := v_existing.disbursement_account_id;
+    v_transaction_type := v_existing.type;
+
+    -- Get table name dynamically
+    v_table_name := public.get_transaction_table_name(v_transaction_type);
+
+    -- Check if the transaction details affect balances
+    v_balance_changed := has_transaction_changed(
+        v_existing,
+        COALESCE(p_loan_account_id, v_existing.loan_account_id),
+        p_currency,
+        p_amount,
+        p_fees
+    );
+
+    -- If account/balance affecting details changed, reverse previous balance
+    IF v_balance_changed THEN
+        PERFORM public.reverse_transaction_balance(p_transaction_id, v_transaction_type::transaction_type);
+    END IF;
+
+    -- Get new account currency (validate ownership for loan account)
+    SELECT currency INTO v_account_currency
+    FROM accounts
+    WHERE id = COALESCE(p_loan_account_id, v_existing.loan_account_id)
+      AND user_id = v_user_id
+      AND deleted_at IS NULL;
+
+    IF v_account_currency IS NULL THEN
+        RAISE EXCEPTION 'Loan account not found or invalid';
+    END IF;
+
+    -- Calculate updated exchange rate and converted amount
+    v_exchange_rate := get_exchange_rate(
+        COALESCE(p_currency, v_existing.original_currency),
+        v_account_currency
+    );
+    v_converted_amount := COALESCE(p_amount, v_existing.original_amount) * v_exchange_rate;
+
+    -- Update transactions table
+    UPDATE transactions
+    SET
+        original_amount   = COALESCE(p_amount, v_existing.original_amount),
+        original_currency = COALESCE(p_currency, v_existing.original_currency),
+        exchange_rate     = v_exchange_rate,
+        converted_amount  = v_converted_amount,
+        fees              = COALESCE(p_fees, v_existing.fees),
+        notes             = COALESCE(p_notes, v_existing.notes),
+        updated_at        = NOW()
+    WHERE id = p_transaction_id;
+
+    -- Update borrow-specific details
+    UPDATE transactions_borrow
+    SET
+        loan_account_id         = COALESCE(p_loan_account_id, v_existing.loan_account_id),
+        disbursement_account_id = COALESCE(p_disbursement_account_id, v_existing.disbursement_account_id),
+        updated_at              = NOW()
+    WHERE transaction_id = p_transaction_id;
+
+    -- Only reapply transaction balance if balance-related changes happened
+    IF v_balance_changed THEN
+        PERFORM public.apply_transaction_balance(
+            v_table_name,
+            (SELECT b FROM transactions_borrow b WHERE b.transaction_id = p_transaction_id)
+        );
+    END IF;
+
+    -- Return the updated record
+    SELECT json_build_object(
+        'transaction', row_to_json(t),
+        'borrow', row_to_json(b)
+    )
+    INTO v_result
+    FROM transactions t
+    JOIN transactions_borrow b ON b.transaction_id = t.id
+    WHERE t.id = p_transaction_id;
+
+    RETURN v_result;
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object(
+            'error', SQLERRM,
+            'transaction_id', p_transaction_id
+        );
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.update_lend_transaction(
+    p_transaction_id UUID,
+    p_funding_account_id UUID DEFAULT NULL,
+    p_receivable_account_id UUID DEFAULT NULL,
+    p_amount NUMERIC DEFAULT NULL,
+    p_currency VARCHAR DEFAULT NULL,
+    p_fees NUMERIC DEFAULT NULL,
+    p_counterparty_id UUID DEFAULT NULL,
+    p_interest_rate NUMERIC DEFAULT NULL,
+    p_due_date DATE DEFAULT NULL,
+    p_collateral TEXT DEFAULT NULL,
+    p_notes TEXT DEFAULT NULL
+)
+RETURNS JSON
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_catalog
+AS $$
+DECLARE
+    v_user_id UUID := auth.uid();
+    v_existing RECORD;
+    v_old_funding_account_id UUID;
+    v_old_receivable_account_id UUID;
+    v_account_currency VARCHAR;
+    v_exchange_rate NUMERIC;
+    v_converted_amount NUMERIC;
+    v_transaction_type TEXT;
+    v_table_name TEXT;
+    v_result JSON;
+    v_balance_changed BOOLEAN;
+BEGIN
+    -- Fetch existing transaction and lend details
+    SELECT t.*, l.funding_account_id, l.receivable_account_id
+    INTO v_existing
+    FROM transactions t
+    JOIN transactions_lend l ON l.transaction_id = t.id
+    WHERE t.id = p_transaction_id
+      AND t.user_id = v_user_id
+      AND t.deleted_at IS NULL;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Transaction not found or access denied';
+    END IF;
+
+    v_old_funding_account_id := v_existing.funding_account_id;
+    v_old_receivable_account_id := v_existing.receivable_account_id;
+    v_transaction_type := v_existing.type;
+
+    -- Get table name dynamically (e.g. "transactions_lend")
+    v_table_name := public.get_transaction_table_name(v_transaction_type);
+
+    -- Check if balance-related details changed
+    v_balance_changed := has_transaction_changed(
+        v_existing,
+        p_funding_account_id,
+        p_currency,
+        p_amount,
+        p_fees
+    );
+
+    -- Reverse previous balance if needed
+    IF v_balance_changed THEN
+        PERFORM public.reverse_transaction_balance(p_transaction_id, v_transaction_type::transaction_type);
+    END IF;
+
+    -- Validate funding account ownership & currency
+    SELECT currency INTO v_account_currency
+    FROM accounts
+    WHERE id = COALESCE(p_funding_account_id, v_existing.funding_account_id)
+      AND user_id = v_user_id
+      AND deleted_at IS NULL;
+
+    IF v_account_currency IS NULL THEN
+        RAISE EXCEPTION 'Funding account not found or invalid';
+    END IF;
+
+    -- Calculate exchange rate & converted amount
+    v_exchange_rate := get_exchange_rate(
+        COALESCE(p_currency, v_existing.original_currency),
+        v_account_currency
+    );
+    v_converted_amount := COALESCE(p_amount, v_existing.original_amount) * v_exchange_rate;
+
+    -- Update main transactions table
+    UPDATE transactions
+    SET
+        original_amount   = COALESCE(p_amount, v_existing.original_amount),
+        original_currency = COALESCE(p_currency, v_existing.original_currency),
+        exchange_rate     = v_exchange_rate,
+        converted_amount  = v_converted_amount,
+        fees              = COALESCE(p_fees, v_existing.fees),
+        notes             = COALESCE(p_notes, v_existing.notes),
+        updated_at        = NOW()
+    WHERE id = p_transaction_id;
+
+    -- Update lend-specific details
+    UPDATE transactions_lend
+    SET
+        funding_account_id    = COALESCE(p_funding_account_id, v_existing.funding_account_id),
+        receivable_account_id = COALESCE(p_receivable_account_id, v_existing.receivable_account_id),
+        counterparty_id       = COALESCE(p_counterparty_id, v_existing.counterparty_id),
+        interest_rate         = COALESCE(p_interest_rate, v_existing.interest_rate),
+        due_date              = COALESCE(p_due_date, v_existing.due_date),
+        collateral            = COALESCE(p_collateral, v_existing.collateral),
+        updated_at            = NOW()
+    WHERE transaction_id = p_transaction_id;
+
+    -- Reapply balance changes if needed
+    IF v_balance_changed THEN
+        PERFORM public.apply_transaction_balance(
+            v_table_name,
+            (SELECT l FROM transactions_lend l WHERE l.transaction_id = p_transaction_id)
+        );
+    END IF;
+
+    -- Return updated transaction + lend details
+    SELECT json_build_object(
+        'transaction', row_to_json(t),
+        'lend', row_to_json(l)
+    )
+    INTO v_result
+    FROM transactions t
+    JOIN transactions_lend l ON l.transaction_id = t.id
+    WHERE t.id = p_transaction_id;
+
+    RETURN v_result;
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object(
+            'error', SQLERRM,
+            'transaction_id', p_transaction_id
+        );
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.update_transfer_transaction(
+    p_transaction_id UUID,
+    p_from_account UUID DEFAULT NULL,
+    p_to_account UUID DEFAULT NULL,
+    p_amount NUMERIC DEFAULT NULL,
+    p_currency VARCHAR DEFAULT NULL,
+    p_fees NUMERIC DEFAULT NULL,
+    p_transfer_method transfer_method DEFAULT NULL,
+    p_notes TEXT DEFAULT NULL
+)
+RETURNS JSON
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_catalog
+AS $$
+DECLARE
+    v_user_id UUID := auth.uid();
+    v_existing RECORD;
+    v_old_from_account UUID;
+    v_old_to_account UUID;
+    v_account_currency VARCHAR;
+    v_exchange_rate NUMERIC;
+    v_converted_amount NUMERIC;
+    v_transaction_type TEXT;
+    v_table_name TEXT;
+    v_result JSON;
+    v_balance_changed BOOLEAN;
+BEGIN
+    -- Fetch existing transaction and transfer details
+    SELECT t.*, tr.from_account, tr.to_account
+    INTO v_existing
+    FROM transactions t
+    JOIN transactions_transfer tr ON tr.transaction_id = t.id
+    WHERE t.id = p_transaction_id
+      AND t.deleted_at IS NULL
+      AND t.user_id = v_user_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Transaction not found or access denied';
+    END IF;
+
+    v_old_from_account := v_existing.from_account;
+    v_old_to_account   := v_existing.to_account;
+    v_transaction_type := v_existing.type;
+
+    -- Get table name dynamically
+    v_table_name := public.get_transaction_table_name(v_transaction_type);
+
+    -- Check if balance-affecting details changed
+    v_balance_changed := has_transaction_changed(
+        v_existing,
+        p_from_account,
+        p_currency,
+        p_amount,
+        p_fees
+    ) OR
+    (p_to_account IS NOT NULL AND p_to_account <> v_old_to_account);
+
+    -- Reverse old balance if necessary
+    IF v_balance_changed THEN
+        PERFORM public.reverse_transaction_balance(p_transaction_id, v_transaction_type::transaction_type);
+    END IF;
+
+    -- Validate new accounts ownership and currency
+    SELECT currency INTO v_account_currency
+    FROM accounts
+    WHERE id = COALESCE(p_from_account, v_old_from_account)
+      AND user_id = v_user_id
+      AND deleted_at IS NULL;
+
+    IF v_account_currency IS NULL THEN
+        RAISE EXCEPTION 'From account not found or invalid';
+    END IF;
+
+    -- Calculate updated exchange rate and converted amount
+    v_exchange_rate := get_exchange_rate(
+        COALESCE(p_currency, v_existing.original_currency),
+        v_account_currency
+    );
+
+    v_converted_amount := COALESCE(p_amount, v_existing.original_amount) * v_exchange_rate;
+
+    -- Update transactions table
+    UPDATE transactions
+    SET
+        original_amount   = COALESCE(p_amount, v_existing.original_amount),
+        original_currency = COALESCE(p_currency, v_existing.original_currency),
+        exchange_rate     = v_exchange_rate,
+        converted_amount  = v_converted_amount,
+        fees              = COALESCE(p_fees, v_existing.fees),
+        notes             = COALESCE(p_notes, v_existing.notes),
+        updated_at        = NOW()
+    WHERE id = p_transaction_id;
+
+    -- Update transfer-specific details
+    UPDATE transactions_transfer
+    SET
+        from_account    = COALESCE(p_from_account, v_existing.from_account),
+        to_account      = COALESCE(p_to_account, v_existing.to_account),
+        transfer_method = COALESCE(p_transfer_method, v_existing.transfer_method),
+        updated_at      = NOW()
+    WHERE transaction_id = p_transaction_id;
+
+    -- Reapply new transaction balance if changed
+    IF v_balance_changed THEN
+        PERFORM public.apply_transaction_balance(
+            v_table_name,
+            (SELECT tr FROM transactions_transfer tr WHERE tr.transaction_id = p_transaction_id)
+        );
+    END IF;
+
+    -- Return updated transaction JSON
+    SELECT json_build_object(
+        'transaction', row_to_json(t),
+        'transfer', row_to_json(tr)
+    )
+    INTO v_result
+    FROM transactions t
+    JOIN transactions_transfer tr ON tr.transaction_id = t.id
+    WHERE t.id = p_transaction_id;
+
+    RETURN v_result;
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object(
+            'error', SQLERRM,
+            'transaction_id', p_transaction_id
+        );
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.update_recurring_transaction(
+    p_recurring_id UUID,
+    p_transaction_type TEXT,
+    p_params JSONB,
+    p_frequency recurrence_frequency DEFAULT NULL,
+    p_interval INT DEFAULT NULL,
+    p_start_date DATE DEFAULT NULL,
+    p_end_date DATE DEFAULT NULL
+)
+RETURNS JSON
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_catalog
+AS $$
+DECLARE
+    v_user_id UUID := auth.uid();
+    v_existing_recurring RECORD;
+    v_result JSON;
+BEGIN
+    -- 1. Validate recurring transaction exists and belongs to user
+    SELECT r.*
+    INTO v_existing_recurring
+    FROM transactions_recurring r
+    JOIN transactions t ON t.id = r.transaction_template_id
+    WHERE r.id = p_recurring_id
+      AND r.user_id = v_user_id
+      AND t.deleted_at IS NULL;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Recurring transaction not found or access denied';
+    END IF;
+
+    -- 2. Update the underlying template transaction using type-specific updater
+    CASE LOWER(TRIM(p_transaction_type))
+        WHEN 'income' THEN
+            PERFORM public.update_income_transaction(
+                v_existing_recurring.transaction_template_id,
+                (p_params->>'account_id')::UUID,
+                (p_params->>'amount')::NUMERIC,
+                p_params->>'currency',
+                (p_params->>'fees')::NUMERIC,
+                (p_params->>'source_id')::UUID,
+                p_params->>'notes'
+            );
+
+        WHEN 'expense' THEN
+            PERFORM public.update_expense_transaction(
+                v_existing_recurring.transaction_template_id,
+                (p_params->>'account_id')::UUID,
+                (p_params->>'amount')::NUMERIC,
+                p_params->>'currency',
+                (p_params->>'fees')::NUMERIC,
+                (p_params->>'category_id')::UUID,
+                COALESCE((p_params->>'payment_method')::payment_method, NULL),
+                p_params->>'notes'
+            );
+
+        WHEN 'investment' THEN
+            PERFORM public.update_investment_transaction(
+                v_existing_recurring.transaction_template_id,
+                (p_params->>'funding_account_id')::UUID,
+                (p_params->>'investment_account_id')::UUID,
+                (p_params->>'amount')::NUMERIC,
+                p_params->>'currency',
+                (p_params->>'fees')::NUMERIC,
+                p_params->>'asset_type',
+                p_params->>'asset_symbol',
+                p_params->>'platform',
+                COALESCE((p_params->>'risk_level')::risk_level, NULL),
+                p_params->>'notes'
+            );
+
+        WHEN 'borrow' THEN
+            PERFORM public.update_borrow_transaction(
+                v_existing_recurring.transaction_template_id,
+                (p_params->>'loan_account_id')::UUID,
+                (p_params->>'disbursement_account_id')::UUID,
+                (p_params->>'amount')::NUMERIC,
+                p_params->>'currency',
+                (p_params->>'fees')::NUMERIC,
+                p_params->>'notes'
+            );
+
+        WHEN 'lend' THEN
+            PERFORM public.update_lend_transaction(
+                v_existing_recurring.transaction_template_id,
+                (p_params->>'funding_account_id')::UUID,
+                (p_params->>'receivable_account_id')::UUID,
+                (p_params->>'amount')::NUMERIC,
+                p_params->>'currency',
+                (p_params->>'fees')::NUMERIC,
+                (p_params->>'counterparty_id')::UUID,
+                (p_params->>'interest_rate')::NUMERIC,
+                (p_params->>'due_date')::DATE,
+                p_params->>'collateral',
+                p_params->>'notes'
+            );
+
+        WHEN 'adjustment' THEN
+            PERFORM public.update_adjustment_transaction(
+                v_existing_recurring.transaction_template_id,
+                (p_params->>'account_id')::UUID,
+                (p_params->>'amount')::NUMERIC,
+                p_params->>'currency',
+                (p_params->>'fees')::NUMERIC,
+                p_params->>'reason'
+            );
+
+        WHEN 'transfer' THEN
+            PERFORM public.update_transfer_transaction(
+                v_existing_recurring.transaction_template_id,
+                (p_params->>'from_account')::UUID,
+                (p_params->>'to_account')::UUID,
+                (p_params->>'amount')::NUMERIC,
+                p_params->>'currency',
+                (p_params->>'fees')::NUMERIC,
+                COALESCE((p_params->>'transfer_method')::transfer_method, NULL),
+                p_params->>'notes'
+            );
+
+        ELSE
+            RAISE EXCEPTION 'Unsupported transaction type: %', p_transaction_type;
+    END CASE;
+
+    -- 3. Update recurring transaction metadata if provided
+    UPDATE transactions_recurring r
+    SET
+        frequency  = COALESCE(p_frequency, r.frequency),
+        interval   = COALESCE(p_interval, r.interval),
+        start_date = COALESCE(p_start_date, r.start_date),
+        end_date   = COALESCE(p_end_date, r.end_date),
+        updated_at = NOW()
+    WHERE r.id = p_recurring_id
+      AND r.user_id = v_user_id
+    RETURNING row_to_json(r) INTO v_result;
+
+    -- 4. Return updated recurring transaction info
+    RETURN json_build_object(
+        'recurring', v_result,
+        'template_transaction_id', v_existing_recurring.transaction_template_id
+    );
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE NOTICE 'Error updating recurring transaction: %', SQLERRM;
+        RETURN json_build_object(
+            'error', SQLERRM,
+            'recurring_id', p_recurring_id
+        );
+END;
+$$;
+
+
+
+
 -- =========================================
 -- 17. Function: compute_transaction_direction
 -- =========================================
@@ -2614,6 +3558,13 @@ GRANT EXECUTE ON FUNCTION public.hard_delete_transaction(UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.has_transaction_changed(record, uuid, varchar, numeric, numeric) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.get_transaction_table_name(TEXT) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.update_income_transaction(UUID, UUID, NUMERIC, VARCHAR, NUMERIC, UUID, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.update_expense_transaction(UUID, UUID, NUMERIC, VARCHAR, NUMERIC, UUID, payment_method, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.update_investment_transaction(UUID, UUID, UUID, NUMERIC, VARCHAR, NUMERIC, VARCHAR, VARCHAR, VARCHAR, risk_level, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.update_adjustment_transaction(UUID, UUID, NUMERIC, VARCHAR, NUMERIC, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.update_borrow_transaction(UUID, UUID, UUID, NUMERIC, VARCHAR, NUMERIC, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.update_lend_transaction(UUID, UUID, UUID, NUMERIC, VARCHAR, NUMERIC, UUID, NUMERIC, DATE, TEXT, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.update_transfer_transaction(UUID, UUID, UUID, NUMERIC, VARCHAR, NUMERIC, transfer_method, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.update_recurring_transaction(UUID, TEXT, JSONB, recurrence_frequency, INT, DATE, DATE) TO authenticated;
 
 GRANT EXECUTE ON FUNCTION get_user_transaction_count(UUID, transaction_type, DATE, DATE) TO authenticated;
 GRANT EXECUTE ON FUNCTION get_recent_transactions(INTEGER) TO authenticated;
@@ -2689,6 +3640,34 @@ COMMENT ON FUNCTION public.has_transaction_changed(record, uuid, varchar, numeri
 
 COMMENT ON FUNCTION public.get_transaction_table_name(TEXT)
 IS 'Returns the correct transaction table name given a transaction type string.';
+
+COMMENT ON FUNCTION public.update_expense_transaction(
+    UUID, UUID, NUMERIC, VARCHAR, NUMERIC, UUID, payment_method, TEXT
+) IS 'RLS-compliant function to update an expense transaction with balance adjustments and validation';
+
+COMMENT ON FUNCTION public.update_investment_transaction(
+    UUID, UUID, UUID, NUMERIC, VARCHAR, NUMERIC, VARCHAR, VARCHAR, VARCHAR, risk_level, TEXT
+) IS 'RLS-compliant function to update an investment transaction with balance adjustments and validation';
+
+COMMENT ON FUNCTION public.update_adjustment_transaction(
+    UUID, UUID, NUMERIC, VARCHAR, NUMERIC, TEXT
+) IS 'RLS-compliant function to update an adjustment transaction with balance adjustments and validation';
+
+COMMENT ON FUNCTION public.update_borrow_transaction(
+    UUID, UUID, UUID, NUMERIC, VARCHAR, NUMERIC, TEXT
+) IS 'RLS-compliant function to update a borrow transaction with balance adjustments and validation';
+
+COMMENT ON FUNCTION public.update_lend_transaction(
+    UUID, UUID, UUID, NUMERIC, VARCHAR, NUMERIC, UUID, NUMERIC, DATE, TEXT, TEXT
+) IS 'RLS-compliant function to update a lend transaction with balance adjustments and validation';
+
+COMMENT ON FUNCTION public.update_transfer_transaction(
+    UUID, UUID, UUID, NUMERIC, VARCHAR, NUMERIC, transfer_method, TEXT
+) IS 'RLS-compliant function to update a transfer transaction with balance adjustments and validation';
+
+COMMENT ON FUNCTION public.update_recurring_transaction(
+    UUID, TEXT, JSONB, recurrence_frequency, INT, DATE, DATE
+) IS 'RLS-compliant function to update a recurring transaction template with validation and automatic balance updates';
 
 
 COMMENT ON FUNCTION get_recent_transactions(INTEGER) IS 'RLS-compliant recent transactions query';
