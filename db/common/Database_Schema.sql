@@ -305,7 +305,6 @@ CREATE TABLE transactions_income (
   transaction_id UUID NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
   account_id UUID NOT NULL REFERENCES accounts(id),
   source_id UUID REFERENCES income_sources(id), -- link to source of income
-  notes TEXT,
   created_at timestamptz DEFAULT now(),
   updated_at timestamptz DEFAULT now(),
   deleted_at timestamptz NULL DEFAULT NULL
@@ -391,7 +390,6 @@ CREATE TABLE transactions_adjustment (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   transaction_id UUID NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
   account_id UUID NOT NULL REFERENCES accounts(id),
-  reason TEXT, -- reason for adjustment
   created_at timestamptz DEFAULT now(),
   updated_at timestamptz DEFAULT now(),
   deleted_at timestamptz NULL DEFAULT NULL

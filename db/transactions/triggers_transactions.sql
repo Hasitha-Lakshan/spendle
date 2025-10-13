@@ -137,8 +137,7 @@ BEGIN
     SELECT user_id INTO v_tx_user 
     FROM public.transactions 
     WHERE id = NEW.transaction_id 
-      AND user_id = auth.uid()
-      AND deleted_at IS NULL;
+      AND user_id = auth.uid();
     
     IF v_account_user IS NULL OR v_tx_user IS NULL THEN
         RAISE EXCEPTION 'Account or transaction not found or access denied';
@@ -598,7 +597,7 @@ CREATE TRIGGER trg_tx_transfer_balance
     FOR EACH ROW EXECUTE FUNCTION apply_transaction_balance_trigger();
 
 -- =========================================
--- 03. Function: validate_and_apply_exchange_rate
+-- 05. Function: validate_and_apply_exchange_rate
 -- =========================================
 -- Purpose:
 --   Validates that the currency of a transaction detail row matches the
@@ -892,7 +891,7 @@ CREATE TRIGGER trg_validate_exchange_transfer
     FOR EACH ROW EXECUTE FUNCTION validate_and_apply_exchange_rate();
 
 -- =========================================
--- 08. Function: set_account_balance
+-- 06. Function: set_account_balance
 -- =========================================
 -- Purpose:
 --   Adjusts the balance or relevant field of a specific account by adding
@@ -983,7 +982,7 @@ END;
 $$;
 
 -- =========================================
--- 12. Function: validate_income_account
+-- 07. Function: validate_income_account
 -- =========================================
 -- Purpose:
 --   Ensures that any inserted or updated income transaction has a valid account type.
@@ -1032,7 +1031,7 @@ FOR EACH ROW
 EXECUTE FUNCTION public.validate_income_account();
 
 -- =========================================
--- 13. Function: validate_expense_account
+-- 08. Function: validate_expense_account
 -- =========================================
 -- Purpose:
 --   Ensures that any inserted or updated expense transaction has a valid account type.
@@ -1081,7 +1080,7 @@ FOR EACH ROW
 EXECUTE FUNCTION public.validate_expense_account();
 
 -- =========================================
--- 14. Function: validate_investment_account
+-- 09. Function: validate_investment_account
 -- =========================================
 -- Purpose:
 --   Ensures that any inserted or updated investment transaction has a valid account type.
@@ -1148,7 +1147,7 @@ FOR EACH ROW
 EXECUTE FUNCTION public.validate_investment_account();
 
 -- =========================================
--- 15. Function: validate_borrow_account
+-- 10. Function: validate_borrow_account
 -- =========================================
 -- Purpose:
 --   Ensures that any inserted or updated borrow transaction has a valid account type.
@@ -1215,7 +1214,7 @@ FOR EACH ROW
 EXECUTE FUNCTION public.validate_borrow_account();
 
 -- =========================================
--- 16. Function: validate_lend_account
+-- 11. Function: validate_lend_account
 -- =========================================
 -- Purpose:
 --   Ensures that any inserted or updated lend transaction has a valid account type.
@@ -1282,7 +1281,7 @@ FOR EACH ROW
 EXECUTE FUNCTION public.validate_lend_account();
 
 -- =========================================
--- 17. Function: validate_transfer_accounts
+-- 12. Function: validate_transfer_accounts
 -- =========================================
 -- Purpose:
 --   Ensures that any inserted or updated transfer transaction has valid source and destination accounts.
@@ -1336,7 +1335,7 @@ END;
 $$;
 
 -- =========================================
--- 18. Function: validate_adjustment_account
+-- 13. Function: validate_adjustment_account
 -- =========================================
 -- Purpose:
 --   Validates adjustment transactions; currently allows any account type without restriction.
@@ -1373,7 +1372,7 @@ FOR EACH ROW
 EXECUTE FUNCTION public.validate_adjustment_account();
 
 -- =========================================
--- 10. Function: setup_recurring_transaction
+-- 14. Function: setup_recurring_transaction
 -- =========================================
 -- Purpose:
 --   Prepares and validates recurring transactions before insertion, ensuring
@@ -1469,7 +1468,304 @@ CREATE TRIGGER trg_setup_recurring
     FOR EACH ROW EXECUTE FUNCTION public.setup_recurring_transaction();
 
 -- =========================================
--- 05. Function: process_soft_delete_transaction
+-- 15. Function: generate_transaction_from_template
+-- =========================================
+-- Purpose:
+--   Generates a new transaction based on an existing recurring transaction template.
+--   Copies all relevant transaction data and type‑specific details while advancing
+--   the recurrence schedule.
+--
+-- Behavior:
+--   - Fetches the recurring rule from transactions_recurring by p_recurring_id,
+--     ensuring it is active and due for processing (next_occurrence <= CURRENT_DATE).
+--   - Fetches the corresponding template transaction from transactions.
+--   - Creates a new transaction row in transactions with base details copied from
+--     the template transaction and a note indicating it was auto-generated.
+--   - Copies type‑specific transaction details into the appropriate table
+--     (transactions_income, transactions_expense, transactions_investment, etc.)
+--   - Advances next_occurrence in transactions_recurring according to the
+--     defined frequency and interval.
+--
+-- Parameters:
+--   p_recurring_id UUID - ID of the recurring transaction rule to process.
+--
+-- Returns:
+--   UUID - ID of the newly generated transaction, or NULL if no processing occurred.
+--
+-- Notes:
+--   - SECURITY DEFINER ensures the function executes with elevated privileges
+--     so it can bypass Row Level Security for processing recurring transactions.
+--   - Only processes transactions where next_occurrence is due.
+--   - Adds "[Auto-recurring <recurring_id>]" to the notes field for traceability.
+-- =========================================
+CREATE OR REPLACE FUNCTION public.generate_transaction_from_template(
+    p_recurring_id UUID
+) RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_catalog
+AS $$
+DECLARE
+    rec RECORD;
+    new_tx_id UUID;
+    template_tx RECORD;
+BEGIN
+    -- 1. Fetch the recurring rule that is due to execute
+    SELECT *
+    INTO rec
+    FROM transactions_recurring
+    WHERE id = p_recurring_id
+      AND deleted_at IS NULL
+      AND next_occurrence <= CURRENT_DATE
+      AND (end_date IS NULL OR next_occurrence <= end_date);
+
+    IF NOT FOUND THEN
+        RETURN NULL; -- No due recurrence to process
+    END IF;
+
+    -- 2. Fetch the associated template transaction
+    SELECT *
+    INTO template_tx
+    FROM transactions
+    WHERE id = rec.transaction_template_id
+      AND deleted_at IS NULL;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Template % not found for recurring %', rec.transaction_template_id, rec.id;
+        RETURN NULL;
+    END IF;
+
+    -- 3. Insert new transaction (base), inheriting all monetary details including fees.
+    --    The new transaction is non-recurring (is_recurring = FALSE).
+    INSERT INTO transactions (
+        user_id, type, original_amount, original_currency,
+        exchange_rate, converted_amount, fees, notes,
+        is_recurring, created_at, updated_at
+    )
+    VALUES (
+        template_tx.user_id,
+        template_tx.type,
+        template_tx.original_amount,
+        template_tx.original_currency,
+        template_tx.exchange_rate,
+        template_tx.converted_amount,
+        COALESCE(template_tx.fees, 0), -- carry over fees from template
+        COALESCE(template_tx.notes, '') || ' [Auto-recurring ' || rec.id::text || ']',
+        FALSE,                         -- explicitly mark this as a non-recurring instance
+        NOW(),
+        NOW()
+    )
+    RETURNING id INTO new_tx_id;
+
+    -- 4. Copy type-specific details from the template to the new transaction.
+    CASE template_tx.type
+        WHEN 'income' THEN
+            INSERT INTO transactions_income (transaction_id, account_id, source_id, created_at, updated_at)
+            SELECT new_tx_id, account_id, source_id, NOW(), NOW()
+            FROM transactions_income WHERE transaction_id = template_tx.id AND deleted_at IS NULL;
+
+        WHEN 'expense' THEN
+            INSERT INTO transactions_expense (transaction_id, account_id, category_id, payment_method, created_at, updated_at)
+            SELECT new_tx_id, account_id, category_id, payment_method, NOW(), NOW()
+            FROM transactions_expense WHERE transaction_id = template_tx.id AND deleted_at IS NULL;
+
+        WHEN 'investment' THEN
+            INSERT INTO transactions_investment (transaction_id, investment_account_id, funding_account_id,
+                asset_type, asset_symbol, platform, risk_level,
+                created_at, updated_at)
+            SELECT new_tx_id, investment_account_id, funding_account_id,
+                   asset_type, asset_symbol, platform, risk_level,
+                   NOW(), NOW()
+            FROM transactions_investment WHERE transaction_id = template_tx.id AND deleted_at IS NULL;
+
+        WHEN 'adjustment' THEN
+            INSERT INTO transactions_adjustment (transaction_id, account_id, created_at, updated_at)
+            SELECT new_tx_id, account_id, NOW(), NOW()
+            FROM transactions_adjustment WHERE transaction_id = template_tx.id AND deleted_at IS NULL;
+
+        WHEN 'borrow' THEN
+            INSERT INTO transactions_borrow (transaction_id, loan_account_id, disbursement_account_id,
+                created_at, updated_at)
+            SELECT new_tx_id, loan_account_id, disbursement_account_id,
+                NOW(), NOW()
+            FROM transactions_borrow WHERE transaction_id = template_tx.id AND deleted_at IS NULL;
+
+        WHEN 'lend' THEN
+            INSERT INTO transactions_lend (transaction_id, receivable_account_id, funding_account_id,
+                counterparty_id, interest_rate, due_date, collateral,
+                created_at, updated_at)
+            SELECT new_tx_id, receivable_account_id, funding_account_id,
+                   counterparty_id, interest_rate, due_date, collateral,
+                   NOW(), NOW()
+            FROM transactions_lend WHERE transaction_id = template_tx.id AND deleted_at IS NULL;
+
+        WHEN 'transfer' THEN
+            INSERT INTO transactions_transfer (transaction_id, from_account, to_account, transfer_method,
+                created_at, updated_at)
+            SELECT new_tx_id, from_account, to_account, transfer_method,
+                NOW(), NOW()
+            FROM transactions_transfer WHERE transaction_id = template_tx.id AND deleted_at IS NULL;
+    END CASE;
+
+    -- 5. Advance next_occurrence based on recurrence frequency and interval
+    UPDATE transactions_recurring
+    SET next_occurrence = CASE rec.frequency::TEXT
+            WHEN 'daily'   THEN rec.next_occurrence + (rec.interval || ' days')::interval
+            WHEN 'weekly'  THEN rec.next_occurrence + (rec.interval || ' weeks')::interval
+            WHEN 'monthly' THEN rec.next_occurrence + (rec.interval || ' months')::interval
+            WHEN 'yearly'  THEN rec.next_occurrence + (rec.interval || ' years')::interval
+        END,
+        updated_at = NOW()
+    WHERE id = rec.id;
+
+    -- 6. Return the newly created transaction ID
+    RETURN new_tx_id;
+END;
+$$;
+
+-- =========================================
+-- 16. Function: process_recurring_transactions
+-- =========================================
+-- Purpose:
+--   Processes all due recurring transactions by generating new transactions
+--   from their templates and advancing their schedules.
+--
+-- Behavior:
+--   - Selects all active recurring transactions where the next occurrence
+--     date is today or earlier and not past the end date.
+--   - Iterates over each recurring transaction and calls
+--     generate_transaction_from_template() to create the corresponding transaction.
+--   - Tracks the IDs of newly created transactions and counts how many
+--     transactions were processed.
+--
+-- Returns:
+--   TABLE(processed_count INT, new_transaction_ids UUID[])
+--     processed_count    - Number of recurring transactions processed.
+--     new_transaction_ids - Array of UUIDs of the newly created transactions.
+--
+-- Notes:
+--   - SECURITY DEFINER ensures this function runs with elevated privileges,
+--     bypassing Row Level Security to process all due recurring rules.
+--   - Useful for batch processing of recurring transactions, e.g., via cron jobs.
+-- =========================================
+CREATE OR REPLACE FUNCTION public.process_recurring_transactions()
+RETURNS TABLE(processed_count INT, new_transaction_ids UUID[])
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_catalog
+AS $$
+DECLARE
+    rec RECORD;
+    tx_id UUID;
+    ids UUID[] := '{}';
+    cnt INT := 0;
+BEGIN
+    FOR rec IN
+        SELECT id
+        FROM transactions_recurring
+        WHERE deleted_at IS NULL
+          AND next_occurrence <= CURRENT_DATE
+          AND (end_date IS NULL OR next_occurrence <= end_date)
+    LOOP
+        tx_id := public.generate_transaction_from_template(rec.id);
+        IF tx_id IS NOT NULL THEN
+            ids := array_append(ids, tx_id);
+            cnt := cnt + 1;
+        END IF;
+    END LOOP;
+
+    processed_count := cnt;
+    new_transaction_ids := ids;
+    RETURN NEXT;
+END;
+$$;
+
+-- =========================================
+-- 17. Function: schedule_recurring_processing
+-- =========================================
+-- Purpose:
+--   Acts as a scheduled entry point to process all due recurring transactions
+--   and logs a system-level audit entry summarizing the processing run.
+--
+-- Behavior:
+--   - Sets a dedicated system user ID in session configuration for audit logging.
+--   - Calls process_recurring_transactions() to generate all due transactions
+--     from recurring templates.
+--   - Collects the count of processed recurring transactions and their IDs.
+--   - Builds a summary message describing the processing outcome.
+--   - Inserts an audit log entry in the audit_logs table with:
+--       * user_id and action_by set to the system user ID
+--       * table_name set to 'system'
+--       * action set to 'RECURRING_PROCESSING'
+--       * new_data containing processed_count, new_transaction_ids, and timestamp.
+--
+-- Returns:
+--   TEXT - A summary message describing:
+--       * Number of recurring transactions processed
+--       * Execution timestamp
+--       * List of new transaction IDs created
+--
+-- Notes:
+--   - SECURITY DEFINER ensures this function runs with elevated privileges,
+--     bypassing Row Level Security so that all due recurring transactions
+--     can be processed by a scheduled job.
+--   - Designed to be called by a scheduler (e.g., pg_cron).
+--   - Uses a dedicated system user ID for audit clarity rather than relying
+--     on session user context.
+-- =========================================
+CREATE OR REPLACE FUNCTION public.schedule_recurring_processing()
+RETURNS TEXT 
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+    result_record RECORD;
+    processing_result TEXT;
+BEGIN
+    PERFORM set_config('app.system_user_id', '00000000-0000-0000-0000-000000000000', true);
+    -- Process all due recurring transactions
+    SELECT processed_count, new_transaction_ids INTO result_record 
+    FROM public.process_recurring_transactions();
+
+    -- Build log message
+    processing_result := format(
+        'Processed %s recurring transactions at %s. New transaction IDs: %s',
+        COALESCE(result_record.processed_count, 0),
+        NOW()::TEXT,
+        COALESCE(array_to_string(result_record.new_transaction_ids, ', '), 'none')
+    );
+
+    -- Log the processing result in audit logs
+    INSERT INTO public.audit_logs(
+        user_id,
+        action_by,
+        table_name,
+        record_id,
+        action,
+        new_data
+    )
+    VALUES (
+        current_setting('app.system_user_id')::uuid, -- dedicated system user
+        current_setting('app.system_user_id')::uuid, -- same system user
+        'system',
+        gen_random_uuid(),
+        'RECURRING_PROCESSING',
+        jsonb_build_object(
+            'processed_count', COALESCE(result_record.processed_count, 0),
+            'new_transaction_ids', result_record.new_transaction_ids,
+            'processed_at', NOW()
+        )
+    );
+    RETURN processing_result;
+END;
+$$;
+
+-- Note: Uncomment the following line if pg_cron extension is available
+SELECT cron.schedule('process-recurring', '0 0 * * *', 'SELECT schedule_recurring_processing();');
+
+-- =========================================
+-- 18. Function: process_soft_delete_transaction
 -- =========================================
 -- Purpose:
 --   Handles comprehensive processing when a transaction is soft deleted,
@@ -1550,7 +1846,7 @@ BEGIN
                     WHERE transaction_id = OLD.id AND deleted_at IS NULL;
 
                 ELSE
-                    RAISE WARNING 'Unknown transaction type % for ID %', OLD.type, OLD.id;
+                    RAISE EXCEPTION 'Unknown transaction type % for ID %', OLD.type, OLD.id;
             END CASE;
 
             -- 2. Soft delete any recurring definition linked to this transaction
@@ -1565,7 +1861,7 @@ BEGIN
                 OLD.id, OLD.type;
         EXCEPTION
             WHEN OTHERS THEN
-                RAISE WARNING 'Error processing soft delete for transaction %: %', OLD.id, SQLERRM;
+                RAISE EXCEPTION 'Error processing soft delete for transaction %: %', OLD.id, SQLERRM;
         END;
     END IF;
 
@@ -1580,7 +1876,7 @@ FOR EACH ROW
 EXECUTE FUNCTION public.process_soft_delete_transaction();
 
 -- =========================================
--- 06. Function: reverse_transaction_balance
+-- 19. Function: reverse_transaction_balance
 -- =========================================
 -- Purpose:
 --   Reverses the balances of accounts affected by a transaction when the
@@ -1597,7 +1893,7 @@ EXECUTE FUNCTION public.process_soft_delete_transaction();
 --       * Retrieves from_account and to_account types
 --       * Updates updated_at timestamps for both accounts
 --       * Calls reverse_transfer_balances() to reverse the transfer
---   - Raises warnings if transaction or account is not found, or if transaction type is unknown
+--   - Raises exceptions if transaction or account is not found, or if transaction type is unknown
 --
 -- Parameters:
 --   p_tx_id   UUID  - The ID of the transaction being reversed
@@ -1775,8 +2071,8 @@ BEGIN
 
             WHEN 'transfer' THEN
                 -- Reverse transfer: reverse debit and credit accounts including fees
-                SELECT to_account, from_account, fees
-                INTO v_to_account_id, v_from_account_id, v_fees
+                SELECT to_account, from_account
+                INTO v_to_account_id, v_from_account_id
                 FROM public.transactions_transfer
                 WHERE transaction_id = p_tx_id;
 
@@ -1818,10 +2114,98 @@ BEGIN
 
     EXCEPTION
         WHEN OTHERS THEN
-            RAISE WARNING 'Error reversing balances for transaction %: %', p_tx_id, SQLERRM;
+            RAISE EXCEPTION 'Error reversing balances for transaction %: %', p_tx_id, SQLERRM;
     END;
 END;
 $$;
+
+-- =========================================
+-- 20. Function: prevent_hard_delete_if_active_details
+-- =========================================
+-- Purpose:
+--   Prevents hard deletion of a transaction if it has active (non-soft-deleted)
+--   related records in any of the transaction detail tables or in the recurring
+--   transactions table. Ensures referential integrity by blocking deletion
+--   when dependent records still exist.
+--
+-- Behavior:
+--   - Triggered BEFORE DELETE on the transactions table.
+--   - Checks if the transaction is being hard deleted (deleted_at IS NOT NULL).
+--   - Queries all related transaction detail tables:
+--       * transactions_income
+--       * transactions_expense
+--       * transactions_investment
+--       * transactions_borrow
+--       * transactions_lend
+--       * transactions_transfer
+--       * transactions_adjustment
+--     to see if any rows exist where deleted_at IS NULL.
+--   - Checks the transactions_recurring table for active recurring transactions.
+--   - Raises an exception with a descriptive message if any active related records exist,
+--     preventing the hard delete.
+--
+-- Parameters:
+--   OLD   - The existing row in the transactions table being deleted (trigger context)
+--
+-- Returns:
+--   OLD   - The row itself; required for BEFORE DELETE triggers
+--
+-- Notes:
+--   - SECURITY DEFINER is used to ensure consistent execution regardless of RLS policies.
+--   - search_path is explicitly set to public, pg_catalog to avoid role-mutable search_path issues.
+--   - Soft deletes (deleted_at = NULL) are not affected; only hard deletes are blocked.
+-- =========================================
+CREATE OR REPLACE FUNCTION public.prevent_hard_delete_if_active_details()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_catalog
+AS $$
+DECLARE
+    active_count INT;
+BEGIN
+    IF OLD.deleted_at IS NOT NULL THEN
+        -- Check all transaction detail tables for active rows
+        SELECT COUNT(*) INTO active_count
+        FROM (
+            SELECT 1 FROM public.transactions_income      WHERE transaction_id = OLD.id AND deleted_at IS NULL
+            UNION ALL
+            SELECT 1 FROM public.transactions_expense     WHERE transaction_id = OLD.id AND deleted_at IS NULL
+            UNION ALL
+            SELECT 1 FROM public.transactions_investment  WHERE transaction_id = OLD.id AND deleted_at IS NULL
+            UNION ALL
+            SELECT 1 FROM public.transactions_borrow      WHERE transaction_id = OLD.id AND deleted_at IS NULL
+            UNION ALL
+            SELECT 1 FROM public.transactions_lend        WHERE transaction_id = OLD.id AND deleted_at IS NULL
+            UNION ALL
+            SELECT 1 FROM public.transactions_transfer    WHERE transaction_id = OLD.id AND deleted_at IS NULL
+            UNION ALL
+            SELECT 1 FROM public.transactions_adjustment  WHERE transaction_id = OLD.id AND deleted_at IS NULL
+        ) AS active_details;
+
+        IF active_count > 0 THEN
+            RAISE EXCEPTION 'Cannot hard delete transaction % because related transaction details exist', OLD.id;
+        END IF;
+
+        -- Check recurring transactions
+        SELECT COUNT(*) INTO active_count
+        FROM public.transactions_recurring
+        WHERE transaction_template_id = OLD.id
+          AND deleted_at IS NULL;
+
+        IF active_count > 0 THEN
+            RAISE EXCEPTION 'Cannot hard delete transaction % because recurring transactions exist', OLD.id;
+        END IF;
+    END IF;
+
+    RETURN OLD;
+END;
+$$;
+
+CREATE TRIGGER trg_prevent_hard_delete_transactions
+BEFORE DELETE ON transactions
+FOR EACH ROW
+EXECUTE FUNCTION prevent_hard_delete_if_active_details();
 
 
 -- =========================================
@@ -1834,6 +2218,10 @@ GRANT EXECUTE ON FUNCTION public.apply_transaction_balance_trigger() TO authenti
 GRANT EXECUTE ON FUNCTION process_soft_delete_transaction() TO authenticated;
 GRANT EXECUTE ON FUNCTION setup_recurring_transaction() TO authenticated;
 GRANT EXECUTE ON FUNCTION validate_and_apply_exchange_rate() TO authenticated;
+GRANT EXECUTE ON FUNCTION process_recurring_transactions() TO authenticated;
+GRANT EXECUTE ON FUNCTION public.generate_transaction_from_template(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION schedule_recurring_processing() TO authenticated;
+GRANT EXECUTE ON FUNCTION public.prevent_hard_delete_if_active_details() TO authenticated;
 
 -- =========================================
 -- COMMENTS AND DOCUMENTATION
@@ -1844,3 +2232,14 @@ IS 'Core balance update logic for transactions, called by triggers or manually';
 COMMENT ON FUNCTION public.apply_transaction_balance_trigger() 
 IS 'Trigger wrapper function that calls apply_transaction_balance() for transaction tables';
 
+COMMENT ON FUNCTION process_recurring_transactions() IS 'Processes all active recurring transactions due for execution, creating new transactions based on templates and advancing the schedule.';
+
+COMMENT ON FUNCTION public.generate_transaction_from_template(UUID) IS
+'Generates a new transaction from a recurring transaction template.
+Fetches the recurring rule and template transaction, inserts a new transaction record,
+copies type-specific details, advances the next_occurrence date, and returns the new transaction UUID.';
+
+COMMENT ON FUNCTION schedule_recurring_processing() IS 'Triggers processing of due recurring transactions and logs the result to audit_logs table. Intended for scheduled execution (e.g., with pg_cron).';
+
+COMMENT ON FUNCTION public.prevent_hard_delete_if_active_details()
+IS 'Prevents hard deletion of transactions if any related transaction detail or recurring transaction exists. Triggered before delete on transactions table.';
