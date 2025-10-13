@@ -36,11 +36,16 @@ BEGIN
         RETURN 1;
     END IF;
 
-    -- === Step 4: Fetch the latest exchange rate ===
+    -- === Step 4: Fetch the latest exchange rate with user_id check ===
     SELECT rate INTO v_rate
     FROM public.exchange_rates
     WHERE from_currency = p_from_currency
       AND to_currency = p_to_currency
+      AND deleted_at IS NULL
+      AND (
+          user_id = auth.uid()
+          OR public.check_admin_permissions()
+      )
     ORDER BY updated_at DESC
     LIMIT 1;
 

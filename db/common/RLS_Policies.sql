@@ -411,24 +411,47 @@ CREATE POLICY delete_own_api_rate_limits ON api_rate_limits
 -- =========================================
 ALTER TABLE exchange_rates ENABLE ROW LEVEL SECURITY;
 
--- SELECT: everyone can see non-deleted rates
+-- Everyone can view their own non-deleted rates
 CREATE POLICY select_exchange_rates ON exchange_rates
-    FOR SELECT USING (deleted_at IS NULL);
-
--- INSERT: only admins
-CREATE POLICY insert_exchange_rates ON exchange_rates
-    FOR INSERT WITH CHECK (public.check_admin_permissions());
-
--- UPDATE: only admins, only if not soft deleted
-CREATE POLICY update_exchange_rates ON exchange_rates
-    FOR UPDATE USING (
-        deleted_at IS NULL AND public.check_admin_permissions()
-    )
-    WITH CHECK (public.check_admin_permissions());
-
--- DELETE: only admins, and only if already soft deleted (hard delete)
-CREATE POLICY delete_exchange_rates ON exchange_rates
-    FOR DELETE USING (
-        public.check_admin_permissions() AND deleted_at IS NOT NULL
+    FOR SELECT
+    USING (
+        deleted_at IS NULL
+        AND (
+            user_id = auth.uid()
+            OR public.check_admin_permissions()
+        )
     );
-    
+
+-- Any authenticated user can insert their own rates
+CREATE POLICY insert_exchange_rates ON exchange_rates
+    FOR INSERT
+    WITH CHECK (
+        user_id = auth.uid()
+        OR public.check_admin_permissions()
+    );
+
+-- Combined update + soft delete policy
+CREATE POLICY update_exchange_rates_combined ON exchange_rates
+    FOR UPDATE
+    USING (
+        (
+            user_id = auth.uid()
+            AND deleted_at IS NULL
+        )
+        OR public.check_admin_permissions()
+    )
+    WITH CHECK (
+        (
+            user_id = auth.uid()
+            AND (deleted_at IS NULL OR deleted_at IS NOT NULL)
+        )
+        OR public.check_admin_permissions()
+    );
+
+-- Hard delete: only admins, and only if already soft deleted
+CREATE POLICY delete_exchange_rates ON exchange_rates
+    FOR DELETE
+    USING (
+        public.check_admin_permissions()
+        AND deleted_at IS NOT NULL
+    );

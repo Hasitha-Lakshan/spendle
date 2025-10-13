@@ -135,7 +135,7 @@ BEGIN
         SELECT tablename FROM pg_tables 
         WHERE schemaname = 'public' 
         AND tablename NOT IN ('audit_logs') 
-        AND tablename ~ '^(profiles|accounts|.*_accounts|transactions.*|expense_.*|income_sources|counterparties)$'
+        AND tablename ~ '^(profiles|accounts|.*_accounts|transactions.*|expense_.*|income_sources|counterparties|exchange_rates)$'
     LOOP
         EXECUTE format(
             'CREATE TRIGGER trg_audit_%I AFTER INSERT OR UPDATE OR DELETE ON %I FOR EACH ROW EXECUTE FUNCTION log_audit();', 
@@ -226,17 +226,32 @@ LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public
 AS $$
+DECLARE
+    pk_col text;
 BEGIN
     -- Skip soft delete if bypass flag is set
     IF current_setting('app.hard_delete', true) = 'on' THEN
         RETURN OLD; -- allow actual delete to proceed
     END IF;
 
-    -- Update the deleted_at timestamp instead of hard delete
+    -- Determine primary key column dynamically
+    SELECT column_name
+    INTO pk_col
+    FROM information_schema.columns
+    WHERE table_name = TG_TABLE_NAME
+      AND column_name IN ('id','account_id','transaction_id')
+    ORDER BY CASE column_name 
+                 WHEN 'id' THEN 1 
+                 WHEN 'account_id' THEN 2 
+                 WHEN 'transaction_id' THEN 3 
+             END
+    LIMIT 1;
+
+    -- Update the deleted_at and updated_at timestamps
     EXECUTE format(
-        'UPDATE %I SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1',
-        TG_TABLE_NAME
-    ) USING OLD.id;
+        'UPDATE %I SET deleted_at = NOW(), updated_at = NOW() WHERE %I = $1',
+        TG_TABLE_NAME, pk_col
+    ) USING COALESCE(OLD.id, OLD.account_id, OLD.transaction_id);
 
     RETURN NULL; -- Prevent actual delete
 END;
@@ -336,6 +351,11 @@ CREATE TRIGGER trg_transactions_transfer_no_delete
 CREATE TRIGGER trg_transactions_adjustment_no_delete
     BEFORE DELETE ON transactions_adjustment
     FOR EACH ROW EXECUTE FUNCTION enforce_soft_delete();
+
+CREATE TRIGGER trg_exchange_rates_no_delete
+    BEFORE DELETE ON exchange_rates
+    FOR EACH ROW EXECUTE FUNCTION enforce_soft_delete();
+
 
 -- =========================================
 -- 04. Function: log_admin_changes

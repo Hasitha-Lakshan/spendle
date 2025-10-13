@@ -398,6 +398,7 @@ CREATE TABLE transactions_adjustment (
 -- 1. Exchange Rates
 CREATE TABLE exchange_rates (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES profiles(user_id) ON DELETE CASCADE,
   from_currency VARCHAR(10) NOT NULL,
   to_currency VARCHAR(10) NOT NULL,
   rate NUMERIC NOT NULL CHECK (rate > 0),
@@ -579,6 +580,26 @@ ON transactions_recurring(user_id, deleted_at) WHERE deleted_at IS NULL;
 
 CREATE INDEX idx_exchange_rates ON exchange_rates(from_currency, to_currency);
 CREATE INDEX idx_transactions_is_recent ON transactions (created_at DESC) WHERE is_recent = true;
+
+-- =========================================
+-- API Access Grants for Tables
+-- =========================================
+DO $$
+DECLARE
+    tbl RECORD;
+BEGIN
+    FOR tbl IN
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_schema = 'public'
+          AND table_name NOT IN ('audit_logs', 'api_rate_limits')
+    LOOP
+        EXECUTE format(
+            'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.%I TO authenticated;',
+            tbl.table_name
+        );
+    END LOOP;
+END$$;
 
 -- Create a role for running scheduled jobs
 -- CREATE ROLE scheduled_job_role LOGIN PASSWORD 'strong_password_here';

@@ -75,6 +75,44 @@ BEGIN
         VALUES (p_user_id, 'Salary')
         ON CONFLICT (user_id, name) DO NOTHING;
 
+        -- Insert default exchange rates
+        INSERT INTO exchange_rates(
+            user_id, from_currency, to_currency, rate, source, created_at, updated_at
+        )
+        VALUES
+            -- Fiat currencies
+            (p_user_id, 'USD', 'EUR', 0.92, 'ECB', NOW(), NOW()),
+            (p_user_id, 'EUR', 'USD', 1.09, 'ECB', NOW(), NOW()),
+            (p_user_id, 'USD', 'GBP', 0.80, 'ECB', NOW(), NOW()),
+            (p_user_id, 'GBP', 'USD', 1.25, 'ECB', NOW(), NOW()),
+            (p_user_id, 'USD', 'JPY', 145.23, 'ECB', NOW(), NOW()),
+            (p_user_id, 'JPY', 'USD', 0.0069, 'ECB', NOW(), NOW()),
+            (p_user_id, 'EUR', 'GBP', 0.87, 'ECB', NOW(), NOW()),
+            (p_user_id, 'GBP', 'EUR', 1.15, 'ECB', NOW(), NOW()),
+            (p_user_id, 'EUR', 'JPY', 158.00, 'ECB', NOW(), NOW()),
+            (p_user_id, 'JPY', 'EUR', 0.0063, 'ECB', NOW(), NOW()),
+            (p_user_id, 'USD', 'LKR', 363.50, 'CBSL', NOW(), NOW()),
+            (p_user_id, 'LKR', 'USD', 0.00275, 'CBSL', NOW(), NOW()),
+            (p_user_id, 'EUR', 'LKR', 333.00, 'CBSL', NOW(), NOW()),
+            (p_user_id, 'LKR', 'EUR', 0.00300, 'CBSL', NOW(), NOW()),
+            (p_user_id, 'GBP', 'LKR', 448.00, 'CBSL', NOW(), NOW()),
+            (p_user_id, 'LKR', 'GBP', 0.00223, 'CBSL', NOW(), NOW()),
+
+            -- Cryptocurrencies
+            (p_user_id, 'BTC', 'USD', 27450.00, 'CoinGecko', NOW(), NOW()),
+            (p_user_id, 'USD', 'BTC', 0.0000364, 'CoinGecko', NOW(), NOW()),
+            (p_user_id, 'ETH', 'USD', 1800.00, 'CoinGecko', NOW(), NOW()),
+            (p_user_id, 'USD', 'ETH', 0.000555, 'CoinGecko', NOW(), NOW()),
+            (p_user_id, 'BTC', 'EUR', 25254.00, 'CoinGecko', NOW(), NOW()),
+            (p_user_id, 'EUR', 'BTC', 0.0000396, 'CoinGecko', NOW(), NOW()),
+            (p_user_id, 'ETH', 'EUR', 1650.00, 'CoinGecko', NOW(), NOW()),
+            (p_user_id, 'EUR', 'ETH', 0.000606, 'CoinGecko', NOW(), NOW()),
+            (p_user_id, 'BTC', 'LKR', 9995000.00, 'CoinGecko', NOW(), NOW()),
+            (p_user_id, 'LKR', 'BTC', 0.00000010005, 'CoinGecko', NOW(), NOW()),
+            (p_user_id, 'ETH', 'LKR', 655000.00, 'CoinGecko', NOW(), NOW()),
+            (p_user_id, 'LKR', 'ETH', 0.000001526, 'CoinGecko', NOW(), NOW())
+        ON CONFLICT (user_id, from_currency, to_currency) DO NOTHING;
+
         -- Mark defaults as inserted
         UPDATE profiles
         SET defaults_inserted = TRUE, updated_at = NOW()
@@ -280,7 +318,8 @@ BEGIN
         'cash_accounts', 'bank_accounts', 'credit_card_accounts', 'loan_accounts',
         'investment_accounts', 'crypto_accounts', 'wallet_accounts', 'receivable_accounts',
         'transactions_income', 'transactions_expense', 'transactions_investment',
-        'transactions_borrow', 'transactions_lend', 'transactions_transfer', 'transactions_adjustment'
+        'transactions_borrow', 'transactions_lend', 'transactions_transfer', 'transactions_adjustment',
+        'exchange_rates'
     ) THEN
         RAISE EXCEPTION 'Invalid table name: %', table_name;
     END IF;
@@ -518,7 +557,8 @@ DECLARE
     cutoff_date TIMESTAMPTZ;
     tables_to_clean TEXT[] := ARRAY[
         'transactions', 'accounts', 'expense_categories', 'expense_subcategories',
-        'income_sources', 'counterparties', 'transactions_recurring'
+        'income_sources', 'counterparties', 'transactions_recurring',
+        'exchange_rates'
     ];
     tbl TEXT;
     rec RECORD;
