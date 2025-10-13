@@ -806,9 +806,9 @@ BEGIN
     -- Delete transaction details that reference this account
     DELETE FROM public.transactions_income      WHERE account_id = p_account_id;
     DELETE FROM public.transactions_expense     WHERE account_id = p_account_id;
-    DELETE FROM public.transactions_investment  WHERE account_id = p_account_id;
-    DELETE FROM public.transactions_borrow      WHERE account_id = p_account_id;
-    DELETE FROM public.transactions_lend        WHERE account_id = p_account_id;
+    DELETE FROM public.transactions_investment  WHERE funding_account_id = p_account_id OR investment_account_id = p_account_id;
+    DELETE FROM public.transactions_borrow      WHERE loan_account_id = p_account_id OR disbursement_account_id = p_account_id;
+    DELETE FROM public.transactions_lend        WHERE funding_account_id = p_account_id OR receivable_account_id = p_account_id;
     DELETE FROM public.transactions_adjustment  WHERE account_id = p_account_id;
     DELETE FROM public.transactions_transfer    WHERE from_account = p_account_id OR to_account = p_account_id;
 
