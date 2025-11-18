@@ -417,7 +417,7 @@ CREATE POLICY select_exchange_rates ON exchange_rates
     USING (
         deleted_at IS NULL
         AND (
-            user_id = auth.uid()
+            user_id = (select auth.uid())
             OR public.check_admin_permissions()
         )
     );
@@ -426,7 +426,7 @@ CREATE POLICY select_exchange_rates ON exchange_rates
 CREATE POLICY insert_exchange_rates ON exchange_rates
     FOR INSERT
     WITH CHECK (
-        user_id = auth.uid()
+        user_id = (select auth.uid())
         OR public.check_admin_permissions()
     );
 
@@ -435,14 +435,14 @@ CREATE POLICY update_exchange_rates_combined ON exchange_rates
     FOR UPDATE
     USING (
         (
-            user_id = auth.uid()
+            user_id = (select auth.uid())
             AND deleted_at IS NULL
         )
         OR public.check_admin_permissions()
     )
     WITH CHECK (
         (
-            user_id = auth.uid()
+            user_id = (select auth.uid())
             AND (deleted_at IS NULL OR deleted_at IS NOT NULL)
         )
         OR public.check_admin_permissions()

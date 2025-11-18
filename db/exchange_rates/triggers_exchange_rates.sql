@@ -27,6 +27,7 @@ CREATE OR REPLACE FUNCTION public.exchange_rate_permission_trigger()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
     v_user_id UUID := auth.uid();
@@ -97,6 +98,7 @@ EXECUTE FUNCTION public.exchange_rate_permission_trigger();
 CREATE OR REPLACE FUNCTION public.validate_currency_code()
 RETURNS TRIGGER
 LANGUAGE plpgsql
+SET search_path = public
 AS $$
 BEGIN
     -- Validate accounts table currency
@@ -161,6 +163,7 @@ EXECUTE FUNCTION public.validate_currency_code();
 CREATE OR REPLACE FUNCTION public.prevent_duplicate_exchange_rate()
 RETURNS TRIGGER
 LANGUAGE plpgsql
+SET search_path = public
 AS $$
 DECLARE
     v_count INT;
