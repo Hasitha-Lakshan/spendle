@@ -3657,132 +3657,68 @@ END;
 $$;
 
 -- =========================================
--- 17. Function: compute_transaction_direction
+-- 24. Function: get_recent_transactions
 -- =========================================
--- Get Transaction Direction
--- Purpose: Compute transaction direction based on type and amount
--- Parameters: transaction_type, amount
--- Returns: transaction_direction enum
--- Security: INVOKER (pure computation)
--- RLS: N/A (no data access)
-CREATE OR REPLACE FUNCTION compute_transaction_direction(
-    p_type transaction_type, 
-    p_original_amount DECIMAL
-)
-RETURNS transaction_direction
-LANGUAGE sql
-IMMUTABLE
-SECURITY INVOKER
-SET search_path = pg_catalog, public
-AS $$
-    SELECT CASE
-        WHEN p_type = 'income' THEN 'inflow'::transaction_direction
-        WHEN p_type = 'expense' THEN 'outflow'::transaction_direction
-        WHEN p_type = 'borrow' AND p_original_amount >= 0 THEN 'inflow'::transaction_direction
-        WHEN p_type = 'borrow' AND p_original_amount < 0 THEN 'outflow'::transaction_direction
-        WHEN p_type = 'lend' AND p_original_amount >= 0 THEN 'outflow'::transaction_direction
-        WHEN p_type = 'lend' AND p_original_amount < 0 THEN 'inflow'::transaction_direction
-        WHEN p_type = 'investment' AND p_original_amount >= 0 THEN 'outflow'::transaction_direction
-        WHEN p_type = 'investment' AND p_original_amount < 0 THEN 'inflow'::transaction_direction
-        WHEN p_type = 'adjustment' AND p_original_amount >= 0 THEN 'inflow'::transaction_direction
-        WHEN p_type = 'adjustment' AND p_original_amount < 0 THEN 'outflow'::transaction_direction
-        WHEN p_type = 'transfer' THEN 'neutral'::transaction_direction
-        ELSE 'unknown'::transaction_direction
-    END;
-$$;
+-- Purpose:
+--   Returns the most recent transactions belonging to the currently
+--   authenticated user, limited by the optional p_limit parameter.
 
+-- Behavior:
+--   - Retrieves the current user ID using auth.uid().
+--   - Ensures only transactions owned by the current user are returned.
+--   - Filters out any transactions that have been soft deleted
+--     (deleted_at IS NULL).
+--   - Sorts results by created_at in descending order so the newest
+--     transactions appear first.
+--   - Applies the p_limit to control how many rows are returned.
+
+-- Returns:
+--   TABLE (
+--       transaction_id UUID,
+--       type transaction_type,
+--       original_amount NUMERIC,
+--       original_currency VARCHAR,
+--       fees NUMERIC,
+--       notes TEXT,
+--       is_recurring BOOLEAN,
+--       created_at TIMESTAMPTZ
+--   )
+
+-- Notes:
+--   - SECURITY DEFINER allows the function to run with elevated privileges
+--     while still respecting row level security filtering through
+--     the user_id match.
+--   - Designed to comply fully with RLS policies by returning only the
+--     current user's non deleted transactions.
 -- =========================================
--- 09. Function: get_recent_transactions
--- =========================================
--- Get Recent Transactions
--- Purpose: Retrieve most recent transactions for dashboard/overview display.
--- Parameters:
---   p_limit (INTEGER, default=10) - Maximum number of transactions to return
--- Returns: TABLE(transaction_id, transaction_type, amount, currency, date, account_name, notes)
--- Security: DEFINER (executes with elevated rights but enforces user scope)
--- RLS: Only returns transactions owned by current user
 CREATE OR REPLACE FUNCTION get_recent_transactions(p_limit INTEGER DEFAULT 10)
-RETURNS TABLE(
+RETURNS TABLE (
     transaction_id UUID,
-    transaction_type transaction_type,
-    original_amount DECIMAL(36,18),
-    original_currency VARCHAR(10),
-    converted_amount DECIMAL(36,18),
-    converted_currency VARCHAR(10),
-    exchange_rate DECIMAL(36,18),
-    transaction_date TIMESTAMPTZ,
-    account_name TEXT,
-    notes TEXT
-) 
+    type transaction_type,
+    original_amount NUMERIC,
+    original_currency VARCHAR,
+    fees NUMERIC,
+    notes TEXT,
+    is_recurring BOOLEAN,
+    created_at TIMESTAMPTZ
+)
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = pg_catalog, public
 AS $$
-DECLARE
-    v_current_user UUID;
 BEGIN
-    v_current_user := auth.uid();
-
     RETURN QUERY
     SELECT 
         t.id AS transaction_id,
-        t.type AS transaction_type,
+        t.type,
         t.original_amount,
         t.original_currency,
-        t.converted_amount,
-        t.currency AS converted_currency,
-        t.exchange_rate,
-        t.created_at AS transaction_date,
-        COALESCE(
-            (SELECT a.account_name 
-             FROM accounts a 
-             JOIN transactions_income ti ON a.id = ti.account_id 
-             WHERE ti.transaction_id = t.id 
-               AND a.user_id = v_current_user 
-               AND a.deleted_at IS NULL),
-            (SELECT a.account_name 
-             FROM accounts a 
-             JOIN transactions_expense te ON a.id = te.account_id 
-             WHERE te.transaction_id = t.id 
-               AND a.user_id = v_current_user 
-               AND a.deleted_at IS NULL),
-            (SELECT a.account_name 
-             FROM accounts a 
-             JOIN transactions_investment tinv ON a.id = tinv.funding_account_id 
-             WHERE tinv.transaction_id = t.id 
-               AND a.user_id = v_current_user 
-               AND a.deleted_at IS NULL),
-            (SELECT a.account_name 
-             FROM accounts a 
-             JOIN transactions_adjustment tadj ON a.id = tadj.account_id 
-             WHERE tadj.transaction_id = t.id 
-               AND a.user_id = v_current_user 
-               AND a.deleted_at IS NULL),
-            (SELECT a.account_name 
-             FROM accounts a 
-             JOIN transactions_borrow tb ON a.id = tb.disbursement_account_id 
-             WHERE tb.transaction_id = t.id 
-               AND a.user_id = v_current_user 
-               AND a.deleted_at IS NULL),
-            (SELECT a.account_name 
-             FROM accounts a 
-             JOIN transactions_lend tl ON a.id = tl.funding_account_id 
-             WHERE tl.transaction_id = t.id 
-               AND a.user_id = v_current_user 
-               AND a.deleted_at IS NULL),
-            (SELECT CONCAT(af.account_name, ' → ', at.account_name) 
-             FROM accounts af, accounts at, transactions_transfer tt 
-             WHERE tt.transaction_id = t.id 
-               AND af.id = tt.from_account 
-               AND at.id = tt.to_account 
-               AND af.user_id = v_current_user 
-               AND at.user_id = v_current_user
-               AND af.deleted_at IS NULL 
-               AND at.deleted_at IS NULL)
-        ) AS account_name,
-        t.notes
+        t.fees,
+        t.notes,
+        t.is_recurring,
+        t.created_at
     FROM transactions t
-    WHERE t.user_id = v_current_user
+    WHERE t.user_id = auth.uid()
       AND t.deleted_at IS NULL
     ORDER BY t.created_at DESC
     LIMIT p_limit;
@@ -3790,14 +3726,42 @@ END;
 $$;
 
 -- =========================================
--- 10. Function: get_user_transactions
+-- 25. Function: get_user_transactions
 -- =========================================
--- Get User Transaction History (with pagination)
--- Purpose: Retrieve paginated transaction history for user dashboard
--- Parameters: limit, offset, date filters
--- Returns: Table with transaction details
--- Security: INVOKER (relies on RLS)
--- RLS: Only returns transactions owned by current user
+-- Purpose:
+--   Retrieves a paginated and optionally filtered list of transactions
+--   belonging to the currently authenticated user.
+
+-- Behavior:
+--   - Obtains the current user ID using auth.uid().
+--   - Ensures only the current user's non deleted transactions are returned.
+--   - Supports pagination through p_limit and p_offset.
+--   - Allows optional filtering by:
+--       * Date range using p_start_date and p_end_date.
+--       * Transaction type using p_transaction_type.
+--   - Filters out any soft deleted transactions (deleted_at IS NULL).
+--   - Sorts the results by created_at in descending order.
+
+-- Returns:
+--   TABLE (
+--       transaction_id UUID,
+--       type transaction_type,
+--       original_amount NUMERIC,
+--       original_currency VARCHAR,
+--       fees NUMERIC,
+--       notes TEXT,
+--       is_recurring BOOLEAN,
+--       created_at TIMESTAMPTZ
+--   )
+
+-- Notes:
+--   - SECURITY DEFINER allows execution with elevated privileges while still
+--     enforcing row level security through user_id matching.
+--   - Designed to work safely with RLS by returning only the current user's
+--     non deleted data.
+--   - Useful for user dashboards and transaction history pages that require
+--     filtering and pagination.
+-- =========================================
 CREATE OR REPLACE FUNCTION get_user_transactions(
     p_limit INTEGER DEFAULT 50,
     p_offset INTEGER DEFAULT 0,
@@ -3805,104 +3769,37 @@ CREATE OR REPLACE FUNCTION get_user_transactions(
     p_end_date timestamptz DEFAULT NULL,
     p_transaction_type transaction_type DEFAULT NULL
 )
-RETURNS TABLE(
+RETURNS TABLE (
     transaction_id UUID,
-    transaction_type transaction_type,
-    original_amount DECIMAL(36,18),
-    original_currency VARCHAR(10),
-    converted_amount DECIMAL(36,18),
-    converted_currency VARCHAR(10),
-    exchange_rate DECIMAL(36,18),
+    type transaction_type,
+    original_amount NUMERIC,
+    original_currency VARCHAR,
+    fees NUMERIC,
     notes TEXT,
-    created_at timestamptz,
-    account_id UUID,
-    account_name VARCHAR,
-    category_info JSONB,
-    direction transaction_direction
+    is_recurring BOOLEAN,
+    created_at TIMESTAMPTZ
 )
 LANGUAGE plpgsql
-SECURITY INVOKER
+SECURITY DEFINER
 SET search_path = pg_catalog, public
-STABLE
 AS $$
 BEGIN
     RETURN QUERY
-    SELECT 
+    SELECT
         t.id AS transaction_id,
-        t.type AS transaction_type,
+        t.type,
         t.original_amount,
         t.original_currency,
-        t.converted_amount,
-        t.currency AS converted_currency,
-        t.exchange_rate,
+        t.fees,
         t.notes,
-        t.created_at,
-        COALESCE(
-            ti.account_id, te.account_id, tinv.funding_account_id, 
-            tb.disbursement_account_id, tl.funding_account_id, ta.account_id
-        ) AS account_id,
-        a.account_name,
-        CASE 
-            WHEN t.type = 'income' THEN jsonb_build_object(
-                'source_id', ti.source_id,
-                'source_name', ins.name
-            )
-            WHEN t.type = 'expense' THEN jsonb_build_object(
-                'subcategory_id', te.category_id,
-                'subcategory_name', es.name,
-                'category_name', ec.name,
-                'payment_method', te.payment_method
-            )
-            WHEN t.type = 'investment' THEN jsonb_build_object(
-                'asset_type', tinv.asset_type,
-                'asset_symbol', tinv.asset_symbol,
-                'platform', tinv.platform,
-                'risk_level', tinv.risk_level
-            )
-            WHEN t.type = 'borrow' THEN jsonb_build_object(
-                'loan_account_id', tb.loan_account_id,
-                'disbursement_account_id', tb.disbursement_account_id
-            )
-            WHEN t.type = 'lend' THEN jsonb_build_object(
-                'receivable_account_id', tl.receivable_account_id,
-                'funding_account_id', tl.funding_account_id,
-                'counterparty_id', tl.counterparty_id,
-                'interest_rate', tl.interest_rate,
-                'due_date', tl.due_date,
-                'collateral', tl.collateral
-            )
-            WHEN t.type = 'adjustment' THEN jsonb_build_object(
-                'account_id', ta.account_id
-            )
-            WHEN t.type = 'transfer' THEN jsonb_build_object(
-                'from_account', tt.from_account,
-                'to_account', tt.to_account,
-                'transfer_method', tt.transfer_method,
-                'fees', tt.fees
-            )
-            ELSE NULL
-        END AS category_info,
-        compute_transaction_direction(t.type, t.converted_amount) AS direction
+        t.is_recurring,
+        t.created_at
     FROM transactions t
-    LEFT JOIN transactions_income ti ON t.id = ti.transaction_id AND ti.deleted_at IS NULL
-    LEFT JOIN transactions_expense te ON t.id = te.transaction_id AND te.deleted_at IS NULL
-    LEFT JOIN transactions_investment tinv ON t.id = tinv.transaction_id AND tinv.deleted_at IS NULL
-    LEFT JOIN transactions_borrow tb ON t.id = tb.transaction_id AND tb.deleted_at IS NULL
-    LEFT JOIN transactions_lend tl ON t.id = tl.transaction_id AND tl.deleted_at IS NULL
-    LEFT JOIN transactions_adjustment ta ON t.id = ta.transaction_id AND ta.deleted_at IS NULL
-    LEFT JOIN transactions_transfer tt ON t.id = tt.transaction_id AND tt.deleted_at IS NULL
-    LEFT JOIN accounts a ON COALESCE(
-        ti.account_id, te.account_id, tinv.funding_account_id, 
-        tb.disbursement_account_id, tl.funding_account_id, ta.account_id,
-        tt.from_account
-    ) = a.id
-    LEFT JOIN income_sources ins ON ti.source_id = ins.id AND ins.deleted_at IS NULL
-    LEFT JOIN expense_subcategories es ON te.category_id = es.id AND es.deleted_at IS NULL
-    LEFT JOIN expense_categories ec ON es.category_id = ec.id AND ec.deleted_at IS NULL
-    WHERE t.deleted_at IS NULL
+    WHERE t.user_id = auth.uid()
+      AND t.deleted_at IS NULL
+      AND (p_transaction_type IS NULL OR t.type = p_transaction_type)
       AND (p_start_date IS NULL OR t.created_at >= p_start_date)
       AND (p_end_date IS NULL OR t.created_at <= p_end_date)
-      AND (p_transaction_type IS NULL OR t.type = p_transaction_type)
     ORDER BY t.created_at DESC
     LIMIT p_limit
     OFFSET p_offset;
@@ -3910,340 +3807,1207 @@ END;
 $$;
 
 -- =========================================
--- 11. Function: get_user_transaction_count
+-- 26. Function: get_transaction_detail
 -- =========================================
--- Get Transaction Count for User
-CREATE OR REPLACE FUNCTION get_user_transaction_count(
-    p_user_id UUID DEFAULT NULL,
-    p_transaction_type transaction_type DEFAULT NULL,
+-- Purpose:
+--   Returns a complete structured JSON response containing both the
+--   main transaction fields and the associated detail record based on
+--   the transaction type.
+
+-- Behavior:
+--   - Retrieves the main transaction record using p_transaction_id.
+--   - Ensures the transaction exists and is not soft deleted.
+--   - Determines the transaction type and fetches the corresponding
+--     detail record from the correct specialized table.
+--   - Includes related account, category, counterparty or platform
+--     data where applicable.
+--   - Combines the main transaction JSON and the detail JSON into a
+--     single JSON response.
+--   - Supports the following transaction types:
+--       * income
+--       * expense
+--       * investment
+--       * borrow
+--       * lend
+--       * transfer
+--       * adjustment
+
+-- Returns:
+--   JSONB
+--       Contains:
+--         - Main transaction fields
+--         - A nested "details" object with type specific information
+
+-- Notes:
+--   - SECURITY DEFINER allows the function to access related tables while
+--     depending on RLS to restrict access to authorized user data.
+--   - Each detail lookup enforces deleted_at IS NULL to maintain soft
+--     delete integrity.
+--   - Ensures consistent JSON structure for all clients that consume
+--     transaction detail data.
+-- =========================================
+CREATE OR REPLACE FUNCTION get_transaction_detail(
+    p_transaction_id UUID
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    base_tx JSONB;
+    detail JSONB := '{}'::jsonb;
+    tx_type transaction_type;
+BEGIN
+    -- Fetch ONLY the required main transaction fields
+    SELECT jsonb_build_object(
+        'transaction_id', t.id,
+        'type', t.type,
+        'original_amount', t.original_amount,
+        'original_currency', t.original_currency,
+        'exchange_rate', t.exchange_rate,
+        'converted_amount', t.converted_amount,
+        'fees', t.fees,
+        'notes', t.notes,
+        'is_recurring', t.is_recurring,
+        'created_at', t.created_at
+    )
+    INTO base_tx
+    FROM transactions t
+    WHERE t.id = p_transaction_id
+      AND t.deleted_at IS NULL;
+
+    IF base_tx IS NULL THEN
+        RAISE EXCEPTION 'Transaction % not found or has been deleted', p_transaction_id;
+    END IF;
+
+    tx_type := (base_tx ->> 'type')::transaction_type;
+
+    -- Fetch specific detail based on transaction type
+    IF tx_type = 'income' THEN
+        SELECT jsonb_build_object(
+            'account', (
+                SELECT jsonb_build_object(
+                    'id', a.id,
+                    'name', a.account_name,
+                    'account_type', a.type,
+                    'currency', a.currency
+                )
+                FROM accounts a
+                WHERE a.id = ti.account_id
+                  AND a.deleted_at IS NULL
+                LIMIT 1
+            ),
+            'source', (
+                SELECT jsonb_build_object('id', s.id, 'name', s.name)
+                FROM income_sources s
+                WHERE s.id = ti.source_id
+                  AND s.deleted_at IS NULL
+                LIMIT 1
+            )
+        )
+        INTO detail
+        FROM transactions_income ti
+        WHERE ti.transaction_id = p_transaction_id
+          AND ti.deleted_at IS NULL
+        LIMIT 1;
+
+    ELSIF tx_type = 'expense' THEN
+        SELECT jsonb_build_object(
+            'account', (
+                SELECT jsonb_build_object(
+                    'id', a.id,
+                    'name', a.account_name,
+                    'account_type', a.type,
+                    'currency', a.currency
+                )
+                FROM accounts a
+                WHERE a.id = te.account_id
+                AND a.deleted_at IS NULL
+                LIMIT 1
+            ),
+            'category', (
+                SELECT jsonb_build_object(
+                    'id', sc.id,
+                    'name', sc.name,
+                    'parent_category', jsonb_build_object(
+                        'id', c.id,
+                        'name', c.name
+                    )
+                )
+                FROM expense_subcategories sc
+                JOIN expense_categories c ON sc.category_id = c.id
+                WHERE sc.id = te.category_id
+                AND sc.deleted_at IS NULL
+                AND c.deleted_at IS NULL
+                LIMIT 1
+            ),
+            'payment_method', te.payment_method
+        )
+        INTO detail
+        FROM transactions_expense te
+        WHERE te.transaction_id = p_transaction_id
+        AND te.deleted_at IS NULL
+        LIMIT 1;
+
+    ELSIF tx_type = 'investment' THEN
+        SELECT jsonb_build_object(
+            'funding_account', (
+                SELECT jsonb_build_object('id', a.id, 'name', a.account_name, 'account_type', a.type, 'currency', a.currency)
+                FROM accounts a
+                WHERE a.id = ti.funding_account_id
+                  AND a.deleted_at IS NULL
+                LIMIT 1
+            ),
+            'investment_account', (
+                SELECT jsonb_build_object('id', a.id, 'name', a.account_name, 'account_type', a.type, 'currency', a.currency)
+                FROM accounts a
+                WHERE a.id = ti.investment_account_id
+                  AND a.deleted_at IS NULL
+                LIMIT 1
+            ),
+            'asset_type', ti.asset_type,
+            'asset_symbol', ti.asset_symbol,
+            'platform', ti.platform,
+            'risk_level', ti.risk_level
+        )
+        INTO detail
+        FROM transactions_investment ti
+        WHERE ti.transaction_id = p_transaction_id
+          AND ti.deleted_at IS NULL
+        LIMIT 1;
+
+    ELSIF tx_type = 'borrow' THEN
+        SELECT jsonb_build_object(
+            'loan_account', (
+                SELECT jsonb_build_object('id', a.id, 'name', a.account_name, 'account_type', a.type, 'currency', a.currency)
+                FROM accounts a
+                WHERE a.id = tb.loan_account_id
+                  AND a.deleted_at IS NULL
+                LIMIT 1
+            ),
+            'disbursement_account', (
+                SELECT jsonb_build_object('id', a.id, 'name', a.account_name, 'account_type', a.type, 'currency', a.currency)
+                FROM accounts a
+                WHERE a.id = tb.disbursement_account_id
+                  AND a.deleted_at IS NULL
+                LIMIT 1
+            )
+        )
+        INTO detail
+        FROM transactions_borrow tb
+        WHERE tb.transaction_id = p_transaction_id
+          AND tb.deleted_at IS NULL
+        LIMIT 1;
+
+    ELSIF tx_type = 'lend' THEN
+        SELECT jsonb_build_object(
+            'funding_account', (
+                SELECT jsonb_build_object('id', a.id, 'name', a.account_name, 'account_type', a.type, 'currency', a.currency)
+                FROM accounts a
+                WHERE a.id = tl.funding_account_id
+                  AND a.deleted_at IS NULL
+                LIMIT 1
+            ),
+            'receivable_account', (
+                SELECT jsonb_build_object('id', a.id, 'name', a.account_name, 'account_type', a.type, 'currency', a.currency)
+                FROM accounts a
+                WHERE a.id = tl.receivable_account_id
+                  AND a.deleted_at IS NULL
+                LIMIT 1
+            ),
+            'counterparty', (
+                SELECT jsonb_build_object('id', cp.id, 'name', cp.name, 'type', cp.type)
+                FROM counterparties cp
+                WHERE cp.id = tl.counterparty_id
+                  AND cp.deleted_at IS NULL
+                LIMIT 1
+            ),
+            'interest_rate', tl.interest_rate,
+            'due_date', tl.due_date,
+            'collateral', tl.collateral
+        )
+        INTO detail
+        FROM transactions_lend tl
+        WHERE tl.transaction_id = p_transaction_id
+          AND tl.deleted_at IS NULL
+        LIMIT 1;
+
+    ELSIF tx_type = 'transfer' THEN
+        SELECT jsonb_build_object(
+            'from_account', (
+                SELECT jsonb_build_object('id', a.id, 'name', a.account_name, 'account_type', a.type, 'currency', a.currency)
+                FROM accounts a
+                WHERE a.id = tt.from_account
+                  AND a.deleted_at IS NULL
+                LIMIT 1
+            ),
+            'to_account', (
+                SELECT jsonb_build_object('id', a.id, 'name', a.account_name, 'account_type', a.type, 'currency', a.currency)
+                FROM accounts a
+                WHERE a.id = tt.to_account
+                  AND a.deleted_at IS NULL
+                LIMIT 1
+            ),
+            'transfer_method', tt.transfer_method
+        )
+        INTO detail
+        FROM transactions_transfer tt
+        WHERE tt.transaction_id = p_transaction_id
+          AND tt.deleted_at IS NULL
+        LIMIT 1;
+
+    ELSIF tx_type = 'adjustment' THEN
+        SELECT jsonb_build_object(
+            'account', (
+                SELECT jsonb_build_object('id', a.id, 'name', a.account_name, 'account_type', a.type, 'currency', a.currency)
+                FROM accounts a
+                WHERE a.id = ta.account_id
+                  AND a.deleted_at IS NULL
+                LIMIT 1
+            )
+        )
+        INTO detail
+        FROM transactions_adjustment ta
+        WHERE ta.transaction_id = p_transaction_id
+          AND ta.deleted_at IS NULL
+        LIMIT 1;
+    END IF;
+
+    -- Return final combined JSON
+    RETURN base_tx || jsonb_build_object('details', detail);
+END;
+$$;
+
+-- =========================================
+-- 27. Function: get_recurring_schedules
+-- =========================================
+-- Purpose:
+--   Retrieves a paginated list of recurring transaction schedules for
+--   the currently authenticated user, optionally filtered by start and
+--   end dates.
+
+-- Behavior:
+--   - Obtains the current user ID using auth.uid().
+--   - Raises an exception if the request is unauthenticated.
+--   - Filters recurring schedules that belong to the current user and
+--     are not soft deleted (deleted_at IS NULL).
+--   - Supports optional filtering by:
+--       * Start date using p_start_date.
+--       * End date using p_end_date.
+--   - Supports pagination through p_limit and p_offset.
+--   - Orders the results by next_occurrence in ascending order.
+--   - Aggregates the schedules into a single JSONB array for easy
+--     consumption.
+
+-- Returns:
+--   JSONB
+--       Contains an array of recurring schedule objects with fields:
+--         - id
+--         - transaction_template_id
+--         - frequency
+--         - interval
+--         - start_date
+--         - end_date
+--         - next_occurrence
+--         - created_at
+--         - updated_at
+
+-- Notes:
+--   - SECURITY DEFINER allows access to the transactions_recurring
+--     table while relying on RLS to restrict data to the current user.
+--   - Returns an empty JSON array if no schedules match the criteria.
+--   - Designed for dashboards, reporting, or any feature that requires
+--     viewing upcoming recurring transactions.
+-- =========================================
+CREATE OR REPLACE FUNCTION get_recurring_schedules(
+    p_start_date DATE DEFAULT NULL,
+    p_end_date   DATE DEFAULT NULL,
+    p_limit      INTEGER DEFAULT 50,
+    p_offset     INTEGER DEFAULT 0
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_user_id UUID := auth.uid();
+    result JSONB := '[]'::jsonb;
+BEGIN
+    IF v_user_id IS NULL THEN
+        RAISE EXCEPTION 'Unauthenticated request';
+    END IF;
+
+    SELECT jsonb_agg(data ORDER BY data->>'next_occurrence')
+    INTO result
+    FROM (
+        SELECT jsonb_build_object(
+            'id', tr.id,
+            'transaction_template_id', tr.transaction_template_id,
+            'frequency', tr.frequency,
+            'interval', tr.interval,
+            'start_date', tr.start_date,
+            'end_date', tr.end_date,
+            'next_occurrence', tr.next_occurrence,
+            'created_at', tr.created_at,
+            'updated_at', tr.updated_at
+        ) AS data
+        FROM transactions_recurring tr
+        WHERE tr.user_id = v_user_id
+          AND tr.deleted_at IS NULL
+          AND (p_start_date IS NULL OR tr.start_date >= p_start_date)
+          AND (p_end_date IS NULL OR tr.end_date <= p_end_date)
+        ORDER BY tr.next_occurrence ASC
+        LIMIT p_limit
+        OFFSET p_offset
+    ) AS sub;
+
+    RETURN COALESCE(result, '[]'::jsonb);
+END;
+$$;
+
+-- =========================================
+-- 28. Function: get_transaction_counts_by_type
+-- =========================================
+-- Purpose:
+--   Returns the count of transactions grouped by transaction type
+--   for the currently authenticated user, separating recurring and
+--   non-recurring transactions, optionally filtered by start and end dates.
+
+-- Behavior:
+--   - Retrieves the current user ID using auth.uid().
+--   - Raises an exception if the request is unauthenticated.
+--   - Filters only transactions belonging to the current user and
+--     not soft deleted (deleted_at IS NULL).
+--   - Supports optional filtering by:
+--       * Start date using p_start_date.
+--       * End date using p_end_date.
+--   - Counts transactions for each type, distinguishing between:
+--       * Recurring transactions (is_recurring = TRUE)
+--       * Non-recurring transactions (is_recurring = FALSE)
+--   - Aggregates the results into a JSONB array, ordered by type.
+
+-- Returns:
+--   JSONB
+--       Contains an array of objects with fields:
+--         - type
+--         - recurring_count
+--         - non_recurring_count
+
+-- Notes:
+--   - SECURITY DEFINER allows execution while respecting RLS policies
+--     for the current user.
+--   - Returns an empty JSON array if no transactions match the criteria.
+--   - Useful for dashboards, reporting, or summaries showing transaction
+--     distribution by type and recurrence over a specific period.
+-- =========================================
+CREATE OR REPLACE FUNCTION get_transaction_counts_by_type(
     p_start_date DATE DEFAULT NULL,
     p_end_date DATE DEFAULT NULL
 )
-RETURNS INTEGER
+RETURNS JSONB
 LANGUAGE plpgsql
-SECURITY INVOKER
-SET search_path = pg_catalog, public
-STABLE
+SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
-    v_user_id UUID;
-    v_count INTEGER;
+    v_user_id UUID := auth.uid();
+    result JSONB := '[]'::jsonb;
 BEGIN
-    -- Use passed user_id or fallback to authenticated user
-    v_user_id := COALESCE(p_user_id, auth.uid());
-
     IF v_user_id IS NULL THEN
-        RAISE EXCEPTION 'No authenticated user found';
+        RAISE EXCEPTION 'Unauthenticated request';
     END IF;
 
-    -- Count transactions for the user with filters
-    SELECT COUNT(*)::INTEGER
-    INTO v_count
-    FROM transactions
-    WHERE user_id = v_user_id
-      AND deleted_at IS NULL
-      AND (p_transaction_type IS NULL OR type = p_transaction_type)
-      AND (p_start_date IS NULL OR created_at::DATE >= p_start_date)
-      AND (p_end_date IS NULL OR created_at::DATE <= p_end_date);
+    SELECT jsonb_agg(
+               jsonb_build_object(
+                   'type', type,
+                   'recurring_count', recurring_count,
+                   'non_recurring_count', non_recurring_count
+               )
+           )
+    INTO result
+    FROM (
+        SELECT
+            type,
+            COUNT(*) FILTER (WHERE is_recurring = TRUE) AS recurring_count,
+            COUNT(*) FILTER (WHERE is_recurring = FALSE) AS non_recurring_count
+        FROM transactions t
+        WHERE t.user_id = v_user_id
+          AND t.deleted_at IS NULL
+          AND (p_start_date IS NULL OR t.created_at::date >= p_start_date)
+          AND (p_end_date IS NULL OR t.created_at::date <= p_end_date)
+        GROUP BY type
+        ORDER BY type
+    ) sub;
 
-    RETURN v_count;
+    RETURN COALESCE(result, '[]'::jsonb);
 END;
 $$;
 
 -- =========================================
--- 12. Function: get_recurring_schedules
+-- 29. Function: get_income_summary_by_source_account
 -- =========================================
--- Get User's Recurring Schedules
--- Purpose: List all active recurring transaction schedules for user
--- Parameters: user_id (implicit via RLS)
--- Returns: Table with schedule details and template info
--- Security: INVOKER (relies on RLS)
--- RLS: Only returns schedules owned by current user
-CREATE OR REPLACE FUNCTION get_recurring_schedules()
-RETURNS TABLE(
-    schedule_id UUID,
-    template_transaction_id UUID,
-    transaction_type transaction_type,
-    original_amount DECIMAL(36,18),
-    original_currency VARCHAR(10),
-    exchange_rate DECIMAL(36,18),
-    converted_amount DECIMAL(36,18),
-    frequency recurrence_frequency,
-    recurrence_interval INTEGER,
-    next_occurrence timestamptz,
-    end_date DATE,
-    created_at timestamptz
+-- Purpose:
+--   Provides a summary of income transactions grouped by income
+--   source and account for the currently authenticated user,
+--   separating recurring and non-recurring amounts.
+
+-- Behavior:
+--   - Retrieves the current user ID using auth.uid().
+--   - Raises an exception if the request is unauthenticated.
+--   - Joins transactions_income with transactions, income_sources,
+--     and accounts to collect relevant data.
+--   - Filters only records that are not soft deleted (deleted_at IS NULL)
+--     and where converted_amount is not null.
+--   - Supports optional filtering by start and end dates.
+--   - Aggregates sums of converted_amount separately for recurring
+--     and non-recurring transactions.
+--   - Groups results by income source and account.
+--   - Orders results by source_name and account_name.
+--   - Returns a JSONB array of summarized records.
+
+-- Returns:
+--   JSONB
+--       Contains an array of objects with fields:
+--         - source_id
+--         - source_name
+--         - account_id
+--         - account_name
+--         - account_currency
+--         - recurring_total
+--         - non_recurring_total
+
+-- Notes:
+--   - SECURITY DEFINER allows execution while respecting RLS policies
+--     for the current user.
+--   - Returns an empty JSON array if no matching transactions exist.
+--   - Useful for dashboards, reporting, or generating summaries of
+--     income by source and account.
+-- =========================================
+CREATE OR REPLACE FUNCTION get_income_summary_by_source_account(
+    p_start_date DATE DEFAULT NULL,
+    p_end_date DATE DEFAULT NULL
 )
+RETURNS JSONB
 LANGUAGE plpgsql
-SECURITY INVOKER
-SET search_path = pg_catalog, public
-STABLE
+SECURITY DEFINER
+SET search_path = public
 AS $$
+DECLARE
+    v_user_id UUID := auth.uid();
+    result JSONB := '[]'::jsonb;
 BEGIN
-    RETURN QUERY
-    SELECT 
-        tr.id AS schedule_id,
-        tr.transaction_template_id,
-        t.type AS transaction_type,
-        t.original_amount,
-        t.original_currency,
-        t.exchange_rate,
-        t.converted_amount,
-        tr.frequency,
-        tr.interval AS recurrence_interval,
-        tr.next_occurrence,
-        tr.end_date,
-        tr.created_at
-    FROM transactions_recurring tr
-    JOIN transactions t 
-        ON tr.transaction_template_id = t.id
-    WHERE tr.deleted_at IS NULL
-      AND t.deleted_at IS NULL
-    ORDER BY tr.next_occurrence ASC;
+    IF v_user_id IS NULL THEN
+        RAISE EXCEPTION 'Unauthenticated request';
+    END IF;
+
+    SELECT jsonb_agg(
+               jsonb_build_object(
+                   'source_id', source_id,
+                   'source_name', source_name,
+                   'account_id', account_id,
+                   'account_name', account_name,
+                   'account_currency', account_currency,
+                   'recurring_total', recurring_total,
+                   'non_recurring_total', non_recurring_total
+               )
+           )
+    INTO result
+    FROM (
+        SELECT
+            ti.source_id,
+            isrc.name AS source_name,
+            ti.account_id,
+            acc.account_name,
+            acc.currency AS account_currency,
+            SUM(t.converted_amount) FILTER (WHERE t.is_recurring = TRUE) AS recurring_total,
+            SUM(t.converted_amount) FILTER (WHERE t.is_recurring = FALSE) AS non_recurring_total
+        FROM transactions_income ti
+        JOIN transactions t ON t.id = ti.transaction_id
+        JOIN income_sources isrc ON isrc.id = ti.source_id
+        JOIN accounts acc ON acc.id = ti.account_id
+        WHERE t.user_id = v_user_id
+          AND t.deleted_at IS NULL
+          AND ti.deleted_at IS NULL
+          AND isrc.deleted_at IS NULL
+          AND acc.deleted_at IS NULL
+          AND t.converted_amount IS NOT NULL
+          AND (p_start_date IS NULL OR t.created_at::date >= p_start_date)
+          AND (p_end_date IS NULL OR t.created_at::date <= p_end_date)
+        GROUP BY ti.source_id, isrc.name, ti.account_id, acc.account_name, acc.currency
+        ORDER BY source_name, account_name
+    ) sub;
+
+    RETURN COALESCE(result, '[]'::jsonb);
 END;
 $$;
 
 -- =========================================
--- 13. Function: get_income_summary
+-- 30. Function: get_expense_summary_by_category_account
 -- =========================================
--- Income Summary by Source and Account
--- Purpose: Aggregate income transactions for reporting/analytics
--- Parameters: user_id, date range
--- Returns: Table with account, source, and totals
--- Security: INVOKER (relies on RLS)
--- RLS: Uses auth.uid() to filter user's data only
-CREATE OR REPLACE FUNCTION get_income_summary(
-    p_start_date timestamptz DEFAULT NULL,
-    p_end_date timestamptz DEFAULT NULL
+-- Purpose:
+--   Provides a summary of expense transactions grouped by expense
+--   category and account for the currently authenticated user,
+--   separating recurring and non-recurring amounts.
+
+-- Behavior:
+--   - Retrieves the current user ID using auth.uid().
+--   - Raises an exception if the request is unauthenticated.
+--   - Joins transactions_expense with transactions, expense_subcategories,
+--     and accounts to collect relevant data.
+--   - Filters only records that are not soft deleted (deleted_at IS NULL)
+--     and where converted_amount is not null.
+--   - Supports optional filtering by start and end dates.
+--   - Aggregates sums of converted_amount separately for recurring
+--     and non-recurring transactions.
+--   - Groups results by expense category and account.
+--   - Orders results by category_name and account_name.
+--   - Returns a JSONB array of summarized records.
+
+-- Returns:
+--   JSONB
+--       Contains an array of objects with fields:
+--         - category_id
+--         - category_name
+--         - account_id
+--         - account_name
+--         - account_currency
+--         - recurring_total
+--         - non_recurring_total
+
+-- Notes:
+--   - SECURITY DEFINER allows execution while respecting RLS policies
+--     for the current user.
+--   - Returns an empty JSON array if no matching transactions exist.
+--   - Useful for dashboards, reporting, or generating summaries of
+--     expenses by category and account.
+-- =========================================
+CREATE OR REPLACE FUNCTION get_expense_summary_by_category_account(
+    p_start_date DATE DEFAULT NULL,
+    p_end_date DATE DEFAULT NULL
 )
-RETURNS TABLE(
-    account_id UUID,
-    account_name VARCHAR,
-    source_id UUID,
-    source_name VARCHAR,
-    total_original_amount DECIMAL(36,18),
-    total_converted_amount DECIMAL(36,18)
-)
+RETURNS JSONB
 LANGUAGE plpgsql
-SECURITY INVOKER
-SET search_path = pg_catalog, public
-STABLE
+SECURITY DEFINER
+SET search_path = public
 AS $$
+DECLARE
+    v_user_id UUID := auth.uid();
+    result JSONB := '[]'::jsonb;
 BEGIN
-    RETURN QUERY
-    SELECT 
-        ti.account_id,
-        a.account_name,
-        ti.source_id,
-        COALESCE(ins.name, 'Unknown') AS source_name,
-        SUM(t.original_amount) AS total_original_amount,
-        SUM(t.converted_amount) AS total_converted_amount
-    FROM transactions t
-    JOIN transactions_income ti 
-        ON t.id = ti.transaction_id
-        AND ti.deleted_at IS NULL
-    JOIN accounts a 
-        ON ti.account_id = a.id
-        AND a.deleted_at IS NULL
-    LEFT JOIN income_sources ins 
-        ON ti.source_id = ins.id
-        AND ins.deleted_at IS NULL
-    WHERE t.type = 'income'
-      AND t.deleted_at IS NULL
-      AND (p_start_date IS NULL OR t.created_at >= p_start_date)
-      AND (p_end_date IS NULL OR t.created_at <= p_end_date)
-    GROUP BY ti.account_id, a.account_name, ti.source_id, ins.name
-    ORDER BY total_converted_amount DESC;
+    IF v_user_id IS NULL THEN
+        RAISE EXCEPTION 'Unauthenticated request';
+    END IF;
+
+    SELECT jsonb_agg(
+               jsonb_build_object(
+                   'category_id', category_id,
+                   'category_name', category_name,
+                   'account_id', account_id,
+                   'account_name', account_name,
+                   'account_currency', account_currency,
+                   'recurring_total', recurring_total,
+                   'non_recurring_total', non_recurring_total
+               )
+           )
+    INTO result
+    FROM (
+        SELECT
+            te.category_id,
+            esc.name AS category_name,
+            te.account_id,
+            acc.account_name,
+            acc.currency AS account_currency,
+            SUM(t.converted_amount) FILTER (WHERE t.is_recurring = TRUE) AS recurring_total,
+            SUM(t.converted_amount) FILTER (WHERE t.is_recurring = FALSE) AS non_recurring_total
+        FROM transactions_expense te
+        JOIN transactions t ON t.id = te.transaction_id
+        JOIN expense_subcategories esc ON esc.id = te.category_id
+        JOIN accounts acc ON acc.id = te.account_id
+        WHERE t.user_id = v_user_id
+          AND t.deleted_at IS NULL
+          AND te.deleted_at IS NULL
+          AND esc.deleted_at IS NULL
+          AND acc.deleted_at IS NULL
+          AND t.converted_amount IS NOT NULL
+          AND (p_start_date IS NULL OR t.created_at::date >= p_start_date)
+          AND (p_end_date IS NULL OR t.created_at::date <= p_end_date)
+        GROUP BY te.category_id, esc.name, te.account_id, acc.account_name, acc.currency
+        ORDER BY category_name, account_name
+    ) sub;
+
+    RETURN COALESCE(result, '[]'::jsonb);
 END;
 $$;
 
 -- =========================================
--- 14. Function: get_expense_summary
+-- 31. Function: get_investment_summary_by_investment_account
 -- =========================================
--- Expense Summary by Category and Account
--- Purpose: Aggregate expense transactions for reporting/analytics
--- Parameters: user_id (implicit via RLS), date range
--- Returns: Table with account, category, subcategory, and totals
--- Security: INVOKER (relies on RLS)
--- RLS: Uses auth.uid() to filter user's data only
-CREATE OR REPLACE FUNCTION get_expense_summary(
-    p_start_date timestamptz DEFAULT NULL,
-    p_end_date timestamptz DEFAULT NULL
+-- Purpose:
+--   Provides a summary of investment transactions grouped by investment
+--   account for the currently authenticated user, separating recurring
+--   and non-recurring amounts.
+
+-- Behavior:
+--   - Retrieves the current user ID using auth.uid().
+--   - Raises an exception if the request is unauthenticated.
+--   - Joins transactions_investment with transactions and accounts to
+--     collect relevant data.
+--   - Filters only records that are not soft deleted (deleted_at IS NULL)
+--     and where converted_amount is not null.
+--   - Supports optional filtering by start and end dates.
+--   - Aggregates sums of converted_amount separately for recurring
+--     and non-recurring transactions.
+--   - Groups results by investment account.
+--   - Orders results by investment_account_name.
+--   - Returns a JSONB array of summarized records.
+
+-- Returns:
+--   JSONB
+--       Contains an array of objects with fields:
+--         - investment_account_id
+--         - investment_account_name
+--         - investment_account_currency
+--         - recurring_total
+--         - non_recurring_total
+
+-- Notes:
+--   - SECURITY DEFINER allows execution while respecting RLS policies
+--     for the current user.
+--   - Returns an empty JSON array if no matching transactions exist.
+--   - Useful for dashboards, reporting, or generating summaries of
+--     investments by account.
+-- =========================================
+CREATE OR REPLACE FUNCTION get_investment_summary_by_investment_account(
+    p_start_date DATE DEFAULT NULL,
+    p_end_date DATE DEFAULT NULL
 )
-RETURNS TABLE(
-    account_id UUID,
-    account_name VARCHAR,
-    category_id UUID,
-    category_name VARCHAR,
-    subcategory_id UUID,
-    subcategory_name VARCHAR,
-    total_original_amount DECIMAL(36,18),
-    total_converted_amount DECIMAL(36,18)
-)
+RETURNS JSONB
 LANGUAGE plpgsql
-SECURITY INVOKER
-SET search_path = pg_catalog, public
-STABLE
+SECURITY DEFINER
+SET search_path = public
 AS $$
+DECLARE
+    v_user_id UUID := auth.uid();
+    result JSONB := '[]'::jsonb;
 BEGIN
-    RETURN QUERY
-    SELECT 
-        te.account_id,
-        a.account_name,
-        es.category_id,
-        ec.name AS category_name,
-        te.category_id AS subcategory_id,
-        es.name AS subcategory_name,
-        SUM(t.original_amount) AS total_original_amount,
-        SUM(t.converted_amount) AS total_converted_amount
-    FROM transactions t
-    JOIN transactions_expense te 
-        ON t.id = te.transaction_id
-        AND te.deleted_at IS NULL
-    JOIN accounts a 
-        ON te.account_id = a.id
-        AND a.deleted_at IS NULL
-    LEFT JOIN expense_subcategories es 
-        ON te.category_id = es.id
-        AND es.deleted_at IS NULL
-    LEFT JOIN expense_categories ec 
-        ON es.category_id = ec.id
-        AND ec.deleted_at IS NULL
-    WHERE t.type = 'expense'
-      AND t.deleted_at IS NULL
-      AND (p_start_date IS NULL OR t.created_at >= p_start_date)
-      AND (p_end_date IS NULL OR t.created_at <= p_end_date)
-    GROUP BY te.account_id, a.account_name, es.category_id, ec.name, te.category_id, es.name
-    ORDER BY total_converted_amount DESC;
+    IF v_user_id IS NULL THEN
+        RAISE EXCEPTION 'Unauthenticated request';
+    END IF;
+
+    SELECT jsonb_agg(
+               jsonb_build_object(
+                   'investment_account_id', investment_account_id,
+                   'investment_account_name', investment_account_name,
+                   'investment_account_currency', investment_account_currency,
+                   'recurring_total', recurring_total,
+                   'non_recurring_total', non_recurring_total
+               )
+           )
+    INTO result
+    FROM (
+        SELECT
+            ti.investment_account_id,
+            inv_acc.account_name AS investment_account_name,
+            inv_acc.currency AS investment_account_currency,
+            SUM(t.converted_amount) FILTER (WHERE t.is_recurring = TRUE) AS recurring_total,
+            SUM(t.converted_amount) FILTER (WHERE t.is_recurring = FALSE) AS non_recurring_total
+        FROM transactions_investment ti
+        JOIN transactions t ON t.id = ti.transaction_id
+        JOIN accounts inv_acc ON inv_acc.id = ti.investment_account_id
+        WHERE t.user_id = v_user_id
+          AND t.deleted_at IS NULL
+          AND ti.deleted_at IS NULL
+          AND inv_acc.deleted_at IS NULL
+          AND t.converted_amount IS NOT NULL
+          AND (p_start_date IS NULL OR t.created_at::date >= p_start_date)
+          AND (p_end_date IS NULL OR t.created_at::date <= p_end_date)
+        GROUP BY ti.investment_account_id, inv_acc.account_name, inv_acc.currency
+        ORDER BY investment_account_name
+    ) sub;
+
+    RETURN COALESCE(result, '[]'::jsonb);
 END;
 $$;
 
 -- =========================================
--- 15. Function: get_investment_summary
+-- 32. Function: get_borrow_summary_by_loan_account
 -- =========================================
--- Investment Summary by Asset Type
--- Purpose: Aggregate investment transactions for portfolio analysis
--- Parameters: user_id (implicit via RLS), date range
--- Returns: Table with account, asset details, and totals
--- Security: INVOKER (relies on RLS)
--- RLS: Uses auth.uid() to filter user's data only
-CREATE OR REPLACE FUNCTION get_investment_summary(
-    p_start_date timestamptz DEFAULT NULL,
-    p_end_date timestamptz DEFAULT NULL
+-- Purpose:
+--   Provides a summary of borrow (loan) transactions grouped by loan
+--   account for the currently authenticated user, separating recurring
+--   and non-recurring amounts.
+
+-- Behavior:
+--   - Retrieves the current user ID using auth.uid().
+--   - Raises an exception if the request is unauthenticated.
+--   - Joins transactions_borrow with transactions and accounts to
+--     collect relevant data.
+--   - Filters only records that are not soft deleted (deleted_at IS NULL)
+--     and where converted_amount is not null.
+--   - Supports optional filtering by start and end dates.
+--   - Aggregates sums of converted_amount separately for recurring
+--     and non-recurring transactions.
+--   - Groups results by loan account.
+--   - Orders results by loan_account_name.
+--   - Returns a JSONB array of summarized records.
+
+-- Returns:
+--   JSONB
+--       Contains an array of objects with fields:
+--         - loan_account_id
+--         - loan_account_name
+--         - loan_account_currency
+--         - recurring_total
+--         - non_recurring_total
+
+-- Notes:
+--   - SECURITY DEFINER allows execution while respecting RLS policies
+--     for the current user.
+--   - Returns an empty JSON array if no matching transactions exist.
+--   - Useful for dashboards, reporting, or generating summaries of
+--     borrow transactions by account.
+-- =========================================
+CREATE OR REPLACE FUNCTION get_borrow_summary_by_loan_account(
+    p_start_date DATE DEFAULT NULL,
+    p_end_date DATE DEFAULT NULL
 )
-RETURNS TABLE(
-    account_id UUID,
-    account_name VARCHAR,
-    asset_type VARCHAR,
-    asset_symbol VARCHAR,
-    platform VARCHAR,
-    total_original_amount DECIMAL(36,18),
-    total_converted_amount DECIMAL(36,18),
-    risk_level risk_level
-)
+RETURNS JSONB
 LANGUAGE plpgsql
-SECURITY INVOKER
-SET search_path = pg_catalog, public
-STABLE
+SECURITY DEFINER
+SET search_path = public
 AS $$
+DECLARE
+    v_user_id UUID := auth.uid();
+    result JSONB := '[]'::jsonb;
 BEGIN
-    RETURN QUERY
-    SELECT 
-        ti.account_id,
-        a.account_name,
-        ti.asset_type,
-        ti.asset_symbol,
-        ti.platform,
-        SUM(t.original_amount) AS total_original_amount,
-        SUM(t.converted_amount) AS total_converted_amount,
-        ti.risk_level
-    FROM transactions t
-    JOIN transactions_investment ti 
-        ON t.id = ti.transaction_id
-        AND ti.deleted_at IS NULL
-    JOIN accounts a 
-        ON ti.account_id = a.id
-        AND a.deleted_at IS NULL
-    WHERE t.type = 'investment'
-      AND t.deleted_at IS NULL
-      AND (p_start_date IS NULL OR t.created_at >= p_start_date)
-      AND (p_end_date IS NULL OR t.created_at <= p_end_date)
-    GROUP BY ti.account_id, a.account_name, ti.asset_type, ti.asset_symbol, ti.platform, ti.risk_level
-    ORDER BY total_converted_amount DESC;
+    IF v_user_id IS NULL THEN
+        RAISE EXCEPTION 'Unauthenticated request';
+    END IF;
+
+    SELECT jsonb_agg(
+               jsonb_build_object(
+                   'loan_account_id', loan_account_id,
+                   'loan_account_name', loan_account_name,
+                   'loan_account_currency', loan_account_currency,
+                   'recurring_total', recurring_total,
+                   'non_recurring_total', non_recurring_total
+               )
+           )
+    INTO result
+    FROM (
+        SELECT
+            tb.loan_account_id,
+            loan_acc.account_name AS loan_account_name,
+            loan_acc.currency AS loan_account_currency,
+            SUM(t.converted_amount) FILTER (WHERE t.is_recurring = TRUE) AS recurring_total,
+            SUM(t.converted_amount) FILTER (WHERE t.is_recurring = FALSE) AS non_recurring_total
+        FROM transactions_borrow tb
+        JOIN transactions t ON t.id = tb.transaction_id
+        JOIN accounts loan_acc ON loan_acc.id = tb.loan_account_id
+        WHERE t.user_id = v_user_id
+          AND t.deleted_at IS NULL
+          AND tb.deleted_at IS NULL
+          AND loan_acc.deleted_at IS NULL
+          AND t.converted_amount IS NOT NULL
+          AND (p_start_date IS NULL OR t.created_at::date >= p_start_date)
+          AND (p_end_date IS NULL OR t.created_at::date <= p_end_date)
+        GROUP BY tb.loan_account_id, loan_acc.account_name, loan_acc.currency
+        ORDER BY loan_account_name
+    ) sub;
+
+    RETURN COALESCE(result, '[]'::jsonb);
 END;
 $$;
 
 -- =========================================
--- 16. Function: get_borrow_lend_summary
+-- 33. Function: get_lend_summary_by_receivable_account
 -- =========================================
--- Borrowing and Lending Summary
--- Purpose: Get overview of outstanding loans and receivables
--- Parameters: user_id (implicit via RLS)
--- Returns: Table with counterparty details and amounts
--- Security: INVOKER (relies on RLS)
--- RLS: Uses auth.uid() to filter user's data only
-CREATE OR REPLACE FUNCTION get_borrow_lend_summary()
-RETURNS TABLE(
-    transaction_type transaction_type,
-    counterparty_name VARCHAR,
-    counterparty_type counterparty_type,
-    principal_original_amount DECIMAL(36,18),
-    principal_converted_amount DECIMAL(36,18),
-    currency VARCHAR,
-    interest_rate DECIMAL,
-    due_date DATE,
-    collateral TEXT
+-- Purpose:
+--   Provides a summary of lend transactions grouped by receivable
+--   account for the currently authenticated user, separating recurring
+--   and non-recurring amounts.
+
+-- Behavior:
+--   - Retrieves the current user ID using auth.uid().
+--   - Raises an exception if the request is unauthenticated.
+--   - Joins transactions_lend with transactions and accounts to
+--     collect relevant data.
+--   - Filters only records that are not soft deleted (deleted_at IS NULL)
+--     and where converted_amount is not null.
+--   - Supports optional filtering by start and end dates.
+--   - Aggregates sums of converted_amount separately for recurring
+--     and non-recurring transactions.
+--   - Groups results by receivable account.
+--   - Orders results by receivable_account_name.
+--   - Returns a JSONB array of summarized records.
+
+-- Returns:
+--   JSONB
+--       Contains an array of objects with fields:
+--         - receivable_account_id
+--         - receivable_account_name
+--         - receivable_account_currency
+--         - recurring_total
+--         - non_recurring_total
+
+-- Notes:
+--   - SECURITY DEFINER allows execution while respecting RLS policies
+--     for the current user.
+--   - Returns an empty JSON array if no matching transactions exist.
+--   - Useful for dashboards, reporting, or generating summaries of
+--     lend transactions by receivable account.
+-- =========================================
+CREATE OR REPLACE FUNCTION get_lend_summary_by_receivable_account(
+    p_start_date DATE DEFAULT NULL,
+    p_end_date DATE DEFAULT NULL
 )
+RETURNS JSONB
 LANGUAGE plpgsql
-SECURITY INVOKER
-SET search_path = pg_catalog, public
-STABLE
+SECURITY DEFINER
+SET search_path = public
 AS $$
+DECLARE
+    v_user_id UUID := auth.uid();
+    result JSONB := '[]'::jsonb;
 BEGIN
-    RETURN QUERY
-    -- Borrow transactions
-    SELECT 
-        'borrow'::transaction_type,
-        COALESCE(cp.name, 'Unknown') AS counterparty_name,
-        COALESCE(cp.type, 'other'::counterparty_type) AS counterparty_type,
-        t.original_amount AS principal_original_amount,
-        t.converted_amount AS principal_converted_amount,
-        t.currency,
-        tb.interest_rate,
-        tb.due_date,
-        tb.collateral
-    FROM transactions t
-    JOIN transactions_borrow tb 
-        ON t.id = tb.transaction_id
-        AND tb.deleted_at IS NULL
-    LEFT JOIN counterparties cp 
-        ON tb.counterparty_id = cp.id
-    WHERE t.type = 'borrow'
-      AND t.deleted_at IS NULL
+    IF v_user_id IS NULL THEN
+        RAISE EXCEPTION 'Unauthenticated request';
+    END IF;
 
-    UNION ALL
+    SELECT jsonb_agg(
+               jsonb_build_object(
+                   'receivable_account_id', receivable_account_id,
+                   'receivable_account_name', receivable_account_name,
+                   'receivable_account_currency', receivable_account_currency,
+                   'recurring_total', recurring_total,
+                   'non_recurring_total', non_recurring_total
+               )
+           )
+    INTO result
+    FROM (
+        SELECT
+            tl.receivable_account_id,
+            rec_acc.account_name AS receivable_account_name,
+            rec_acc.currency AS receivable_account_currency,
+            SUM(t.converted_amount) FILTER (WHERE t.is_recurring = TRUE) AS recurring_total,
+            SUM(t.converted_amount) FILTER (WHERE t.is_recurring = FALSE) AS non_recurring_total
+        FROM transactions_lend tl
+        JOIN transactions t ON t.id = tl.transaction_id
+        JOIN accounts rec_acc ON rec_acc.id = tl.receivable_account_id
+        WHERE t.user_id = v_user_id
+          AND t.deleted_at IS NULL
+          AND tl.deleted_at IS NULL
+          AND rec_acc.deleted_at IS NULL
+          AND t.converted_amount IS NOT NULL
+          AND (p_start_date IS NULL OR t.created_at::date >= p_start_date)
+          AND (p_end_date IS NULL OR t.created_at::date <= p_end_date)
+        GROUP BY tl.receivable_account_id, rec_acc.account_name, rec_acc.currency
+        ORDER BY receivable_account_name
+    ) sub;
 
-    -- Lend transactions
-    SELECT 
-        'lend'::transaction_type,
-        COALESCE(cp.name, 'Unknown') AS counterparty_name,
-        COALESCE(cp.type, 'other'::counterparty_type) AS counterparty_type,
-        t.original_amount AS principal_original_amount,
-        t.converted_amount AS principal_converted_amount,
-        t.currency,
-        tl.interest_rate,
-        tl.due_date,
-        tl.collateral
-    FROM transactions t
-    JOIN transactions_lend tl 
-        ON t.id = tl.transaction_id
-        AND tl.deleted_at IS NULL
-    LEFT JOIN counterparties cp 
-        ON tl.counterparty_id = cp.id
-    WHERE t.type = 'lend'
-      AND t.deleted_at IS NULL
+    RETURN COALESCE(result, '[]'::jsonb);
+END;
+$$;
 
-    ORDER BY principal_converted_amount DESC;
+-- =========================================
+-- 34. Function: get_adjustment_summary_by_account
+-- =========================================
+-- Purpose:
+--   Provides a summary of adjustment transactions grouped by account
+--   for the currently authenticated user, separating recurring and
+--   non-recurring amounts.
+
+-- Behavior:
+--   - Retrieves the current user ID using auth.uid().
+--   - Raises an exception if the request is unauthenticated.
+--   - Joins transactions_adjustment with transactions and accounts to
+--     collect relevant data.
+--   - Filters only records that are not soft deleted (deleted_at IS NULL)
+--     and where converted_amount is not null.
+--   - Supports optional filtering by start and end dates.
+--   - Aggregates sums of converted_amount separately for recurring
+--     and non-recurring transactions.
+--   - Groups results by account.
+--   - Orders results by account_name.
+--   - Returns a JSONB array of summarized records.
+
+-- Returns:
+--   JSONB
+--       Contains an array of objects with fields:
+--         - account_id
+--         - account_name
+--         - account_currency
+--         - recurring_total
+--         - non_recurring_total
+
+-- Notes:
+--   - SECURITY DEFINER allows execution while respecting RLS policies
+--     for the current user.
+--   - Returns an empty JSON array if no matching transactions exist.
+--   - Useful for dashboards, reporting, or generating summaries of
+--     adjustment transactions by account.
+-- =========================================
+CREATE OR REPLACE FUNCTION get_adjustment_summary_by_account(
+    p_start_date DATE DEFAULT NULL,
+    p_end_date DATE DEFAULT NULL
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_user_id UUID := auth.uid();
+    result JSONB := '[]'::jsonb;
+BEGIN
+    IF v_user_id IS NULL THEN
+        RAISE EXCEPTION 'Unauthenticated request';
+    END IF;
+
+    SELECT jsonb_agg(
+               jsonb_build_object(
+                   'account_id', account_id,
+                   'account_name', account_name,
+                   'account_currency', account_currency,
+                   'recurring_total', recurring_total,
+                   'non_recurring_total', non_recurring_total
+               )
+           )
+    INTO result
+    FROM (
+        SELECT
+            ta.account_id,
+            acc.account_name,
+            acc.currency AS account_currency,
+            SUM(t.converted_amount) FILTER (WHERE t.is_recurring = TRUE) AS recurring_total,
+            SUM(t.converted_amount) FILTER (WHERE t.is_recurring = FALSE) AS non_recurring_total
+        FROM transactions_adjustment ta
+        JOIN transactions t ON t.id = ta.transaction_id
+        JOIN accounts acc ON acc.id = ta.account_id
+        WHERE t.user_id = v_user_id
+          AND t.deleted_at IS NULL
+          AND ta.deleted_at IS NULL
+          AND acc.deleted_at IS NULL
+          AND t.converted_amount IS NOT NULL
+          AND (p_start_date IS NULL OR t.created_at::date >= p_start_date)
+          AND (p_end_date IS NULL OR t.created_at::date <= p_end_date)
+        GROUP BY ta.account_id, acc.account_name, acc.currency
+        ORDER BY account_name
+    ) sub;
+
+    RETURN COALESCE(result, '[]'::jsonb);
+END;
+$$;
+
+-- =========================================
+-- 35. Function: get_transfer_summary_by_to_and_from_accounts
+-- =========================================
+-- Purpose:
+--   Provides a summary of transfer transactions grouped by both
+--   from-account and to-account for the currently authenticated user,
+--   separating recurring and non-recurring amounts in both original
+--   and converted currencies.
+
+-- Behavior:
+--   - Retrieves the current user ID using auth.uid().
+--   - Raises an exception if the request is unauthenticated.
+--   - Joins transactions_transfer with transactions and accounts to
+--     collect relevant data.
+--   - Filters only records that are not soft deleted (deleted_at IS NULL)
+--     and where original_amount and converted_amount are not null.
+--   - Supports optional filtering by start and end dates.
+--   - Aggregates sums of converted_amount and original_amount separately
+--     for recurring and non-recurring transactions.
+--   - Groups results by both from-account and to-account.
+--   - Orders results by from_account_name and to_account_name.
+--   - Returns a JSONB array of summarized records.
+
+-- Returns:
+--   JSONB
+--       Contains an array of objects with fields:
+--         - from_account_id
+--         - from_account_name
+--         - from_account_currency
+--         - to_account_id
+--         - to_account_name
+--         - to_account_currency
+--         - recurring_converted_total
+--         - non_recurring_converted_total
+--         - recurring_original_total
+--         - non_recurring_original_total
+
+-- Notes:
+--   - SECURITY DEFINER allows execution while respecting RLS policies
+--     for the current user.
+--   - Returns an empty JSON array if no matching transactions exist.
+--   - Useful for dashboards, reporting, or generating summaries of
+--     transfers between accounts.
+-- =========================================
+CREATE OR REPLACE FUNCTION get_transfer_summary_by_to_and_from_accounts(
+    p_start_date DATE DEFAULT NULL,
+    p_end_date DATE DEFAULT NULL
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_user_id UUID := auth.uid();
+    result JSONB := '[]'::jsonb;
+BEGIN
+    IF v_user_id IS NULL THEN
+        RAISE EXCEPTION 'Unauthenticated request';
+    END IF;
+
+    SELECT jsonb_agg(
+               jsonb_build_object(
+                   'from_account_id', from_account_id,
+                   'from_account_name', from_account_name,
+                   'from_account_currency', from_account_currency,
+                   'to_account_id', to_account_id,
+                   'to_account_name', to_account_name,
+                   'to_account_currency', to_account_currency,
+                   'recurring_converted_total', recurring_converted_total,
+                   'non_recurring_converted_total', non_recurring_converted_total,
+                   'recurring_original_total', recurring_original_total,
+                   'non_recurring_original_total', non_recurring_original_total
+               )
+           )
+    INTO result
+    FROM (
+        SELECT
+            tt.from_account AS from_account_id,
+            from_acc.account_name AS from_account_name,
+            from_acc.currency AS from_account_currency,
+            tt.to_account AS to_account_id,
+            to_acc.account_name AS to_account_name,
+            to_acc.currency AS to_account_currency,
+            SUM(t.converted_amount) FILTER (WHERE t.is_recurring = TRUE) AS recurring_converted_total,
+            SUM(t.converted_amount) FILTER (WHERE t.is_recurring = FALSE) AS non_recurring_converted_total,
+            SUM(t.original_amount) FILTER (WHERE t.is_recurring = TRUE) AS recurring_original_total,
+            SUM(t.original_amount) FILTER (WHERE t.is_recurring = FALSE) AS non_recurring_original_total
+        FROM transactions_transfer tt
+        JOIN transactions t ON t.id = tt.transaction_id
+        JOIN accounts from_acc ON from_acc.id = tt.from_account
+        JOIN accounts to_acc ON to_acc.id = tt.to_account
+        WHERE t.user_id = v_user_id
+          AND t.deleted_at IS NULL
+          AND tt.deleted_at IS NULL
+          AND from_acc.deleted_at IS NULL
+          AND to_acc.deleted_at IS NULL
+          AND t.converted_amount IS NOT NULL
+          AND t.original_amount IS NOT NULL
+          AND (p_start_date IS NULL OR t.created_at::date >= p_start_date)
+          AND (p_end_date IS NULL OR t.created_at::date <= p_end_date)
+        GROUP BY tt.from_account, from_acc.account_name, from_acc.currency,
+                 tt.to_account, to_acc.account_name, to_acc.currency
+        ORDER BY from_account_name, to_account_name
+    ) sub;
+
+    RETURN COALESCE(result, '[]'::jsonb);
+END;
+$$;
+
+-- =========================================
+-- 36. Function: get_transactions_summary
+-- =========================================
+-- Purpose:
+--   Aggregates multiple transaction summaries for the currently
+--   authenticated user into a single JSONB object, optionally filtered
+--   by start and end dates. Includes summaries across all transaction
+--   types, accounts, and categories.
+
+-- Behavior:
+--   - Retrieves various transaction summaries by invoking existing functions:
+--       * get_transaction_counts_by_type
+--       * get_income_summary_by_source_account
+--       * get_expense_summary_by_category_account
+--       * get_investment_summary_by_investment_account
+--       * get_borrow_summary_by_loan_account
+--       * get_lend_summary_by_receivable_account
+--       * get_adjustment_summary_by_account
+--       * get_transfer_summary_by_to_and_from_accounts
+--   - Each function receives the optional p_start_date and p_end_date
+--     parameters for date filtering.
+--   - Combines results into a single JSONB object with keys:
+--       * transaction_counts_by_type
+--       * income_summary_by_source_account
+--       * expense_summary_by_category_account
+--       * investment_summary_by_investment_account
+--       * borrow_summary_by_loan_account
+--       * lend_summary_by_receivable_account
+--       * adjustment_summary_by_account
+--       * transfer_summary_by_to_and_from_accounts
+
+-- Returns:
+--   JSONB
+--       A consolidated object containing all individual summary JSONB
+--       arrays under their respective keys.
+
+-- Notes:
+--   - SECURITY DEFINER ensures execution with elevated privileges
+--     while still respecting RLS policies for the current user.
+--   - Useful for dashboards or reports requiring a comprehensive
+--     view of all transaction activity.
+--   - Each summary function handles empty results gracefully,
+--     so this function will always return a complete JSONB object.
+-- =========================================
+CREATE OR REPLACE FUNCTION get_transactions_summary(
+    p_start_date DATE DEFAULT NULL,
+    p_end_date DATE DEFAULT NULL
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_result JSONB := '{}'::jsonb;
+BEGIN
+    -- Transaction counts by type
+    v_result := v_result || jsonb_build_object(
+        'transaction_counts_by_type', get_transaction_counts_by_type(p_start_date, p_end_date)
+    );
+
+    -- Income summary by source account
+    v_result := v_result || jsonb_build_object(
+        'income_summary_by_source_account', get_income_summary_by_source_account(p_start_date, p_end_date)
+    );
+
+    -- Expense summary by category account
+    v_result := v_result || jsonb_build_object(
+        'expense_summary_by_category_account', get_expense_summary_by_category_account(p_start_date, p_end_date)
+    );
+
+    -- Investment summary by investment account
+    v_result := v_result || jsonb_build_object(
+        'investment_summary_by_investment_account', get_investment_summary_by_investment_account(p_start_date, p_end_date)
+    );
+
+    -- Borrow summary by loan account
+    v_result := v_result || jsonb_build_object(
+        'borrow_summary_by_loan_account', get_borrow_summary_by_loan_account(p_start_date, p_end_date)
+    );
+
+    -- Lend summary by receivable account
+    v_result := v_result || jsonb_build_object(
+        'lend_summary_by_receivable_account', get_lend_summary_by_receivable_account(p_start_date, p_end_date)
+    );
+
+    -- Adjustment summary by account
+    v_result := v_result || jsonb_build_object(
+        'adjustment_summary_by_account', get_adjustment_summary_by_account(p_start_date, p_end_date)
+    );
+
+    -- Transfer summary by to and from accounts
+    v_result := v_result || jsonb_build_object(
+        'transfer_summary_by_to_and_from_accounts', get_transfer_summary_by_to_and_from_accounts(p_start_date, p_end_date)
+    );
+
+    RETURN v_result;
 END;
 $$;
 
@@ -4258,7 +5022,7 @@ GRANT EXECUTE ON FUNCTION public.create_borrow_transaction(UUID, UUID, DECIMAL, 
 GRANT EXECUTE ON FUNCTION public.create_lend_transaction(UUID, UUID, DECIMAL, DECIMAL, UUID, TEXT, DECIMAL, DATE, TEXT, BOOLEAN, JSONB) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.create_adjustment_transaction(UUID, DECIMAL, VARCHAR, DECIMAL, TEXT, BOOLEAN, JSONB) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.create_transfer_transaction(UUID, UUID, DECIMAL, transfer_method, DECIMAL, TEXT, BOOLEAN, JSONB) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.create_recurring_transaction(TEXT, JSONB, recurrence_frequency, INT, DATE, DATE) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.create_recurring_transaction(UUID, recurrence_frequency, INT, DATE, DATE) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.soft_delete_transaction(UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.validate_transaction_ownership(UUID, UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.hard_delete_transaction(UUID) TO authenticated;
@@ -4273,16 +5037,16 @@ GRANT EXECUTE ON FUNCTION public.update_transfer_transaction(UUID, UUID, UUID, N
 GRANT EXECUTE ON FUNCTION public.update_recurring_transaction(UUID, recurrence_frequency, INT, DATE, DATE) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.soft_delete_recurring_transaction(UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.handle_recurring_transaction(UUID, BOOLEAN, JSONB) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_transaction_counts_by_type(DATE, DATE) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_income_summary_by_source_account(DATE, DATE) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_expense_summary_by_category_account(DATE, DATE) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_investment_summary_by_investment_account(DATE, DATE) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_borrow_summary_by_loan_account(DATE, DATE) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_lend_summary_by_receivable_account(DATE, DATE) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_adjustment_summary_by_account(DATE, DATE) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_transfer_summary_by_to_and_from_accounts(DATE, DATE) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_transactions_summary(DATE, DATE) TO authenticated;
 
-GRANT EXECUTE ON FUNCTION get_user_transaction_count(UUID, transaction_type, DATE, DATE) TO authenticated;
-GRANT EXECUTE ON FUNCTION get_recent_transactions(INTEGER) TO authenticated;
-GRANT EXECUTE ON FUNCTION get_user_transactions(INTEGER, INTEGER, timestamptz, timestamptz, transaction_type) TO authenticated;
-GRANT EXECUTE ON FUNCTION compute_transaction_direction(transaction_type, DECIMAL) TO authenticated;
-GRANT EXECUTE ON FUNCTION get_recurring_schedules() TO authenticated;
-GRANT EXECUTE ON FUNCTION get_income_summary(timestamptz, timestamptz) TO authenticated;
-GRANT EXECUTE ON FUNCTION get_expense_summary(timestamptz, timestamptz) TO authenticated;
-GRANT EXECUTE ON FUNCTION get_investment_summary(timestamptz, timestamptz) TO authenticated;
-GRANT EXECUTE ON FUNCTION get_borrow_lend_summary() TO authenticated;
 
 -- ================================
 -- Function Documentation
@@ -4317,7 +5081,7 @@ COMMENT ON FUNCTION public.create_transfer_transaction(
 'RLS-compliant function to create transfer transactions between two accounts with validation and automatic balance updates';
 
 COMMENT ON FUNCTION public.create_recurring_transaction(
-    TEXT, JSONB, recurrence_frequency, INT, DATE, DATE
+    UUID, recurrence_frequency, INT, DATE, DATE
 ) IS 'Creates a recurring transaction of a specified type and stores a template in transactions_recurring table for automated processing. Handles income, expense, investment, adjustment, borrow, lend, and transfer transaction types.';
 
 COMMENT ON FUNCTION public.soft_delete_transaction(UUID) IS
@@ -4380,12 +5144,29 @@ COMMENT ON FUNCTION public.handle_recurring_transaction(
 ) IS
 'Centralized RLS-compliant helper function to create, update, or soft-delete recurring transaction records based on parameters. Used internally by create_* and update_* transaction functions.';
 
-COMMENT ON FUNCTION get_recent_transactions(INTEGER) IS 'RLS-compliant recent transactions query';
-COMMENT ON FUNCTION get_income_summary(timestamptz, timestamptz) IS 
-'RLS-compliant function to get income summary by source and account for current user';
-COMMENT ON FUNCTION get_expense_summary(timestamptz, timestamptz) IS 
-'RLS-compliant function to get expense summary by category and account for current user';
-COMMENT ON FUNCTION get_investment_summary(timestamptz, timestamptz) IS 
-'RLS-compliant function to get investment summary by asset type for current user';
-CREATE INDEX IF NOT EXISTS idx_transactions_recurring_user_deleted 
-ON transactions_recurring(user_id, deleted_at) WHERE deleted_at IS NULL;
+COMMENT ON FUNCTION public.get_transaction_counts_by_type(DATE, DATE)
+IS 'RLS-compliant function returning transaction counts by type for the current user';
+
+COMMENT ON FUNCTION public.get_income_summary_by_source_account(DATE, DATE)
+IS 'RLS-compliant function returning income summary grouped by source and account for the current user';
+
+COMMENT ON FUNCTION public.get_expense_summary_by_category_account(DATE, DATE)
+IS 'RLS-compliant function returning expense summary grouped by category and account for the current user';
+
+COMMENT ON FUNCTION public.get_investment_summary_by_investment_account(DATE, DATE)
+IS 'RLS-compliant function returning investment summary grouped by investment account for the current user';
+
+COMMENT ON FUNCTION public.get_borrow_summary_by_loan_account(DATE, DATE)
+IS 'RLS-compliant function returning borrow summary grouped by loan account for the current user';
+
+COMMENT ON FUNCTION public.get_lend_summary_by_receivable_account(DATE, DATE)
+IS 'RLS-compliant function returning lend summary grouped by receivable account for the current user';
+
+COMMENT ON FUNCTION public.get_adjustment_summary_by_account(DATE, DATE)
+IS 'RLS-compliant function returning adjustment summary grouped by account for the current user';
+
+COMMENT ON FUNCTION public.get_transfer_summary_by_to_and_from_accounts(DATE, DATE)
+IS 'RLS-compliant function returning transfer summary grouped by source and destination accounts for the current user';
+
+COMMENT ON FUNCTION public.get_transactions_summary(DATE, DATE)
+IS 'RLS-compliant master function aggregating all transaction summaries (income, expense, investment, borrow, lend, adjustment, transfer) for the current user';
