@@ -135,6 +135,17 @@ BEGIN
             );
 
         WHEN 'loan' THEN
+            -- Validate counterparty_id if provided
+            IF p_details ? 'counterparty_id' THEN
+                IF NOT EXISTS (
+                    SELECT 1
+                    FROM counterparties
+                    WHERE id = (p_details->>'counterparty_id')::UUID
+                ) THEN
+                    RAISE EXCEPTION 'Invalid counterparty_id: % does not exist', p_details->>'counterparty_id';
+                END IF;
+            END IF;
+
             INSERT INTO loan_accounts(account_id, loan_type, principal_amount, outstanding_amount, interest_rate, term_months, start_date, end_date, status, notes, counterparty_id, collateral)
             VALUES (
                 v_account_id,
@@ -147,7 +158,7 @@ BEGIN
                 COALESCE((p_details->>'end_date')::DATE, CURRENT_DATE + INTERVAL '1 year'),
                 COALESCE(p_details->>'status', 'active'),
                 COALESCE(p_details->>'notes', 'Default loan account'),
-                (p_details->>'counterparty_id')::UUID,
+                CASE WHEN p_details ? 'counterparty_id' THEN (p_details->>'counterparty_id')::UUID ELSE NULL END,
                 p_details->>'collateral'
             );
 
