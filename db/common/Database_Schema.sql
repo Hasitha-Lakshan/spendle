@@ -46,8 +46,6 @@ CREATE TYPE transfer_method AS ENUM (
 
 CREATE TYPE counterparty_type AS ENUM ('person','merchant','company','bank','government','organization','other');
 
-CREATE TYPE transaction_direction AS ENUM ('inflow','outflow','neutral','unknown');
-
 -- Recurrence frequency for the recurring engine
 CREATE TYPE recurrence_frequency AS ENUM ('daily','weekly','monthly','yearly');
 
@@ -78,6 +76,19 @@ CREATE TABLE accounts (
   deleted_at timestamptz NULL DEFAULT NULL,
   created_at timestamptz DEFAULT now(),
   updated_at timestamptz DEFAULT now()
+);
+
+-- =========================================
+-- Counterparties
+-- =========================================
+CREATE TABLE counterparties (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES profiles(user_id) ON DELETE CASCADE,
+  name VARCHAR(255) NOT NULL,
+  type counterparty_type NOT NULL,
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now(),
+  deleted_at timestamptz NULL DEFAULT NULL
 );
 
 -- =========================================
@@ -258,41 +269,34 @@ CREATE TABLE income_sources (
 );
 
 -- =========================================
--- Counterparties
--- =========================================
-CREATE TABLE counterparties (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID NOT NULL REFERENCES profiles(user_id) ON DELETE CASCADE,
-  name VARCHAR(255) NOT NULL,
-  type counterparty_type NOT NULL,
-  created_at timestamptz DEFAULT now(),
-  updated_at timestamptz DEFAULT now(),
-  deleted_at timestamptz NULL DEFAULT NULL
-);
-
--- =========================================
 -- Transactions
 -- =========================================
 -- Base Transactions Table
 CREATE TABLE transactions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID NOT NULL REFERENCES profiles(user_id) ON DELETE CASCADE,
+  transaction_date DATE NOT NULL,    -- BUSINESS DATE (when money actually moved)
   type transaction_type NOT NULL,
   original_amount DECIMAL(36,18) NOT NULL,
   original_currency VARCHAR(10) NOT NULL,
   exchange_rate DECIMAL(36,18),
   converted_amount DECIMAL(36,18),
-  fees DECIMAL(36,18) DEFAULT 0,          -- <-- NEW COLUMN
+  fees DECIMAL(36,18) DEFAULT 0,
   notes TEXT,
   is_recurring BOOLEAN NOT NULL DEFAULT FALSE,
   deleted_at timestamptz NULL DEFAULT NULL,
   created_at timestamptz DEFAULT now(),
   updated_at timestamptz DEFAULT now(),
 
-  -- Stored columns for indexes
-  created_month DATE,               -- month for aggregation
+  -- Stored / derived columns
+  transaction_month DATE,           -- first day of month (derived)
   type_amount_jsonb JSONB,          -- JSONB for type + amount queries
-  is_recent BOOLEAN DEFAULT TRUE    -- last 30 days flag
+  is_recent BOOLEAN DEFAULT TRUE,    -- last 30 days flag
+
+  CONSTRAINT chk_transaction_date_reasonable CHECK (
+    transaction_date >= DATE '2000-01-01'
+    AND transaction_date <= CURRENT_DATE + INTERVAL '1 year'
+  )
 );
 
 -- =========================================
@@ -424,7 +428,7 @@ CREATE TABLE transactions_recurring (
     interval INT NOT NULL DEFAULT 1,           -- every N days/weeks/months
     start_date DATE NOT NULL,
     end_date DATE,                             -- optional, NULL = no end
-    next_occurrence timestamptz NOT NULL,      -- next due date
+    next_occurrence DATE NOT NULL,      -- next due date
 
     -- Ownership & actor semantics
     user_id UUID NOT NULL REFERENCES profiles(user_id) ON DELETE CASCADE, -- affected user
@@ -495,8 +499,10 @@ CREATE INDEX idx_counterparties_user_id ON counterparties(user_id);
 
 CREATE INDEX idx_tx_user_id ON transactions(user_id);
 CREATE INDEX idx_tx_type ON transactions(type);
-CREATE INDEX idx_tx_user_currency ON transactions(user_id, currency);
-CREATE INDEX idx_tx_created_at ON transactions(created_at);
+CREATE INDEX idx_tx_user_currency ON transactions(user_id, original_currency);
+CREATE INDEX idx_transactions_user_transaction_date ON transactions(user_id, transaction_date DESC) WHERE deleted_at IS NULL;
+CREATE INDEX idx_transactions_user_type_transaction_date ON transactions(user_id, type, transaction_date DESC) WHERE deleted_at IS NULL;
+
 
 CREATE INDEX idx_txi_txid ON transactions_income(transaction_id);
 CREATE INDEX idx_txi_account_id ON transactions_income(account_id);
@@ -507,14 +513,16 @@ CREATE INDEX idx_txe_account_id ON transactions_expense(account_id);
 CREATE INDEX idx_txe_category_id ON transactions_expense(category_id);
 
 CREATE INDEX idx_txin_txid ON transactions_investment(transaction_id);
-CREATE INDEX idx_txin_account_id ON transactions_investment(account_id);
+CREATE INDEX idx_txin_funding_account_id ON transactions_investment(funding_account_id);
+CREATE INDEX idx_txin_investment_account_id ON transactions_investment(investment_account_id);
 
 CREATE INDEX idx_txb_txid ON transactions_borrow(transaction_id);
-CREATE INDEX idx_txb_account_id ON transactions_borrow(account_id);
-CREATE INDEX idx_txb_counterparty_id ON transactions_borrow(counterparty_id);
+CREATE INDEX idx_txb_loan_account_id ON transactions_borrow(loan_account_id);
+CREATE INDEX idx_txb_disbursement_account_id ON transactions_borrow(disbursement_account_id);
 
 CREATE INDEX idx_txl_txid ON transactions_lend(transaction_id);
-CREATE INDEX idx_txl_account_id ON transactions_lend(account_id);
+CREATE INDEX idx_txl_funding_account_id ON transactions_lend(funding_account_id);
+CREATE INDEX idx_txl_receivable_account_id ON transactions_lend(receivable_account_id);
 CREATE INDEX idx_txl_counterparty_id ON transactions_lend(counterparty_id);
 
 CREATE INDEX idx_txt_txid ON transactions_transfer(transaction_id);
@@ -579,7 +587,8 @@ CREATE INDEX IF NOT EXISTS idx_transactions_recurring_user_deleted
 ON transactions_recurring(user_id, deleted_at) WHERE deleted_at IS NULL;
 
 CREATE INDEX idx_exchange_rates ON exchange_rates(from_currency, to_currency);
-CREATE INDEX idx_transactions_is_recent ON transactions (created_at DESC) WHERE is_recent = true;
+CREATE INDEX idx_transactions_is_recent ON transactions (transaction_date DESC) WHERE is_recent = true AND deleted_at IS NULL;
+
 
 -- =========================================
 -- API Access Grants for Tables

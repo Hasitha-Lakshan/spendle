@@ -187,32 +187,32 @@ CREATE TRIGGER trg_tx_transfer_validate
 --   Automatically populate and maintain certain derived columns in the transactions table
 --   whenever rows are inserted or updated. This ensures consistency and reduces manual computation.
 --
--- 1. Function: set_created_month
+-- 1. Function: set_transaction_month
 -- -----------------------------------------
 -- Behavior:
---   - Sets NEW.created_month to the first day of the month of NEW.created_at
+--   - Sets NEW.transaction_month to the first day of the month of NEW.created_at
 --   - Provides an easy reference for monthly aggregation and reporting
 --
 -- Parameters:
 --   NEW (trigger record) - The row being inserted or updated
 --
 -- Returns:
---   NEW - The modified row with updated created_month
+--   NEW - The modified row with updated transaction_month
 --
 -- Notes:
 --   - Trigger applied BEFORE INSERT OR UPDATE on transactions
 --   - Uses SECURITY DEFINER to ensure consistent behavior regardless of RLS
 -- =========================================
-CREATE OR REPLACE FUNCTION public.set_created_month()
+CREATE OR REPLACE FUNCTION public.set_transaction_month()
 RETURNS TRIGGER AS $$
 BEGIN
-    -- Ensure created_at is set before computing created_month
-    IF NEW.created_at IS NULL THEN
-        NEW.created_at := NOW();
+    -- transaction_date is mandatory, but guard anyway
+    IF NEW.transaction_date IS NULL THEN
+        RAISE EXCEPTION 'transaction_date cannot be NULL';
     END IF;
 
-    -- Set created_month to the first day of the created_at month
-    NEW.created_month := DATE_TRUNC('month', NEW.created_at)::DATE;
+    -- First day of the transaction month (business month)
+    NEW.transaction_month := DATE_TRUNC('month', NEW.transaction_date)::DATE;
     RETURN NEW;
 END;
 $$
@@ -220,10 +220,10 @@ LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public, pg_catalog;
 
-CREATE TRIGGER trg_transactions_set_created_month
+CREATE TRIGGER trg_transactions_set_transaction_month
 BEFORE INSERT OR UPDATE ON transactions
 FOR EACH ROW
-EXECUTE FUNCTION public.set_created_month();
+EXECUTE FUNCTION public.set_transaction_month();
 
 -- 2. Function: set_type_amount_jsonb
 -- -----------------------------------------
@@ -286,7 +286,8 @@ EXECUTE FUNCTION public.set_type_amount_jsonb();
 CREATE OR REPLACE FUNCTION public.set_is_recent()
 RETURNS TRIGGER AS $$
 BEGIN
-    NEW.is_recent := NEW.created_at >= (CURRENT_DATE - INTERVAL '30 days');
+    NEW.is_recent := NEW.transaction_date IS NOT NULL
+        AND NEW.transaction_date >= (CURRENT_DATE - INTERVAL '30 days');
     RETURN NEW;
 END;
 $$
@@ -325,8 +326,8 @@ AS $$
 BEGIN
   -- Recalculate only rows that might have changed
   UPDATE transactions
-  SET is_recent = (created_at >= (CURRENT_DATE - INTERVAL '30 days'))
-  WHERE is_recent IS DISTINCT FROM (created_at >= (CURRENT_DATE - INTERVAL '30 days'));
+  SET is_recent = (transaction_date >= (CURRENT_DATE - INTERVAL '30 days'))
+  WHERE is_recent IS DISTINCT FROM (transaction_date >= (CURRENT_DATE - INTERVAL '30 days'));
 END;
 $$;
 
@@ -1406,16 +1407,10 @@ AS $$
 BEGIN
     -- 1. Auto-populate action_by if not provided
     IF NEW.action_by IS NULL THEN
-        NEW.action_by := auth.uid();
-
-        -- Fallback to the affected user if no authenticated user
-        IF NEW.action_by IS NULL THEN
-            NEW.action_by := NEW.user_id;
-        END IF;
+        NEW.action_by := COALESCE(auth.uid(), NEW.user_id);
     END IF;
 
-    -- 2. Validate that template transaction exists, belongs to user, and is active
-    --    Also ensure it is correctly marked as a recurring transaction template.
+    -- 2. Validate template transaction
     IF NOT EXISTS (
         SELECT 1 
         FROM transactions 
@@ -1423,39 +1418,26 @@ BEGIN
           AND user_id = NEW.user_id
           AND deleted_at IS NULL
           AND is_recurring = TRUE
+          AND original_amount IS NOT NULL
+          AND original_currency IS NOT NULL
+          AND fees IS NOT NULL
     ) THEN
-        RAISE EXCEPTION 'Template transaction does not exist, is deleted, access denied, or not marked as recurring';
+        RAISE EXCEPTION 'Template transaction invalid or not accessible';
     END IF;
 
     -- 3. Validate recurrence interval
     IF NEW.interval IS NULL OR NEW.interval <= 0 THEN
-        RAISE EXCEPTION 'Recurrence interval must be a positive integer';
+        RAISE EXCEPTION 'Recurrence interval must be positive';
     END IF;
 
-    -- 4. Ensure frequency is valid
+    -- 4. Validate frequency
     IF NEW.frequency IS NULL THEN
         RAISE EXCEPTION 'Recurrence frequency must be specified';
     END IF;
 
-    -- 5. Set next_occurrence if not provided
+    -- 5. Populate next_occurrence
     IF NEW.next_occurrence IS NULL THEN
-        IF NEW.start_date IS NOT NULL THEN
-            NEW.next_occurrence := NEW.start_date;
-        ELSE
-            NEW.next_occurrence := NOW();
-        END IF;
-    END IF;
-
-    -- 6. Ensure amounts, currencies, and fees are valid
-    IF NOT EXISTS (
-        SELECT 1
-        FROM transactions t
-        WHERE t.id = NEW.transaction_template_id
-          AND t.original_amount IS NOT NULL
-          AND t.original_currency IS NOT NULL
-          AND t.fees IS NOT NULL
-    ) THEN
-        RAISE EXCEPTION 'Template transaction must have valid amount, currency, and fees defined';
+        NEW.next_occurrence := COALESCE(NEW.start_date, NOW()::DATE);
     END IF;
 
     RETURN NEW;

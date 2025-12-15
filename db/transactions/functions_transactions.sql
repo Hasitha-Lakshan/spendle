@@ -36,6 +36,7 @@
 -- =========================================
 CREATE OR REPLACE FUNCTION public.create_income_transaction(
     p_account_id UUID,
+    p_transaction_date DATE,
     p_amount DECIMAL,
     p_currency VARCHAR,
     p_source_id UUID,
@@ -79,6 +80,15 @@ BEGIN
         RAISE EXCEPTION 'Account ID is required';
     END IF;
 
+    -- Ensure transaction_date always has a value
+    IF p_transaction_date IS NULL THEN
+        RAISE EXCEPTION 'transaction_date is required';
+    END IF;
+
+    IF p_transaction_date < DATE '2000-01-01' OR p_transaction_date > CURRENT_DATE + INTERVAL '1 year' THEN
+        RAISE EXCEPTION 'transaction_date is outside the allowed range';
+    END IF;
+
     -- === STEP 3: Validate account ownership and fetch currency
     SELECT currency INTO v_account_currency
     FROM accounts
@@ -115,6 +125,7 @@ BEGIN
     INSERT INTO transactions (
         user_id,
         type,
+        transaction_date,
         original_amount,
         original_currency,
         exchange_rate,
@@ -127,6 +138,7 @@ BEGIN
     VALUES (
         v_user_id,
         'income',
+        p_transaction_date,
         p_amount,
         UPPER(p_currency),
         v_exchange_rate,
@@ -196,6 +208,7 @@ $$;
 -- =========================================
 CREATE OR REPLACE FUNCTION public.create_expense_transaction(
     p_account_id UUID,
+    p_transaction_date DATE,
     p_amount DECIMAL,
     p_currency VARCHAR,
     p_sub_category_id UUID,
@@ -252,6 +265,15 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'Invalid payment method: %', p_payment_method;
     END IF;
+    
+    -- Ensure transaction_date always has a value
+    IF p_transaction_date IS NULL THEN
+        RAISE EXCEPTION 'transaction_date is required';
+    END IF;
+
+    IF p_transaction_date < DATE '2000-01-01' OR p_transaction_date > CURRENT_DATE + INTERVAL '1 year' THEN
+        RAISE EXCEPTION 'transaction_date is outside the allowed range';
+    END IF;
 
     -- === STEP 3: Validate account ownership and fetch currency ===
     SELECT currency INTO v_account_currency
@@ -289,6 +311,7 @@ BEGIN
     INSERT INTO transactions (
         user_id,
         type,
+        transaction_date,
         original_amount,
         original_currency,
         exchange_rate,
@@ -301,6 +324,7 @@ BEGIN
     VALUES (
         v_user_id,
         'expense',
+        p_transaction_date,
         p_amount,
         UPPER(p_currency),
         v_exchange_rate,
@@ -371,6 +395,7 @@ $$;
 -- =========================================
 CREATE OR REPLACE FUNCTION public.create_adjustment_transaction(
     p_account_id UUID,
+    p_transaction_date DATE,
     p_amount DECIMAL,
     p_currency VARCHAR,
     p_fees DECIMAL DEFAULT 0,             -- fees for the adjustment transaction
@@ -411,6 +436,15 @@ BEGIN
     IF p_fees IS NULL OR p_fees < 0 THEN
         RAISE EXCEPTION 'Fees cannot be null or negative';
     END IF;
+    
+    -- Ensure transaction_date always has a value
+    IF p_transaction_date IS NULL THEN
+        RAISE EXCEPTION 'transaction_date is required';
+    END IF;
+
+    IF p_transaction_date < DATE '2000-01-01' OR p_transaction_date > CURRENT_DATE + INTERVAL '1 year' THEN
+        RAISE EXCEPTION 'transaction_date is outside the allowed range';
+    END IF;
 
     -- === STEP 3: Validate account ownership and fetch currency ===
     SELECT currency INTO v_account_currency
@@ -433,6 +467,7 @@ BEGIN
     INSERT INTO transactions (
         user_id,
         type,
+        transaction_date,
         original_amount,
         original_currency,
         exchange_rate,
@@ -445,6 +480,7 @@ BEGIN
     VALUES (
         v_user_id,
         'adjustment',
+        p_transaction_date,
         p_amount,
         UPPER(p_currency),
         v_exchange_rate,
@@ -520,6 +556,7 @@ $$;
 CREATE OR REPLACE FUNCTION public.create_investment_transaction(
     p_funding_account_id UUID,              -- account providing the funds
     p_investment_account_id UUID,           -- account receiving the investment
+    p_transaction_date DATE,
     p_amount DECIMAL,
     p_asset_type VARCHAR,
     p_asset_symbol VARCHAR,
@@ -597,6 +634,15 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'Invalid risk level: %', p_risk_level;
     END IF;
+    
+    -- Ensure transaction_date always has a value
+    IF p_transaction_date IS NULL THEN
+        RAISE EXCEPTION 'transaction_date is required';
+    END IF;
+
+    IF p_transaction_date < DATE '2000-01-01' OR p_transaction_date > CURRENT_DATE + INTERVAL '1 year' THEN
+        RAISE EXCEPTION 'transaction_date is outside the allowed range';
+    END IF;
 
     -- === STEP 3: Validate funding account ownership and fetch currency ===
     SELECT currency INTO v_funding_account_currency
@@ -633,6 +679,7 @@ BEGIN
     INSERT INTO transactions (
         user_id,
         type,
+        transaction_date,
         original_amount,
         original_currency,
         exchange_rate,
@@ -645,6 +692,7 @@ BEGIN
     VALUES (
         v_user_id,
         'investment',
+        p_transaction_date,
         p_amount,
         v_funding_account_currency,
         v_exchange_rate,
@@ -726,6 +774,7 @@ $$;
 CREATE OR REPLACE FUNCTION public.create_borrow_transaction(
     p_loan_account_id UUID,             -- Loan liability account
     p_disbursement_account_id UUID,     -- Account where borrowed funds go (cash, bank, wallet)
+    p_transaction_date DATE,
     p_amount DECIMAL,
     p_fees DECIMAL DEFAULT 0,           -- fees for the transaction
     p_notes TEXT DEFAULT NULL,
@@ -772,6 +821,15 @@ BEGIN
     IF p_fees IS NULL OR p_fees < 0 THEN
         RAISE EXCEPTION 'Fees cannot be null or negative';
     END IF;
+    
+    -- Ensure transaction_date always has a value
+    IF p_transaction_date IS NULL THEN
+        RAISE EXCEPTION 'transaction_date is required';
+    END IF;
+
+    IF p_transaction_date < DATE '2000-01-01' OR p_transaction_date > CURRENT_DATE + INTERVAL '1 year' THEN
+        RAISE EXCEPTION 'transaction_date is outside the allowed range';
+    END IF;
 
     -- === STEP 5: Validate loan account ownership and fetch currency ===
     SELECT currency INTO v_loan_account_currency 
@@ -808,6 +866,7 @@ BEGIN
     INSERT INTO transactions (
         user_id,
         type,
+        transaction_date,
         original_amount,
         original_currency,
         exchange_rate,
@@ -820,6 +879,7 @@ BEGIN
     VALUES (
         v_user_id,
         'borrow',
+        p_transaction_date,
         p_amount,
         v_loan_account_currency,
         v_exchange_rate,
@@ -898,6 +958,7 @@ $$;
 CREATE OR REPLACE FUNCTION public.create_lend_transaction(
     p_receivable_account_id UUID,       -- Where the receivable is tracked (loan asset)
     p_funding_account_id UUID,          -- Account providing funds (cash, bank, wallet)
+    p_transaction_date DATE,
     p_amount DECIMAL,
     p_interest_rate DECIMAL(5,2),
     p_counterparty_id UUID,
@@ -970,6 +1031,15 @@ BEGIN
     IF p_collateral IS NULL OR LENGTH(TRIM(p_collateral)) = 0 THEN
         RAISE EXCEPTION 'Collateral is required';
     END IF;
+    
+    -- Ensure transaction_date always has a value
+    IF p_transaction_date IS NULL THEN
+        RAISE EXCEPTION 'transaction_date is required';
+    END IF;
+
+    IF p_transaction_date < DATE '2000-01-01' OR p_transaction_date > CURRENT_DATE + INTERVAL '1 year' THEN
+        RAISE EXCEPTION 'transaction_date is outside the allowed range';
+    END IF;
 
     -- === STEP 5: Validate receivable account ownership and fetch currency ===
     SELECT currency INTO v_receivable_account_currency
@@ -1006,6 +1076,7 @@ BEGIN
     INSERT INTO transactions (
         user_id,
         type,
+        transaction_date,
         original_amount,
         original_currency,
         exchange_rate,
@@ -1018,6 +1089,7 @@ BEGIN
     VALUES (
         v_user_id,
         'lend',
+        p_transaction_date,
         p_amount,
         v_funding_account_currency,
         v_exchange_rate,
@@ -1105,6 +1177,7 @@ $$;
 CREATE OR REPLACE FUNCTION public.create_transfer_transaction(
     p_from_account UUID,
     p_to_account UUID,
+    p_transaction_date DATE,
     p_amount DECIMAL,
     p_transfer_method transfer_method,
     p_fees DECIMAL DEFAULT 0,
@@ -1170,6 +1243,15 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'Invalid transfer method: %', p_transfer_method;
     END IF;
+    
+    -- Ensure transaction_date always has a value
+    IF p_transaction_date IS NULL THEN
+        RAISE EXCEPTION 'transaction_date is required';
+    END IF;
+
+    IF p_transaction_date < DATE '2000-01-01' OR p_transaction_date > CURRENT_DATE + INTERVAL '1 year' THEN
+        RAISE EXCEPTION 'transaction_date is outside the allowed range';
+    END IF;
 
     -- === STEP 5: Validate from_account ownership and fetch currency ===
     SELECT currency INTO v_from_account_currency
@@ -1206,6 +1288,7 @@ BEGIN
     INSERT INTO transactions (
         user_id,
         type,
+        transaction_date,
         original_amount,
         original_currency,
         exchange_rate,
@@ -1218,6 +1301,7 @@ BEGIN
     VALUES (
         v_user_id,
         'transfer',
+        p_transaction_date,
         p_amount,
         v_from_account_currency,
         v_exchange_rate,
@@ -1298,6 +1382,7 @@ $$;
 CREATE OR REPLACE FUNCTION public.update_income_transaction(
     p_transaction_id UUID,
     p_account_id UUID,
+    p_transaction_date DATE,
     p_amount NUMERIC,
     p_currency VARCHAR,
     p_source_id UUID,
@@ -1344,6 +1429,15 @@ BEGIN
 
     IF NOT FOUND THEN
         RAISE EXCEPTION 'Income transaction not found or access denied';
+    END IF;
+    
+    -- Ensure transaction_date is always provided
+    IF p_transaction_date IS NULL THEN
+        RAISE EXCEPTION 'transaction_date is required';
+    END IF;
+
+    IF p_transaction_date < DATE '2000-01-01' OR p_transaction_date > CURRENT_DATE + INTERVAL '1 year' THEN
+        RAISE EXCEPTION 'transaction_date is outside the allowed range';
     END IF;
 
     -- === STEP 3: Validate amount and fees ===
@@ -1423,6 +1517,7 @@ BEGIN
     -- === STEP 11: Update transactions table ===
     UPDATE transactions
     SET
+        transaction_date  = p_transaction_date,
         original_amount   = p_amount,
         original_currency = p_currency,
         exchange_rate     = v_exchange_rate,
@@ -1527,6 +1622,7 @@ $$;
 CREATE OR REPLACE FUNCTION public.update_expense_transaction(
     p_transaction_id UUID,
     p_account_id UUID,
+    p_transaction_date DATE,
     p_amount NUMERIC,
     p_currency VARCHAR,
     p_sub_category_id UUID,
@@ -1575,6 +1671,15 @@ BEGIN
     IF NOT FOUND THEN
         RAISE EXCEPTION 'Transaction not found or access denied';
     END IF;
+    
+    -- Ensure transaction_date is always provided
+    IF p_transaction_date IS NULL THEN
+        RAISE EXCEPTION 'transaction_date is required';
+    END IF;
+
+    IF p_transaction_date < DATE '2000-01-01' OR p_transaction_date > CURRENT_DATE + INTERVAL '1 year' THEN
+        RAISE EXCEPTION 'transaction_date is outside the allowed range';
+    END IF;
 
     -- === STEP 3: Validate amount and fees ===
     IF p_amount IS NOT NULL AND p_amount <= 0 THEN
@@ -1614,9 +1719,9 @@ BEGIN
             FROM expense_subcategories s
             JOIN expense_categories c ON c.id = s.category_id
             WHERE s.id = p_sub_category_id
-            AND (c.user_id = v_user_id OR v_is_admin)
-            AND s.deleted_at IS NULL
-            AND c.deleted_at IS NULL
+              AND (c.user_id = v_user_id OR v_is_admin)
+              AND s.deleted_at IS NULL
+              AND c.deleted_at IS NULL
         ) THEN
             RAISE EXCEPTION 'Expense sub-category not found, deleted, or not accessible';
         END IF;
@@ -1663,6 +1768,7 @@ BEGIN
     -- === STEP 11: Update transactions table ===
     UPDATE transactions
     SET
+        transaction_date  = p_transaction_date,
         original_amount   = p_amount,
         original_currency = p_currency,
         exchange_rate     = v_exchange_rate,
@@ -1673,6 +1779,7 @@ BEGIN
     WHERE id = p_transaction_id
       AND (user_id = v_user_id OR v_is_admin)
       AND deleted_at IS NULL;
+
     IF NOT FOUND THEN
         RAISE EXCEPTION 'Transaction update failed or access denied';
     END IF;
@@ -1685,6 +1792,7 @@ BEGIN
         payment_method = COALESCE(p_payment_method, v_existing.payment_method),
         updated_at     = NOW()
     WHERE transaction_id = p_transaction_id;
+
     IF NOT FOUND THEN
         RAISE EXCEPTION 'Expense details update failed or access denied';
     END IF;
@@ -1765,6 +1873,7 @@ $$;
 CREATE OR REPLACE FUNCTION public.update_adjustment_transaction(
     p_transaction_id UUID,
     p_account_id UUID,
+    p_transaction_date DATE,
     p_amount NUMERIC,
     p_currency VARCHAR,
     p_fees NUMERIC DEFAULT 0,
@@ -1810,6 +1919,15 @@ BEGIN
 
     IF NOT FOUND THEN
         RAISE EXCEPTION 'Adjustment transaction not found or access denied';
+    END IF;
+    
+    -- Ensure transaction_date is always provided
+    IF p_transaction_date IS NULL THEN
+        RAISE EXCEPTION 'transaction_date is required';
+    END IF;
+
+    IF p_transaction_date < DATE '2000-01-01' OR p_transaction_date > CURRENT_DATE + INTERVAL '1 year' THEN
+        RAISE EXCEPTION 'transaction_date is outside the allowed range';
     END IF;
 
     -- === STEP 3: Basic validation ===
@@ -1870,6 +1988,7 @@ BEGIN
     -- === STEP 10: Update transactions table ===
     UPDATE transactions
     SET
+        transaction_date  = p_transaction_date,
         original_amount   = p_amount,
         original_currency = p_currency,
         exchange_rate     = v_exchange_rate,
@@ -1977,6 +2096,7 @@ CREATE OR REPLACE FUNCTION public.update_investment_transaction(
     p_transaction_id UUID,
     p_funding_account_id UUID,
     p_investment_account_id UUID,
+    p_transaction_date DATE,
     p_amount NUMERIC,
     p_asset_type VARCHAR,
     p_asset_symbol VARCHAR,
@@ -2023,6 +2143,15 @@ BEGIN
 
     IF NOT FOUND THEN
         RAISE EXCEPTION 'Transaction not found or access denied';
+    END IF;
+    
+    -- Ensure transaction_date is always provided
+    IF p_transaction_date IS NULL THEN
+        RAISE EXCEPTION 'transaction_date is required';
+    END IF;
+
+    IF p_transaction_date < DATE '2000-01-01' OR p_transaction_date > CURRENT_DATE + INTERVAL '1 year' THEN
+        RAISE EXCEPTION 'transaction_date is outside the allowed range';
     END IF;
 
     -- === STEP 3: Basic validation ===
@@ -2131,6 +2260,7 @@ BEGIN
     -- === STEP 11: Update transactions table ===
     UPDATE transactions
     SET
+        transaction_date  = p_transaction_date,
         original_amount   = p_amount,
         original_currency = v_funding_currency,
         exchange_rate     = v_exchange_rate,
@@ -2239,6 +2369,7 @@ CREATE OR REPLACE FUNCTION public.update_borrow_transaction(
     p_transaction_id UUID,
     p_loan_account_id UUID,
     p_disbursement_account_id UUID,
+    p_transaction_date DATE,
     p_amount NUMERIC,
     p_fees NUMERIC DEFAULT 0,
     p_notes TEXT DEFAULT NULL,
@@ -2281,6 +2412,15 @@ BEGIN
 
     IF NOT FOUND THEN
         RAISE EXCEPTION 'Transaction not found or access denied';
+    END IF;
+    
+    -- Ensure transaction_date is always provided
+    IF p_transaction_date IS NULL THEN
+        RAISE EXCEPTION 'transaction_date is required';
+    END IF;
+
+    IF p_transaction_date < DATE '2000-01-01' OR p_transaction_date > CURRENT_DATE + INTERVAL '1 year' THEN
+        RAISE EXCEPTION 'transaction_date is outside the allowed range';
     END IF;
 
     -- === STEP 3: Validate amount and fees ===
@@ -2368,6 +2508,7 @@ BEGIN
     -- === STEP 11: Update transactions table ===
     UPDATE transactions
     SET
+        transaction_date  = p_transaction_date,
         original_amount   = p_amount,
         original_currency = v_loan_account_currency,
         exchange_rate     = v_exchange_rate,
@@ -2477,6 +2618,7 @@ CREATE OR REPLACE FUNCTION public.update_lend_transaction(
     p_transaction_id UUID,
     p_funding_account_id UUID,
     p_receivable_account_id UUID,
+    p_transaction_date DATE,
     p_amount NUMERIC,
     p_counterparty_id UUID,
     p_interest_rate NUMERIC,
@@ -2523,6 +2665,15 @@ BEGIN
 
     IF NOT FOUND THEN
         RAISE EXCEPTION 'Transaction not found or access denied';
+    END IF;
+    
+    -- Ensure transaction_date is always provided
+    IF p_transaction_date IS NULL THEN
+        RAISE EXCEPTION 'transaction_date is required';
+    END IF;
+
+    IF p_transaction_date < DATE '2000-01-01' OR p_transaction_date > CURRENT_DATE + INTERVAL '1 year' THEN
+        RAISE EXCEPTION 'transaction_date is outside the allowed range';
     END IF;
 
     -- === STEP 3: Validate amount and fees ===
@@ -2632,6 +2783,7 @@ BEGIN
     -- === STEP 11: Update transactions table ===
     UPDATE transactions
     SET
+        transaction_date  = p_transaction_date,
         original_amount   = p_amount,
         original_currency = v_funding_currency,
         exchange_rate     = v_exchange_rate,
@@ -2741,6 +2893,7 @@ CREATE OR REPLACE FUNCTION public.update_transfer_transaction(
     p_transaction_id UUID,
     p_from_account UUID,
     p_to_account UUID,
+    p_transaction_date DATE,
     p_amount NUMERIC,
     p_transfer_method transfer_method,
     p_fees NUMERIC DEFAULT 0,
@@ -2784,6 +2937,15 @@ BEGIN
 
     IF NOT FOUND THEN
         RAISE EXCEPTION 'Transaction not found or access denied';
+    END IF;
+    
+    -- Ensure transaction_date is always provided
+    IF p_transaction_date IS NULL THEN
+        RAISE EXCEPTION 'transaction_date is required';
+    END IF;
+
+    IF p_transaction_date < DATE '2000-01-01' OR p_transaction_date > CURRENT_DATE + INTERVAL '1 year' THEN
+        RAISE EXCEPTION 'transaction_date is outside the allowed range';
     END IF;
 
     -- === STEP 3: Basic validations ===
@@ -2885,6 +3047,7 @@ BEGIN
     -- === STEP 11: Update transactions table ===
     UPDATE transactions
     SET
+        transaction_date  = p_transaction_date,
         original_amount   = p_amount,
         original_currency = v_from_currency,
         exchange_rate     = v_exchange_rate,
@@ -3695,6 +3858,7 @@ CREATE OR REPLACE FUNCTION get_recent_transactions(p_limit INTEGER DEFAULT 10)
 RETURNS TABLE (
     transaction_id UUID,
     type transaction_type,
+    transaction_date DATE,
     original_amount NUMERIC,
     original_currency VARCHAR,
     fees NUMERIC,
@@ -3711,6 +3875,7 @@ BEGIN
     SELECT 
         t.id AS transaction_id,
         t.type,
+        t.transaction_date,
         t.original_amount,
         t.original_currency,
         t.fees,
@@ -3720,7 +3885,8 @@ BEGIN
     FROM transactions t
     WHERE t.user_id = auth.uid()
       AND t.deleted_at IS NULL
-    ORDER BY t.created_at DESC
+      AND t.is_recent = TRUE
+    ORDER BY t.transaction_date DESC, t.created_at DESC
     LIMIT p_limit;
 END;
 $$;
@@ -3765,13 +3931,14 @@ $$;
 CREATE OR REPLACE FUNCTION get_user_transactions(
     p_limit INTEGER DEFAULT 50,
     p_offset INTEGER DEFAULT 0,
-    p_start_date timestamptz DEFAULT NULL,
-    p_end_date timestamptz DEFAULT NULL,
+    p_start_date DATE DEFAULT NULL,
+    p_end_date DATE DEFAULT NULL,
     p_transaction_type transaction_type DEFAULT NULL
 )
 RETURNS TABLE (
     transaction_id UUID,
     type transaction_type,
+    transaction_date DATE,
     original_amount NUMERIC,
     original_currency VARCHAR,
     fees NUMERIC,
@@ -3788,6 +3955,7 @@ BEGIN
     SELECT
         t.id AS transaction_id,
         t.type,
+        t.transaction_date,
         t.original_amount,
         t.original_currency,
         t.fees,
@@ -3798,9 +3966,9 @@ BEGIN
     WHERE t.user_id = auth.uid()
       AND t.deleted_at IS NULL
       AND (p_transaction_type IS NULL OR t.type = p_transaction_type)
-      AND (p_start_date IS NULL OR t.created_at >= p_start_date)
-      AND (p_end_date IS NULL OR t.created_at <= p_end_date)
-    ORDER BY t.created_at DESC
+      AND (p_start_date IS NULL OR t.transaction_date >= p_start_date)
+      AND (p_end_date IS NULL OR t.transaction_date <= p_end_date)
+    ORDER BY t.transaction_date DESC, t.created_at DESC
     LIMIT p_limit
     OFFSET p_offset;
 END;
@@ -3859,10 +4027,11 @@ DECLARE
     detail JSONB := '{}'::jsonb;
     tx_type transaction_type;
 BEGIN
-    -- Fetch ONLY the required main transaction fields
+    -- Fetch main transaction fields including transaction_date
     SELECT jsonb_build_object(
         'transaction_id', t.id,
         'type', t.type,
+        'transaction_date', t.transaction_date,
         'original_amount', t.original_amount,
         'original_currency', t.original_currency,
         'exchange_rate', t.exchange_rate,
@@ -3923,7 +4092,7 @@ BEGIN
                 )
                 FROM accounts a
                 WHERE a.id = te.account_id
-                AND a.deleted_at IS NULL
+                  AND a.deleted_at IS NULL
                 LIMIT 1
             ),
             'category', (
@@ -3938,8 +4107,8 @@ BEGIN
                 FROM expense_subcategories sc
                 JOIN expense_categories c ON sc.category_id = c.id
                 WHERE sc.id = te.category_id
-                AND sc.deleted_at IS NULL
-                AND c.deleted_at IS NULL
+                  AND sc.deleted_at IS NULL
+                  AND c.deleted_at IS NULL
                 LIMIT 1
             ),
             'payment_method', te.payment_method
@@ -3947,7 +4116,7 @@ BEGIN
         INTO detail
         FROM transactions_expense te
         WHERE te.transaction_id = p_transaction_id
-        AND te.deleted_at IS NULL
+          AND te.deleted_at IS NULL
         LIMIT 1;
 
     ELSIF tx_type = 'investment' THEN
@@ -4235,8 +4404,8 @@ BEGIN
         FROM transactions t
         WHERE t.user_id = v_user_id
           AND t.deleted_at IS NULL
-          AND (p_start_date IS NULL OR t.created_at::date >= p_start_date)
-          AND (p_end_date IS NULL OR t.created_at::date <= p_end_date)
+          AND (p_start_date IS NULL OR t.transaction_date >= p_start_date)
+          AND (p_end_date IS NULL OR t.transaction_date <= p_end_date)
         GROUP BY type
         ORDER BY type
     ) sub;
@@ -4333,8 +4502,8 @@ BEGIN
           AND isrc.deleted_at IS NULL
           AND acc.deleted_at IS NULL
           AND t.converted_amount IS NOT NULL
-          AND (p_start_date IS NULL OR t.created_at::date >= p_start_date)
-          AND (p_end_date IS NULL OR t.created_at::date <= p_end_date)
+          AND (p_start_date IS NULL OR t.transaction_date >= p_start_date)
+          AND (p_end_date IS NULL OR t.transaction_date <= p_end_date)
         GROUP BY ti.source_id, isrc.name, ti.account_id, acc.account_name, acc.currency
         ORDER BY source_name, account_name
     ) sub;
@@ -4431,8 +4600,8 @@ BEGIN
           AND esc.deleted_at IS NULL
           AND acc.deleted_at IS NULL
           AND t.converted_amount IS NOT NULL
-          AND (p_start_date IS NULL OR t.created_at::date >= p_start_date)
-          AND (p_end_date IS NULL OR t.created_at::date <= p_end_date)
+          AND (p_start_date IS NULL OR t.transaction_date >= p_start_date)
+          AND (p_end_date IS NULL OR t.transaction_date <= p_end_date)
         GROUP BY te.category_id, esc.name, te.account_id, acc.account_name, acc.currency
         ORDER BY category_name, account_name
     ) sub;
@@ -4521,8 +4690,8 @@ BEGIN
           AND ti.deleted_at IS NULL
           AND inv_acc.deleted_at IS NULL
           AND t.converted_amount IS NOT NULL
-          AND (p_start_date IS NULL OR t.created_at::date >= p_start_date)
-          AND (p_end_date IS NULL OR t.created_at::date <= p_end_date)
+          AND (p_start_date IS NULL OR t.transaction_date >= p_start_date)
+          AND (p_end_date IS NULL OR t.transaction_date <= p_end_date)
         GROUP BY ti.investment_account_id, inv_acc.account_name, inv_acc.currency
         ORDER BY investment_account_name
     ) sub;
@@ -4611,8 +4780,8 @@ BEGIN
           AND tb.deleted_at IS NULL
           AND loan_acc.deleted_at IS NULL
           AND t.converted_amount IS NOT NULL
-          AND (p_start_date IS NULL OR t.created_at::date >= p_start_date)
-          AND (p_end_date IS NULL OR t.created_at::date <= p_end_date)
+          AND (p_start_date IS NULL OR t.transaction_date >= p_start_date)
+          AND (p_end_date IS NULL OR t.transaction_date <= p_end_date)
         GROUP BY tb.loan_account_id, loan_acc.account_name, loan_acc.currency
         ORDER BY loan_account_name
     ) sub;
@@ -4701,8 +4870,8 @@ BEGIN
           AND tl.deleted_at IS NULL
           AND rec_acc.deleted_at IS NULL
           AND t.converted_amount IS NOT NULL
-          AND (p_start_date IS NULL OR t.created_at::date >= p_start_date)
-          AND (p_end_date IS NULL OR t.created_at::date <= p_end_date)
+          AND (p_start_date IS NULL OR t.transaction_date >= p_start_date)
+          AND (p_end_date IS NULL OR t.transaction_date <= p_end_date)
         GROUP BY tl.receivable_account_id, rec_acc.account_name, rec_acc.currency
         ORDER BY receivable_account_name
     ) sub;
@@ -4791,8 +4960,8 @@ BEGIN
           AND ta.deleted_at IS NULL
           AND acc.deleted_at IS NULL
           AND t.converted_amount IS NOT NULL
-          AND (p_start_date IS NULL OR t.created_at::date >= p_start_date)
-          AND (p_end_date IS NULL OR t.created_at::date <= p_end_date)
+          AND (p_start_date IS NULL OR t.transaction_date >= p_start_date)
+          AND (p_end_date IS NULL OR t.transaction_date <= p_end_date)
         GROUP BY ta.account_id, acc.account_name, acc.currency
         ORDER BY account_name
     ) sub;
@@ -4900,8 +5069,8 @@ BEGIN
           AND to_acc.deleted_at IS NULL
           AND t.converted_amount IS NOT NULL
           AND t.original_amount IS NOT NULL
-          AND (p_start_date IS NULL OR t.created_at::date >= p_start_date)
-          AND (p_end_date IS NULL OR t.created_at::date <= p_end_date)
+          AND (p_start_date IS NULL OR t.transaction_date >= p_start_date)
+          AND (p_end_date IS NULL OR t.transaction_date <= p_end_date)
         GROUP BY tt.from_account, from_acc.account_name, from_acc.currency,
                  tt.to_account, to_acc.account_name, to_acc.currency
         ORDER BY from_account_name, to_account_name
@@ -5015,25 +5184,25 @@ $$;
 -- ================================
 -- Grant Permissions
 -- ================================
-GRANT EXECUTE ON FUNCTION public.create_income_transaction(UUID, DECIMAL, VARCHAR, UUID, DECIMAL, TEXT, BOOLEAN, JSONB) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.create_expense_transaction(UUID, DECIMAL, VARCHAR, UUID, payment_method, DECIMAL, TEXT, BOOLEAN, JSONB) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.create_investment_transaction(UUID, UUID, DECIMAL, VARCHAR, VARCHAR, VARCHAR, risk_level, DECIMAL, TEXT, BOOLEAN, JSONB) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.create_borrow_transaction(UUID, UUID, DECIMAL, DECIMAL, TEXT, BOOLEAN, JSONB) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.create_lend_transaction(UUID, UUID, DECIMAL, DECIMAL, UUID, TEXT, DECIMAL, DATE, TEXT, BOOLEAN, JSONB) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.create_adjustment_transaction(UUID, DECIMAL, VARCHAR, DECIMAL, TEXT, BOOLEAN, JSONB) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.create_transfer_transaction(UUID, UUID, DECIMAL, transfer_method, DECIMAL, TEXT, BOOLEAN, JSONB) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.create_income_transaction(UUID, DATE, DECIMAL, VARCHAR, UUID, DECIMAL, TEXT, BOOLEAN, JSONB) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.create_expense_transaction(UUID, DATE, DECIMAL, VARCHAR, UUID, payment_method, DECIMAL, TEXT, BOOLEAN, JSONB) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.create_investment_transaction(UUID, UUID, DATE, DECIMAL, VARCHAR, VARCHAR, VARCHAR, risk_level, DECIMAL, TEXT, BOOLEAN, JSONB) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.create_borrow_transaction(UUID, UUID, DATE, DECIMAL, DECIMAL, TEXT, BOOLEAN, JSONB) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.create_lend_transaction(UUID, UUID, DATE, DECIMAL, DECIMAL, UUID, TEXT, DECIMAL, DATE, TEXT, BOOLEAN, JSONB) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.create_adjustment_transaction(UUID, DATE, DECIMAL, VARCHAR, DECIMAL, TEXT, BOOLEAN, JSONB) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.create_transfer_transaction(UUID, UUID, DATE, DECIMAL, transfer_method, DECIMAL, TEXT, BOOLEAN, JSONB) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.create_recurring_transaction(UUID, recurrence_frequency, INT, DATE, DATE) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.soft_delete_transaction(UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.validate_transaction_ownership(UUID, UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.hard_delete_transaction(UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.get_transaction_table_name(TEXT) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.update_income_transaction(UUID, UUID, NUMERIC, VARCHAR, UUID, NUMERIC, TEXT, BOOLEAN, JSONB) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.update_expense_transaction(UUID, UUID, NUMERIC, VARCHAR, UUID, payment_method, NUMERIC, TEXT, BOOLEAN, JSONB) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.update_investment_transaction(UUID, UUID, UUID, NUMERIC, VARCHAR, VARCHAR, VARCHAR, risk_level, NUMERIC, TEXT, BOOLEAN, JSONB) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.update_adjustment_transaction(UUID, UUID, NUMERIC, VARCHAR, NUMERIC, TEXT, BOOLEAN, JSONB) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.update_borrow_transaction(UUID, UUID, UUID, NUMERIC, NUMERIC, TEXT, BOOLEAN, JSONB) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.update_lend_transaction(UUID, UUID, UUID, NUMERIC, UUID, NUMERIC, TEXT, NUMERIC, DATE, TEXT, BOOLEAN, JSONB) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.update_transfer_transaction(UUID, UUID, UUID, NUMERIC, transfer_method, NUMERIC, TEXT, BOOLEAN, JSONB) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.update_income_transaction(UUID, UUID, DATE, NUMERIC, VARCHAR, UUID, NUMERIC, TEXT, BOOLEAN, JSONB) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.update_expense_transaction(UUID, UUID, DATE, NUMERIC, VARCHAR, UUID, payment_method, NUMERIC, TEXT, BOOLEAN, JSONB) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.update_investment_transaction(UUID, UUID, UUID, DATE, NUMERIC, VARCHAR, VARCHAR, VARCHAR, risk_level, NUMERIC, TEXT, BOOLEAN, JSONB) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.update_adjustment_transaction(UUID, UUID, DATE, NUMERIC, VARCHAR, NUMERIC, TEXT, BOOLEAN, JSONB) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.update_borrow_transaction(UUID, UUID, UUID, DATE, NUMERIC, NUMERIC, TEXT, BOOLEAN, JSONB) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.update_lend_transaction(UUID, UUID, UUID, DATE, NUMERIC, UUID, NUMERIC, TEXT, NUMERIC, DATE, TEXT, BOOLEAN, JSONB) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.update_transfer_transaction(UUID, UUID, UUID, DATE, NUMERIC, transfer_method, NUMERIC, TEXT, BOOLEAN, JSONB) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.update_recurring_transaction(UUID, recurrence_frequency, INT, DATE, DATE) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.soft_delete_recurring_transaction(UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.handle_recurring_transaction(UUID, BOOLEAN, JSONB) TO authenticated;
@@ -5052,31 +5221,31 @@ GRANT EXECUTE ON FUNCTION public.get_transactions_summary(DATE, DATE) TO authent
 -- Function Documentation
 -- ================================
 COMMENT ON FUNCTION public.create_income_transaction(
-    UUID, DECIMAL, VARCHAR, UUID, DECIMAL, TEXT, BOOLEAN, JSONB
+    UUID, DATE, DECIMAL, VARCHAR, UUID, DECIMAL, TEXT, BOOLEAN, JSONB
 ) IS 'RLS-compliant function to create income transactions with validation and automatic balance updates';
 
 COMMENT ON FUNCTION public.create_expense_transaction(
-    UUID, DECIMAL, VARCHAR, UUID, payment_method, DECIMAL, TEXT, BOOLEAN, JSONB
+    UUID, DATE, DECIMAL, VARCHAR, UUID, payment_method, DECIMAL, TEXT, BOOLEAN, JSONB
 ) IS 'RLS-compliant function to create expense transactions with validation and automatic balance updates';
 
 COMMENT ON FUNCTION public.create_investment_transaction(
-    UUID, UUID, DECIMAL, VARCHAR, VARCHAR, VARCHAR, risk_level, DECIMAL, TEXT, BOOLEAN, JSONB
+    UUID, UUID, DATE, DECIMAL, VARCHAR, VARCHAR, VARCHAR, risk_level, DECIMAL, TEXT, BOOLEAN, JSONB
 ) IS 'RLS-compliant function to create investment transactions with validation and automatic balance updates';
 
 COMMENT ON FUNCTION public.create_borrow_transaction(
-    UUID, UUID, DECIMAL, DECIMAL, TEXT, BOOLEAN, JSONB
+    UUID, UUID, DATE, DECIMAL, DECIMAL, TEXT, BOOLEAN, JSONB
 ) IS 'RLS-compliant function to create borrow transactions with validation and automatic balance updates';
 
 COMMENT ON FUNCTION public.create_lend_transaction(
-    UUID, UUID, DECIMAL, DECIMAL, UUID, TEXT, DECIMAL, DATE, TEXT, BOOLEAN, JSONB
+    UUID, UUID, DATE, DECIMAL, DECIMAL, UUID, TEXT, DECIMAL, DATE, TEXT, BOOLEAN, JSONB
 ) IS 'RLS-compliant function to create lend transactions with validation and automatic balance updates';
 
 COMMENT ON FUNCTION public.create_adjustment_transaction(
-    UUID, DECIMAL, VARCHAR, DECIMAL, TEXT, BOOLEAN, JSONB
+    UUID, DATE, DECIMAL, VARCHAR, DECIMAL, TEXT, BOOLEAN, JSONB
 ) IS 'RLS-compliant function to create adjustment transactions for corrections or balance fixes with validation and automatic balance updates';
 
 COMMENT ON FUNCTION public.create_transfer_transaction(
-    UUID, UUID, DECIMAL, transfer_method, DECIMAL, TEXT, BOOLEAN, JSONB
+    UUID, UUID, DATE, DECIMAL, transfer_method, DECIMAL, TEXT, BOOLEAN, JSONB
 ) IS 
 'RLS-compliant function to create transfer transactions between two accounts with validation and automatic balance updates';
 
@@ -5095,34 +5264,34 @@ COMMENT ON FUNCTION public.hard_delete_transaction(UUID) IS
 Only available to admins. Requires transaction to be soft deleted (deleted_at IS NOT NULL).
 Runs with SECURITY DEFINER privileges. Returns TRUE on success, FALSE on failure.';
 
-COMMENT ON FUNCTION public.update_income_transaction(UUID, UUID, NUMERIC, VARCHAR, UUID, NUMERIC, TEXT, BOOLEAN, JSONB)
-IS 'RLS-compliant function to update income transactions with balance reversal, revalidation, and exchange recalculation.';
-
 COMMENT ON FUNCTION public.get_transaction_table_name(TEXT)
 IS 'Returns the correct transaction table name given a transaction type string.';
 
+COMMENT ON FUNCTION public.update_income_transaction(UUID, UUID, DATE, NUMERIC, VARCHAR, UUID, NUMERIC, TEXT, BOOLEAN, JSONB)
+IS 'RLS-compliant function to update income transactions with balance reversal, revalidation, and exchange recalculation.';
+
 COMMENT ON FUNCTION public.update_expense_transaction(
-    UUID, UUID, NUMERIC, VARCHAR, UUID, payment_method, NUMERIC, TEXT, BOOLEAN, JSONB
+    UUID, UUID, DATE, NUMERIC, VARCHAR, UUID, payment_method, NUMERIC, TEXT, BOOLEAN, JSONB
 ) IS 'RLS-compliant function to update an expense transaction with balance adjustments and validation';
 
 COMMENT ON FUNCTION public.update_investment_transaction(
-    UUID, UUID, UUID, NUMERIC, VARCHAR, VARCHAR, VARCHAR, risk_level, NUMERIC, TEXT, BOOLEAN, JSONB
+    UUID, UUID, UUID, DATE, NUMERIC, VARCHAR, VARCHAR, VARCHAR, risk_level, NUMERIC, TEXT, BOOLEAN, JSONB
 ) IS 'RLS-compliant function to update an investment transaction with balance adjustments and validation';
 
 COMMENT ON FUNCTION public.update_adjustment_transaction(
-    UUID, UUID, NUMERIC, VARCHAR, NUMERIC, TEXT, BOOLEAN, JSONB
+    UUID, UUID, DATE, NUMERIC, VARCHAR, NUMERIC, TEXT, BOOLEAN, JSONB
 ) IS 'RLS-compliant function to update an adjustment transaction with balance adjustments and validation';
 
 COMMENT ON FUNCTION public.update_borrow_transaction(
-    UUID, UUID, UUID, NUMERIC, NUMERIC, TEXT, BOOLEAN, JSONB
+    UUID, UUID, UUID, DATE, NUMERIC, NUMERIC, TEXT, BOOLEAN, JSONB
 ) IS 'RLS-compliant function to update a borrow transaction with balance adjustments and validation';
 
 COMMENT ON FUNCTION public.update_lend_transaction(
-    UUID, UUID, UUID, NUMERIC, UUID, NUMERIC, TEXT, NUMERIC, DATE, TEXT, BOOLEAN, JSONB
+    UUID, UUID, UUID, DATE, NUMERIC, UUID, NUMERIC, TEXT, NUMERIC, DATE, TEXT, BOOLEAN, JSONB
 ) IS 'RLS-compliant function to update a lend transaction with balance adjustments and validation';
 
 COMMENT ON FUNCTION public.update_transfer_transaction(
-    UUID, UUID, UUID, NUMERIC, transfer_method, NUMERIC, TEXT, BOOLEAN, JSONB
+    UUID, UUID, UUID, DATE, NUMERIC, transfer_method, NUMERIC, TEXT, BOOLEAN, JSONB
 ) IS 'RLS-compliant function to update a transfer transaction with balance adjustments and validation';
 
 COMMENT ON FUNCTION public.update_recurring_transaction(
