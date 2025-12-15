@@ -485,6 +485,9 @@ ALTER TABLE expense_subcategories
 ALTER TABLE income_sources
   ADD CONSTRAINT income_sources_user_name_unique UNIQUE (user_id, name);
 
+-- Add UNIQUE constraint for exchange_rates
+ALTER TABLE exchange_rates
+  ADD CONSTRAINT exchange_rates_user_from_to_unique UNIQUE(user_id, from_currency, to_currency);
 
 -- =========================================
 -- Indexes (FKs, common filters, JSONB, partial soft-delete on key tables)
