@@ -1326,6 +1326,11 @@ BEGIN
         RAISE EXCEPTION 'Transfer cannot have the same source and destination account';
     END IF;
 
+    -- Prevent transfers involving investment accounts
+    IF from_type = 'investment' OR to_type = 'investment' THEN
+        RAISE EXCEPTION 'Transfers cannot be made from or to investment accounts. Use invest/divest instead.';
+    END IF;
+
     -- Optionally restrict (example rule shown in comments)
     -- IF from_type = 'receivable' AND to_type = 'receivable' THEN
     --     RAISE EXCEPTION 'Invalid receivable to receivable transfer';
@@ -1334,6 +1339,11 @@ BEGIN
     RETURN NEW;
 END;
 $$;
+
+CREATE TRIGGER trg_validate_transfer_accounts
+BEFORE INSERT OR UPDATE ON public.transactions_transfer
+FOR EACH ROW
+EXECUTE FUNCTION public.validate_transfer_accounts();
 
 -- =========================================
 -- 13. Function: validate_adjustment_account
@@ -2194,7 +2204,6 @@ EXECUTE FUNCTION prevent_hard_delete_if_active_details();
 -- GRANT PERMISSIONS FOR RLS FUNCTIONS
 -- =========================================
 GRANT EXECUTE ON FUNCTION validate_transaction_user() TO authenticated;
-GRANT EXECUTE ON FUNCTION validate_transfer_accounts() TO authenticated;
 GRANT EXECUTE ON FUNCTION public.apply_transaction_balance(TEXT, RECORD) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.apply_transaction_balance_trigger() TO authenticated;
 GRANT EXECUTE ON FUNCTION process_soft_delete_transaction() TO authenticated;
