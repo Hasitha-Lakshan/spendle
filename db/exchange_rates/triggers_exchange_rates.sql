@@ -33,14 +33,13 @@ DECLARE
     v_user_id UUID := auth.uid();
     v_hard_delete BOOLEAN := (current_setting('app.hard_delete', true) = 'on');
 BEGIN
-    -- Completely skip all permission checks if hard delete mode is active
+    -- Skip permission checks if hard delete mode is active
     IF v_hard_delete THEN
         RETURN OLD;
     END IF;
 
-    -- Prevent acting on already soft-deleted rows (unless hard delete)
-    IF (TG_OP = 'UPDATE' OR TG_OP = 'DELETE')
-       AND OLD.deleted_at IS NOT NULL THEN
+    -- Prevent acting on already soft-deleted rows
+    IF OLD.deleted_at IS NOT NULL THEN
         RAISE EXCEPTION 'Exchange rate % is already deleted', OLD.id
             USING ERRCODE = 'P0002';
     END IF;
@@ -51,7 +50,11 @@ BEGIN
             USING ERRCODE = '42501';
     END IF;
 
-    RETURN OLD;
+    IF TG_OP = 'UPDATE' THEN
+        RETURN NEW;
+    ELSE
+        RETURN OLD;
+    END IF;
 END;
 $$;
 
