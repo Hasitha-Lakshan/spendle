@@ -492,9 +492,16 @@ ALTER TABLE expense_subcategories
 ALTER TABLE income_sources
   ADD CONSTRAINT income_sources_user_name_unique UNIQUE (user_id, name);
 
--- Add UNIQUE constraint for exchange_rates
-ALTER TABLE exchange_rates
-  ADD CONSTRAINT exchange_rates_user_from_to_unique UNIQUE(user_id, from_currency, to_currency);
+
+-- =========================================
+-- Partial UNIQUE index
+-- =========================================
+
+-- Enforce uniqueness only for active rows of exchange_rates
+CREATE UNIQUE INDEX exchange_rates_user_from_to_active_unique
+ON exchange_rates (user_id, from_currency, to_currency)
+WHERE deleted_at IS NULL;
+
 
 -- =========================================
 -- Indexes (FKs, common filters, JSONB, partial soft-delete on key tables)
