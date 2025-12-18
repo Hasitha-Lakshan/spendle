@@ -281,7 +281,9 @@ CREATE TABLE transactions (
   original_currency VARCHAR(10) NOT NULL,
   exchange_rate DECIMAL(36,18),
   converted_amount DECIMAL(36,18),
-  fees DECIMAL(36,18) DEFAULT 0,
+  converted_currency VARCHAR(10),
+  original_fees DECIMAL(36,18) DEFAULT 0,
+  converted_fees DECIMAL(36,18) DEFAULT 0,
   notes TEXT,
   is_recurring BOOLEAN NOT NULL DEFAULT FALSE,
   deleted_at timestamptz NULL DEFAULT NULL,
@@ -296,6 +298,11 @@ CREATE TABLE transactions (
   CONSTRAINT chk_transaction_date_reasonable CHECK (
     transaction_date >= DATE '2000-01-01'
     AND transaction_date <= CURRENT_DATE + INTERVAL '1 year'
+  ),
+
+  CONSTRAINT chk_fees_non_negative CHECK (
+    original_fees >= 0
+    AND (converted_fees IS NULL OR converted_fees >= 0)
   )
 );
 

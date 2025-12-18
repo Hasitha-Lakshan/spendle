@@ -252,7 +252,9 @@ BEGIN
         'original_currency', NEW.original_currency,
         'exchange_rate', NEW.exchange_rate,
         'converted_amount', NEW.converted_amount,
-        'fees', NEW.fees,
+        'converted_currency', NEW.converted_currency,
+        'original_fees', NEW.original_fees,
+        'converted_fees', NEW.converted_fees,
         'is_recurring', NEW.is_recurring
     );
     RETURN NEW;
@@ -387,7 +389,8 @@ AS $$
 DECLARE
     v_original_amount NUMERIC;
     v_converted_amount NUMERIC;
-    v_fees NUMERIC;
+    v_original_fees NUMERIC;
+    v_converted_fees NUMERIC;
     v_to_account_type account_type;
     v_from_account_type account_type;
 BEGIN
@@ -397,8 +400,16 @@ BEGIN
     END IF;
 
     -- Fetch transaction amounts and fees
-    SELECT original_amount, converted_amount, COALESCE(fees, 0)
-    INTO v_original_amount, v_converted_amount, v_fees
+    SELECT
+        original_amount,
+        converted_amount,
+        COALESCE(original_fees, 0),
+        COALESCE(converted_fees, 0)
+    INTO
+        v_original_amount,
+        v_converted_amount,
+        v_original_fees,
+        v_converted_fees
     FROM public.transactions
     WHERE id = p_new.transaction_id
       AND deleted_at IS NULL;
@@ -414,7 +425,11 @@ BEGIN
             -- Income inflow reduced by fees
             SELECT type INTO v_to_account_type FROM accounts WHERE id = p_new.account_id;
             UPDATE accounts SET updated_at = NOW() WHERE id = p_new.account_id;
-            PERFORM set_account_balance(v_to_account_type, p_new.account_id, v_converted_amount - COALESCE(v_fees, 0));
+            PERFORM set_account_balance(
+                v_to_account_type,
+                p_new.account_id,
+                v_converted_amount - v_converted_fees
+            );
 
         WHEN 'transactions_expense' THEN
             -- Expense outflow increases balance owed (includes fees for credit cards)
@@ -423,10 +438,18 @@ BEGIN
 
             IF v_from_account_type = 'credit_card' THEN
                 -- Credit card expense increases balance owed including fees
-                PERFORM set_account_balance(v_from_account_type, p_new.account_id, v_converted_amount + COALESCE(v_fees, 0));
+                PERFORM set_account_balance(
+                    v_from_account_type,
+                    p_new.account_id,
+                    v_converted_amount + v_converted_fees
+                );
             ELSE
                 -- Regular expense outflow increases by fees
-                PERFORM set_account_balance(v_from_account_type, p_new.account_id, -(v_converted_amount + COALESCE(v_fees, 0)));
+                PERFORM set_account_balance(
+                    v_from_account_type,
+                    p_new.account_id,
+                    -(v_converted_amount + v_converted_fees)
+                );
             END IF;
 
         WHEN 'transactions_transfer' THEN
@@ -436,10 +459,18 @@ BEGIN
 
             IF v_from_account_type IN ('credit_card','loan') THEN
                 -- Paying with credit card or loan increases balance owed
-                PERFORM set_account_balance(v_from_account_type, p_new.from_account, v_original_amount + COALESCE(v_fees, 0));
+                PERFORM set_account_balance(
+                    v_from_account_type,
+                    p_new.from_account,
+                    v_original_amount + v_original_fees
+                );
             ELSE
                 -- Regular outflow
-                PERFORM set_account_balance(v_from_account_type, p_new.from_account, -(v_original_amount + COALESCE(v_fees, 0)));
+                PERFORM set_account_balance(
+                    v_from_account_type,
+                    p_new.from_account,
+                    -(v_original_amount + v_original_fees)
+                );
             END IF;
 
             -- To account (inflow)
@@ -448,56 +479,92 @@ BEGIN
 
             IF v_to_account_type IN ('credit_card','loan') THEN
                 -- Paying to credit card or loan reduces balance owed
-                PERFORM set_account_balance(v_to_account_type, p_new.to_account, -v_converted_amount);
+                PERFORM set_account_balance(
+                    v_to_account_type,
+                    p_new.to_account,
+                    -v_converted_amount
+                );
             ELSE
                 -- Regular inflow
-                PERFORM set_account_balance(v_to_account_type, p_new.to_account, v_converted_amount);
+                PERFORM set_account_balance(
+                    v_to_account_type,
+                    p_new.to_account,
+                    v_converted_amount
+                );
             END IF;
 
         WHEN 'transactions_investment' THEN
             -- Investment account increases
             SELECT type INTO v_to_account_type FROM accounts WHERE id = p_new.investment_account_id;
             UPDATE accounts SET updated_at = NOW() WHERE id = p_new.investment_account_id;
-            PERFORM set_account_balance(v_to_account_type, p_new.investment_account_id, v_converted_amount);
+            PERFORM set_account_balance(
+                v_to_account_type,
+                p_new.investment_account_id,
+                v_converted_amount
+            );
 
             -- Funding account decreases (including fees)
             IF p_new.funding_account_id IS NOT NULL THEN
                 SELECT type INTO v_from_account_type FROM accounts WHERE id = p_new.funding_account_id;
                 UPDATE accounts SET updated_at = NOW() WHERE id = p_new.funding_account_id;
-                PERFORM set_account_balance(v_from_account_type, p_new.funding_account_id, -(v_original_amount + COALESCE(v_fees, 0)));
+                PERFORM set_account_balance(
+                    v_from_account_type,
+                    p_new.funding_account_id,
+                    -(v_original_amount + v_original_fees)
+                );
             END IF;
 
         WHEN 'transactions_borrow' THEN
             -- Loan account increases
             SELECT type INTO v_from_account_type FROM accounts WHERE id = p_new.loan_account_id;
             UPDATE accounts SET updated_at = NOW() WHERE id = p_new.loan_account_id;
-            PERFORM set_account_balance(v_from_account_type, p_new.loan_account_id, v_original_amount + COALESCE(v_fees, 0));
+            PERFORM set_account_balance(
+                v_from_account_type,
+                p_new.loan_account_id,
+                v_original_amount + v_original_fees
+            );
 
-            -- Disbursement account increases (reduced by fees)
+            -- Disbursement account increases (fees already applied on loan side)
             IF p_new.disbursement_account_id IS NOT NULL THEN
                 SELECT type INTO v_to_account_type FROM accounts WHERE id = p_new.disbursement_account_id;
                 UPDATE accounts SET updated_at = NOW() WHERE id = p_new.disbursement_account_id;
-                PERFORM set_account_balance(v_to_account_type, p_new.disbursement_account_id, v_converted_amount);
+                PERFORM set_account_balance(
+                    v_to_account_type,
+                    p_new.disbursement_account_id,
+                    v_converted_amount
+                );
             END IF;
 
         WHEN 'transactions_lend' THEN
             -- Receivable account increases
             SELECT type INTO v_to_account_type FROM accounts WHERE id = p_new.receivable_account_id;
             UPDATE accounts SET updated_at = NOW() WHERE id = p_new.receivable_account_id;
-            PERFORM set_account_balance(v_to_account_type, p_new.receivable_account_id, v_converted_amount);
+            PERFORM set_account_balance(
+                v_to_account_type,
+                p_new.receivable_account_id,
+                v_converted_amount
+            );
 
             -- Funding account decreases (including fees)
             IF p_new.funding_account_id IS NOT NULL THEN
                 SELECT type INTO v_from_account_type FROM accounts WHERE id = p_new.funding_account_id;
                 UPDATE accounts SET updated_at = NOW() WHERE id = p_new.funding_account_id;
-                PERFORM set_account_balance(v_from_account_type, p_new.funding_account_id, -(v_original_amount + COALESCE(v_fees, 0)));
+                PERFORM set_account_balance(
+                    v_from_account_type,
+                    p_new.funding_account_id,
+                    -(v_original_amount + v_original_fees)
+                );
             END IF;
 
         WHEN 'transactions_adjustment' THEN
             -- Adjustment reduced by fees
             SELECT type INTO v_to_account_type FROM accounts WHERE id = p_new.account_id;
             UPDATE accounts SET updated_at = NOW() WHERE id = p_new.account_id;
-            PERFORM set_account_balance(v_to_account_type, p_new.account_id, v_converted_amount);
+            PERFORM set_account_balance(
+                v_to_account_type,
+                p_new.account_id,
+                v_converted_amount
+            );
 
     END CASE;
 
@@ -635,56 +702,39 @@ DECLARE
     v_exchange_rate NUMERIC;
     v_user_id UUID;
 BEGIN
-    -- SKIP processing if this is a soft delete
+    -- Skip processing if this is a soft delete
     IF NEW.deleted_at IS NOT NULL THEN
         RETURN NEW;
     END IF;
 
+    -- Determine user context
     v_user_id := COALESCE(
         NULLIF(current_setting('app.system_user_id', true), '')::uuid,
         auth.uid()
     );
-    -- Get transaction original currency
+
+    -- Get transaction original currency (source currency)
     SELECT original_currency INTO v_tx_currency 
     FROM public.transactions 
     WHERE id = NEW.transaction_id 
       AND user_id = v_user_id
       AND deleted_at IS NULL;
-    
+
     IF v_tx_currency IS NULL THEN
         RAISE EXCEPTION 'Transaction not found or access denied';
     END IF;
 
-    -- Handle account validation per transaction type
+    -- Determine reference/destination account currency for exchange rate calculation
     CASE TG_TABLE_NAME
+
         WHEN 'transactions_transfer' THEN
-            -- From account
-            SELECT currency INTO v_account_currency 
-            FROM public.accounts 
-            WHERE id = NEW.from_account
-              AND user_id = v_user_id
-              AND deleted_at IS NULL;
-
-            IF v_account_currency IS NULL THEN
-                RAISE EXCEPTION 'From account not found or access denied';
+            -- Destination account: "to_account"
+            IF NEW.to_account IS NULL THEN
+                RAISE EXCEPTION 'To account is required for transfer transactions';
             END IF;
 
-            IF v_tx_currency <> v_account_currency THEN
-                v_exchange_rate := get_exchange_rate(v_tx_currency, v_account_currency);
-                UPDATE transactions 
-                SET exchange_rate = v_exchange_rate, 
-                    converted_amount = original_amount * v_exchange_rate 
-                WHERE id = NEW.transaction_id;
-            ELSE
-                UPDATE transactions 
-                SET exchange_rate = 1, 
-                    converted_amount = original_amount 
-                WHERE id = NEW.transaction_id;
-            END IF;
-
-            -- To account
-            SELECT currency INTO v_account_currency 
-            FROM public.accounts 
+            SELECT currency INTO v_account_currency
+            FROM public.accounts
             WHERE id = NEW.to_account
               AND user_id = v_user_id
               AND deleted_at IS NULL;
@@ -693,40 +743,12 @@ BEGIN
                 RAISE EXCEPTION 'To account not found or access denied';
             END IF;
 
-            IF v_tx_currency <> v_account_currency THEN
-                v_exchange_rate := get_exchange_rate(v_tx_currency, v_account_currency);
-                UPDATE transactions 
-                SET exchange_rate = v_exchange_rate, 
-                    converted_amount = original_amount * v_exchange_rate 
-                WHERE id = NEW.transaction_id;
-            END IF;
-
         WHEN 'transactions_borrow' THEN
-            -- Loan account
-            SELECT currency INTO v_account_currency
-            FROM public.accounts
-            WHERE id = NEW.loan_account_id
-              AND user_id = v_user_id
-              AND deleted_at IS NULL;
-
-            IF v_account_currency IS NULL THEN
-                RAISE EXCEPTION 'Loan account not found or access denied';
+            -- Destination account: "disbursement_account_id"
+            IF NEW.disbursement_account_id IS NULL THEN
+                RAISE EXCEPTION 'Disbursement account is required for borrow transactions';
             END IF;
 
-            IF v_tx_currency <> v_account_currency THEN
-                v_exchange_rate := get_exchange_rate(v_tx_currency, v_account_currency);
-                UPDATE transactions 
-                SET exchange_rate = v_exchange_rate, 
-                    converted_amount = original_amount * v_exchange_rate 
-                WHERE id = NEW.transaction_id;
-            ELSE
-                UPDATE transactions 
-                SET exchange_rate = 1, 
-                    converted_amount = original_amount 
-                WHERE id = NEW.transaction_id;
-            END IF;
-
-            -- Disbursement account
             SELECT currency INTO v_account_currency
             FROM public.accounts
             WHERE id = NEW.disbursement_account_id
@@ -737,16 +759,12 @@ BEGIN
                 RAISE EXCEPTION 'Disbursement account not found or access denied';
             END IF;
 
-            IF v_tx_currency <> v_account_currency THEN
-                v_exchange_rate := get_exchange_rate(v_tx_currency, v_account_currency);
-                UPDATE transactions 
-                SET exchange_rate = v_exchange_rate, 
-                    converted_amount = original_amount * v_exchange_rate 
-                WHERE id = NEW.transaction_id;
+        WHEN 'transactions_lend' THEN
+            -- Destination account: "receivable_account_id"
+            IF NEW.receivable_account_id IS NULL THEN
+                RAISE EXCEPTION 'Receivable account is required for lend transactions';
             END IF;
 
-        WHEN 'transactions_lend' THEN
-            -- Receivable account
             SELECT currency INTO v_account_currency
             FROM public.accounts
             WHERE id = NEW.receivable_account_id
@@ -757,40 +775,12 @@ BEGIN
                 RAISE EXCEPTION 'Receivable account not found or access denied';
             END IF;
 
-            IF v_tx_currency <> v_account_currency THEN
-                v_exchange_rate := get_exchange_rate(v_tx_currency, v_account_currency);
-                UPDATE transactions 
-                SET exchange_rate = v_exchange_rate, 
-                    converted_amount = original_amount * v_exchange_rate 
-                WHERE id = NEW.transaction_id;
-            ELSE
-                UPDATE transactions 
-                SET exchange_rate = 1, 
-                    converted_amount = original_amount 
-                WHERE id = NEW.transaction_id;
-            END IF;
-
-            -- Funding account
-            SELECT currency INTO v_account_currency
-            FROM public.accounts
-            WHERE id = NEW.funding_account_id
-              AND user_id = v_user_id
-              AND deleted_at IS NULL;
-
-            IF v_account_currency IS NULL THEN
-                RAISE EXCEPTION 'Funding account not found or access denied';
-            END IF;
-
-            IF v_tx_currency <> v_account_currency THEN
-                v_exchange_rate := get_exchange_rate(v_tx_currency, v_account_currency);
-                UPDATE transactions 
-                SET exchange_rate = v_exchange_rate, 
-                    converted_amount = original_amount * v_exchange_rate 
-                WHERE id = NEW.transaction_id;
-            END IF;
-
         WHEN 'transactions_investment' THEN
-            -- Investment account
+            -- Destination account: "investment_account_id"
+            IF NEW.investment_account_id IS NULL THEN
+                RAISE EXCEPTION 'Investment account is required for investment transactions';
+            END IF;
+
             SELECT currency INTO v_account_currency
             FROM public.accounts
             WHERE id = NEW.investment_account_id
@@ -801,42 +791,14 @@ BEGIN
                 RAISE EXCEPTION 'Investment account not found or access denied';
             END IF;
 
-            IF v_tx_currency <> v_account_currency THEN
-                v_exchange_rate := get_exchange_rate(v_tx_currency, v_account_currency);
-                UPDATE transactions 
-                SET exchange_rate = v_exchange_rate, 
-                    converted_amount = original_amount * v_exchange_rate 
-                WHERE id = NEW.transaction_id;
-            ELSE
-                UPDATE transactions 
-                SET exchange_rate = 1, 
-                    converted_amount = original_amount 
-                WHERE id = NEW.transaction_id;
+        ELSE
+            -- Default case: income, expense, adjustment
+            IF NEW.account_id IS NULL THEN
+                RAISE EXCEPTION 'Account is required for this transaction type';
             END IF;
 
-            -- Funding account
             SELECT currency INTO v_account_currency
             FROM public.accounts
-            WHERE id = NEW.funding_account_id
-              AND user_id = v_user_id
-              AND deleted_at IS NULL;
-
-            IF v_account_currency IS NULL THEN
-                RAISE EXCEPTION 'Funding account not found or access denied';
-            END IF;
-
-            IF v_tx_currency <> v_account_currency THEN
-                v_exchange_rate := get_exchange_rate(v_tx_currency, v_account_currency);
-                UPDATE transactions 
-                SET exchange_rate = v_exchange_rate, 
-                    converted_amount = original_amount * v_exchange_rate 
-                WHERE id = NEW.transaction_id;
-            END IF;
-
-        ELSE
-            -- Default case: single account_id field (income, expense, adjustment)
-            SELECT currency INTO v_account_currency 
-            FROM public.accounts 
             WHERE id = NEW.account_id
               AND user_id = v_user_id
               AND deleted_at IS NULL;
@@ -844,20 +806,23 @@ BEGIN
             IF v_account_currency IS NULL THEN
                 RAISE EXCEPTION 'Account not found or access denied';
             END IF;
-
-            IF v_tx_currency <> v_account_currency THEN
-                v_exchange_rate := get_exchange_rate(v_tx_currency, v_account_currency);
-                UPDATE transactions 
-                SET exchange_rate = v_exchange_rate, 
-                    converted_amount = original_amount * v_exchange_rate 
-                WHERE id = NEW.transaction_id;
-            ELSE
-                UPDATE transactions 
-                SET exchange_rate = 1, 
-                    converted_amount = original_amount 
-                WHERE id = NEW.transaction_id;
-            END IF;
     END CASE;
+
+    -- Calculate exchange rate
+    IF v_tx_currency <> v_account_currency THEN
+        v_exchange_rate := get_exchange_rate(v_tx_currency, v_account_currency);
+    ELSE
+        v_exchange_rate := 1;
+    END IF;
+
+    -- Apply conversion to transaction
+    UPDATE transactions
+    SET
+        exchange_rate = v_exchange_rate,
+        converted_amount = original_amount * v_exchange_rate,
+        converted_fees = original_fees * v_exchange_rate,
+        converted_currency = v_account_currency
+    WHERE id = NEW.transaction_id;
 
     RETURN NEW;
 END;
@@ -1430,7 +1395,11 @@ BEGIN
           AND is_recurring = TRUE
           AND original_amount IS NOT NULL
           AND original_currency IS NOT NULL
-          AND fees IS NOT NULL
+          AND original_fees IS NOT NULL
+          AND exchange_rate IS NOT NULL
+          AND converted_amount IS NOT NULL
+          AND converted_currency IS NOT NULL
+          AND converted_fees IS NOT NULL
     ) THEN
         RAISE EXCEPTION 'Template transaction invalid or not accessible';
     END IF;
@@ -1530,20 +1499,32 @@ BEGIN
     -- 3. Insert new transaction (base), inheriting all monetary details including fees.
     --    The new transaction is non-recurring (is_recurring = FALSE).
     INSERT INTO transactions (
-        user_id, type, original_amount, original_currency,
-        exchange_rate, converted_amount, fees, notes,
-        is_recurring, created_at, updated_at
+        user_id,
+        type,
+        original_amount,
+        original_currency,
+        original_fees,
+        exchange_rate,
+        converted_amount,
+        converted_currency,
+        converted_fees,
+        notes,
+        is_recurring,
+        created_at,
+        updated_at
     )
     VALUES (
         template_tx.user_id,
         template_tx.type,
         template_tx.original_amount,
         template_tx.original_currency,
+        template_tx.original_fees,
         template_tx.exchange_rate,
         template_tx.converted_amount,
-        COALESCE(template_tx.fees, 0), -- carry over fees from template
+        template_tx.converted_currency,
+        template_tx.converted_fees,
         COALESCE(template_tx.notes, '') || ' [Auto-recurring ' || rec.id::text || ']',
-        FALSE,                         -- explicitly mark this as a non-recurring instance
+        FALSE,   -- explicitly mark this as a non-recurring instance
         NOW(),
         NOW()
     )
@@ -1911,7 +1892,8 @@ AS $$
 DECLARE
     v_original_amount NUMERIC;
     v_converted_amount NUMERIC;
-    v_fees NUMERIC;
+    v_original_fees NUMERIC;
+    v_converted_fees NUMERIC;
     v_to_account_type account_type;
     v_from_account_type account_type;
     v_to_account_id UUID;
@@ -1919,8 +1901,16 @@ DECLARE
 BEGIN
     BEGIN
         -- Fetch transaction amounts and fees
-        SELECT original_amount, converted_amount, COALESCE(fees, 0)
-        INTO v_original_amount, v_converted_amount, v_fees
+        SELECT
+            original_amount,
+            converted_amount,
+            COALESCE(original_fees, 0),
+            COALESCE(converted_fees, 0)
+        INTO
+            v_original_amount,
+            v_converted_amount,
+            v_original_fees,
+            v_converted_fees
         FROM public.transactions
         WHERE id = p_tx_id;
 
@@ -1946,7 +1936,11 @@ BEGIN
                 WHERE id = v_to_account_id AND deleted_at IS NULL;
 
                 UPDATE accounts SET updated_at = NOW() WHERE id = v_to_account_id;
-                PERFORM set_account_balance(v_to_account_type, v_to_account_id, -v_converted_amount + COALESCE(v_fees, 0));
+                PERFORM set_account_balance(
+                    v_to_account_type,
+                    v_to_account_id,
+                    -(v_converted_amount - v_converted_fees)
+                );
 
             WHEN 'expense' THEN
                 -- Reverse expense: add converted amount - fees (if any)
@@ -1965,9 +1959,17 @@ BEGIN
                 UPDATE accounts SET updated_at = NOW() WHERE id = v_from_account_id;
 
                 IF v_from_account_type = 'credit_card' THEN
-                    PERFORM set_account_balance(v_from_account_type, v_from_account_id, -(v_converted_amount + COALESCE(v_fees, 0)));
+                    PERFORM set_account_balance(
+                        v_from_account_type,
+                        v_from_account_id,
+                        -(v_converted_amount + v_converted_fees)
+                    );
                 ELSE
-                    PERFORM set_account_balance(v_from_account_type, v_from_account_id, v_converted_amount + COALESCE(v_fees, 0));
+                    PERFORM set_account_balance(
+                        v_from_account_type,
+                        v_from_account_id,
+                        v_converted_amount + v_converted_fees
+                    );
                 END IF;
 
             WHEN 'investment' THEN
@@ -1985,14 +1987,22 @@ BEGIN
                     SELECT type INTO v_to_account_type
                     FROM accounts WHERE id = v_to_account_id AND deleted_at IS NULL;
                     UPDATE accounts SET updated_at = NOW() WHERE id = v_to_account_id;
-                    PERFORM set_account_balance(v_to_account_type, v_to_account_id, -v_converted_amount);
+                    PERFORM set_account_balance(
+                        v_to_account_type,
+                        v_to_account_id,
+                        -v_converted_amount
+                    );
                 END IF;
 
                 IF v_from_account_id IS NOT NULL THEN
                     SELECT type INTO v_from_account_type
                     FROM accounts WHERE id = v_from_account_id AND deleted_at IS NULL;
                     UPDATE accounts SET updated_at = NOW() WHERE id = v_from_account_id;
-                    PERFORM set_account_balance(v_from_account_type, v_from_account_id, v_original_amount + COALESCE(v_fees, 0));
+                    PERFORM set_account_balance(
+                        v_from_account_type,
+                        v_from_account_id,
+                        v_original_amount + v_original_fees
+                    );
                 END IF;
 
             WHEN 'adjustment' THEN
@@ -2009,7 +2019,11 @@ BEGIN
                 FROM accounts WHERE id = v_to_account_id AND deleted_at IS NULL;
 
                 UPDATE accounts SET updated_at = NOW() WHERE id = v_to_account_id;
-                PERFORM set_account_balance(v_to_account_type, v_to_account_id, -v_converted_amount);
+                PERFORM set_account_balance(
+                    v_to_account_type,
+                    v_to_account_id,
+                    -v_converted_amount
+                );
 
             WHEN 'borrow' THEN
                 -- Reverse borrow: subtract original amount + fees from loan account, subtract converted amount from disbursement account
@@ -2026,14 +2040,22 @@ BEGIN
                     SELECT type INTO v_to_account_type
                     FROM accounts WHERE id = v_to_account_id AND deleted_at IS NULL;
                     UPDATE accounts SET updated_at = NOW() WHERE id = v_to_account_id;
-                    PERFORM set_account_balance(v_to_account_type, v_to_account_id, -v_converted_amount);
+                    PERFORM set_account_balance(
+                        v_to_account_type,
+                        v_to_account_id,
+                        -v_converted_amount
+                    );
                 END IF;
 
                 IF v_from_account_id IS NOT NULL THEN
                     SELECT type INTO v_from_account_type
                     FROM accounts WHERE id = v_from_account_id AND deleted_at IS NULL;
                     UPDATE accounts SET updated_at = NOW() WHERE id = v_from_account_id;
-                    PERFORM set_account_balance(v_from_account_type, v_from_account_id, -(v_original_amount + COALESCE(v_fees, 0)));
+                    PERFORM set_account_balance(
+                        v_from_account_type,
+                        v_from_account_id,
+                        -(v_original_amount + v_original_fees)
+                    );
                 END IF;
 
             WHEN 'lend' THEN
@@ -2051,14 +2073,22 @@ BEGIN
                     SELECT type INTO v_to_account_type
                     FROM accounts WHERE id = v_to_account_id AND deleted_at IS NULL;
                     UPDATE accounts SET updated_at = NOW() WHERE id = v_to_account_id;
-                    PERFORM set_account_balance(v_to_account_type, v_to_account_id, -v_converted_amount);
+                    PERFORM set_account_balance(
+                        v_to_account_type,
+                        v_to_account_id,
+                        -v_converted_amount
+                    );
                 END IF;
 
                 IF v_from_account_id IS NOT NULL THEN
                     SELECT type INTO v_from_account_type
                     FROM accounts WHERE id = v_from_account_id AND deleted_at IS NULL;
                     UPDATE accounts SET updated_at = NOW() WHERE id = v_from_account_id;
-                    PERFORM set_account_balance(v_from_account_type, v_from_account_id, v_original_amount + COALESCE(v_fees, 0));
+                    PERFORM set_account_balance(
+                        v_from_account_type,
+                        v_from_account_id,
+                        v_original_amount + v_original_fees
+                    );
                 END IF;
 
             WHEN 'transfer' THEN
@@ -2080,9 +2110,17 @@ BEGIN
                 UPDATE accounts SET updated_at = NOW() WHERE id = v_to_account_id;
 
                 IF v_to_account_type IN ('credit_card','loan') THEN
-                    PERFORM set_account_balance(v_to_account_type, v_to_account_id, v_converted_amount);
+                    PERFORM set_account_balance(
+                        v_to_account_type,
+                        v_to_account_id,
+                        v_converted_amount
+                    );
                 ELSE
-                    PERFORM set_account_balance(v_to_account_type, v_to_account_id, -v_converted_amount);
+                    PERFORM set_account_balance(
+                        v_to_account_type,
+                        v_to_account_id,
+                        -v_converted_amount
+                    );
                 END IF;
 
                 -- To account (inflow)
@@ -2093,9 +2131,17 @@ BEGIN
                 UPDATE accounts SET updated_at = NOW() WHERE id = v_from_account_id;
 
                 IF v_from_account_type IN ('credit_card','loan') THEN
-                    PERFORM set_account_balance(v_from_account_type, v_from_account_id, -(v_original_amount + COALESCE(v_fees, 0)));
+                    PERFORM set_account_balance(
+                        v_from_account_type,
+                        v_from_account_id,
+                        -(v_original_amount + v_original_fees)
+                    );
                 ELSE
-                    PERFORM set_account_balance(v_from_account_type, v_from_account_id, v_original_amount + COALESCE(v_fees, 0));
+                    PERFORM set_account_balance(
+                        v_from_account_type,
+                        v_from_account_id,
+                        v_original_amount + v_original_fees
+                    );
                 END IF;
 
             ELSE
