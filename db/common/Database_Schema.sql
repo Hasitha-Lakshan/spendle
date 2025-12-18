@@ -474,23 +474,14 @@ CREATE TABLE IF NOT EXISTS api_rate_limits (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-ALTER TABLE public.api_rate_limits
-ADD CONSTRAINT api_rate_limits_user_endpoint_unique UNIQUE (user_id, endpoint);
 
 -- =========================================
 -- CONSTRAINTS
 -- =========================================
 
--- Add UNIQUE constraints needed for ON CONFLICT in default inserts
-ALTER TABLE expense_categories
-  ADD CONSTRAINT expense_categories_user_name_unique UNIQUE (user_id, name);
-
-ALTER TABLE expense_subcategories
-  ADD CONSTRAINT expense_subcategories_category_name_unique UNIQUE (category_id, name);
-
--- Add UNIQUE constraint for income_sources
-ALTER TABLE income_sources
-  ADD CONSTRAINT income_sources_user_name_unique UNIQUE (user_id, name);
+-- Enforce uniqueness of API endpoint usage per user
+ALTER TABLE public.api_rate_limits
+ADD CONSTRAINT api_rate_limits_user_endpoint_unique UNIQUE (user_id, endpoint);
 
 
 -- =========================================
@@ -500,6 +491,36 @@ ALTER TABLE income_sources
 -- Enforce uniqueness only for active rows of exchange_rates
 CREATE UNIQUE INDEX exchange_rates_user_from_to_active_unique
 ON exchange_rates (user_id, from_currency, to_currency)
+WHERE deleted_at IS NULL;
+
+-- Enforce uniqueness only for active accounts per user, account name, and type
+CREATE UNIQUE INDEX accounts_user_name_type_active_unique
+ON accounts (user_id, lower(account_name), type)
+WHERE deleted_at IS NULL;
+
+-- Enforce uniqueness only for active expense categories per user
+CREATE UNIQUE INDEX expense_categories_user_name_active_unique
+ON expense_categories (user_id, lower(name))
+WHERE deleted_at IS NULL;
+
+-- Enforce uniqueness only for active expense subcategories per category
+CREATE UNIQUE INDEX expense_subcategories_category_name_active_unique
+ON expense_subcategories (category_id, lower(name))
+WHERE deleted_at IS NULL;
+
+-- Enforce uniqueness only for active income sources per user
+CREATE UNIQUE INDEX income_sources_user_name_active_unique
+ON income_sources (user_id, lower(name))
+WHERE deleted_at IS NULL;
+
+-- Enforce uniqueness only for active counterparties per user and type
+CREATE UNIQUE INDEX counterparties_user_name_type_active_unique
+ON counterparties (user_id, lower(name), type)
+WHERE deleted_at IS NULL;
+
+-- Enforce uniqueness only for active recurring transaction templates
+CREATE UNIQUE INDEX transactions_recurring_template_active_unique
+ON transactions_recurring (transaction_template_id)
 WHERE deleted_at IS NULL;
 
 
