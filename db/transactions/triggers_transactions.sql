@@ -563,7 +563,7 @@ BEGIN
             PERFORM set_account_balance(
                 v_to_account_type,
                 p_new.account_id,
-                v_converted_amount
+                v_converted_amount - v_converted_fees
             );
 
     END CASE;
@@ -1392,6 +1392,7 @@ BEGIN
         WHERE id = NEW.transaction_template_id 
           AND user_id = NEW.user_id
           AND deleted_at IS NULL
+          AND transaction_date IS NOT NULL
           AND is_recurring = TRUE
           AND original_amount IS NOT NULL
           AND original_currency IS NOT NULL
@@ -1501,6 +1502,7 @@ BEGIN
     INSERT INTO transactions (
         user_id,
         type,
+        transaction_date,
         original_amount,
         original_currency,
         original_fees,
@@ -1516,6 +1518,7 @@ BEGIN
     VALUES (
         template_tx.user_id,
         template_tx.type,
+        template_tx.transaction_date,
         template_tx.original_amount,
         template_tx.original_currency,
         template_tx.original_fees,
@@ -2022,7 +2025,7 @@ BEGIN
                 PERFORM set_account_balance(
                     v_to_account_type,
                     v_to_account_id,
-                    -v_converted_amount
+                    -(v_converted_amount - v_converted_fees)
                 );
 
             WHEN 'borrow' THEN
