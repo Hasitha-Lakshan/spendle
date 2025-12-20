@@ -133,7 +133,7 @@ CREATE TABLE credit_card_accounts (
   card_number VARCHAR(20) NOT NULL,
   card_type VARCHAR(50),            -- e.g., Visa, Mastercard
   credit_limit DECIMAL(36,18),
-  current_balance DECIMAL(36,18) DEFAULT 0, -- outstanding balance
+  current_balance DECIMAL(36,18) DEFAULT 0, -- positive = amount owed, negative = credit balance
   billing_cycle VARCHAR(20),
   interest_rate DECIMAL(36,18),
   status VARCHAR(20) DEFAULT 'active',
@@ -144,10 +144,6 @@ CREATE TABLE credit_card_accounts (
 
   CONSTRAINT chk_credit_limit CHECK (
     credit_limit IS NULL OR current_balance <= credit_limit
-  ),
-  
-  CONSTRAINT chk_credit_balance_nonnegative CHECK (
-    current_balance >= 0
   )
 );
 
