@@ -2417,7 +2417,7 @@ BEGIN
         RAISE EXCEPTION 'Investment account is required';
     END IF;
 
-    -- === STEP 7: Validate funding account ===
+    -- === STEP 7a: Validate funding account ===
     IF p_funding_account_id IS DISTINCT FROM v_existing.funding_account_id THEN
         SELECT UPPER(currency) INTO v_funding_currency
         FROM accounts
@@ -2438,7 +2438,7 @@ BEGIN
         END IF;
     END IF;
 
-    -- === STEP 8: Validate investment account ===
+    -- === STEP 7b: Validate investment account ===
     IF p_investment_account_id IS DISTINCT FROM v_existing.investment_account_id THEN
         SELECT UPPER(currency) INTO v_investment_currency
         FROM accounts
@@ -2458,6 +2458,9 @@ BEGIN
             RAISE EXCEPTION 'Investment account not found or access denied';
         END IF;
     END IF;
+
+    -- === STEP 8: Determine transaction table name ===
+    v_table_name := public.get_transaction_table_name(v_existing.type::TEXT);
 
     -- === STEP 9: Validate exchange rate ===
     v_exchange_rate := get_exchange_rate(v_funding_currency, v_investment_currency);
