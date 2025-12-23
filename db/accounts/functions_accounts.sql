@@ -466,7 +466,7 @@ BEGIN
     END IF;
 
     -- Enforce rate limit
-    IF NOT check_rate_limit('update_account', v_max_requests, v_window_minutes) THEN
+    IF NOT check_rate_limit_internal('update_account', v_max_requests, v_window_minutes) THEN
         RAISE EXCEPTION 'Rate limit exceeded: max % requests per % minutes',
         v_max_requests, v_window_minutes;
     END IF;
