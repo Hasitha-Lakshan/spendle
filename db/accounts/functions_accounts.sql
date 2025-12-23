@@ -764,7 +764,7 @@ $$;
 --
 -- Behavior:
 --   - Validates that the caller has administrative privileges using
---     check_admin_permissions().
+--     check_admin_permissions_internal().
 --   - Updates the account's deleted_at and updated_at timestamps to indicate
 --     a soft-deleted state.
 --   - Returns TRUE if the account was successfully soft-deleted.
@@ -798,7 +798,7 @@ SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
 DECLARE
-    v_is_admin BOOLEAN := public.check_admin_permissions();
+    v_is_admin BOOLEAN := public.check_admin_permissions_internal();
     v_exists UUID;
 BEGIN
     -- Enable Row-Level Security
@@ -896,7 +896,7 @@ BEGIN
     END IF;
 
     -- Check admin
-    is_admin := public.check_admin_permissions();
+    is_admin := public.check_admin_permissions_internal();
     IF NOT is_admin THEN
         RAISE EXCEPTION 'Permission denied: only admins can hard delete';
     END IF;
