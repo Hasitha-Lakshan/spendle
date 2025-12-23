@@ -1,68 +1,69 @@
 -- =========================================
--- 01. Function: initialize_user_defaults
+-- 01. Function: initialize_defaults_for_user_internal
 -- =========================================
 -- Purpose:
---   Ensures a user profile exists and inserts default data for new users,
---   including base accounts, expense categories, subcategories, and income sources.
---   Marks defaults as inserted to prevent duplicates.
+--   Inserts all default data for a given user, including:
+--     - Cash and Bank accounts
+--     - Expense categories and subcategories
+--     - Income sources
+--     - Exchange rates (fiat and crypto)
+--   Marks the user's profile as having defaults inserted to prevent duplicates.
 --
 -- Parameters:
---   p_user_id UUID - The ID of the user to initialize
+--   p_user_id UUID - The ID of the user for whom defaults are being created
 --
 -- Returns:
---   JSONB - Object indicating user_id and that defaults were inserted
+--   VOID - This function performs actions without returning a value
 --
 -- Notes:
---   - Uses create_account to insert default accounts
+--   - Uses create_account_internal to insert default accounts
 --   - Prevents duplicate inserts using ON CONFLICT
---   - Safe for repeated calls; defaults are only inserted once
+--   - Wraps all inserts in a block to catch errors and raise exceptions
+--   - Safe to call multiple times; defaults are only inserted once per user
 -- =========================================
-CREATE OR REPLACE FUNCTION initialize_user_defaults(p_user_id UUID)
-RETURNS JSONB
+CREATE OR REPLACE FUNCTION public.initialize_defaults_for_user_internal(p_user_id UUID)
+RETURNS VOID
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
-VOLATILE
 AS $$
 DECLARE
-    profile_exists BOOLEAN;
-    defaults_flag BOOLEAN;
     default_category_id UUID;
 BEGIN
-    -- Check if profile exists and whether defaults are already inserted
-    SELECT EXISTS(SELECT 1 FROM profiles WHERE user_id = p_user_id),
-           COALESCE((SELECT defaults_inserted FROM profiles WHERE user_id = p_user_id), FALSE)
-    INTO profile_exists, defaults_flag;
+    -- Wrap default insertion in a block to catch errors
+    BEGIN
+        -- Create Cash account
+        PERFORM public.create_account_internal(
+            p_user_id := p_user_id,
+            p_account_name := 'Cash Wallet',
+            p_type := 'cash'::account_type,
+            p_currency := 'USD',
+            p_details := '{}'::jsonb
+        );
 
-    -- If profile does not exist, create it
-    IF NOT profile_exists THEN
-        INSERT INTO profiles(user_id, defaults_inserted)
-        VALUES (p_user_id, FALSE)
-        ON CONFLICT (user_id) DO NOTHING;
-
-        -- Re-fetch flags after insert
-        SELECT EXISTS(SELECT 1 FROM profiles WHERE user_id = p_user_id),
-               COALESCE((SELECT defaults_inserted FROM profiles WHERE user_id = p_user_id), FALSE)
-        INTO profile_exists, defaults_flag;
-    END IF;
-
-    -- If defaults not inserted, insert them
-    IF NOT defaults_flag THEN
-        -- Insert default accounts using create_account
-        PERFORM create_account(p_user_id, 'Cash Wallet', 'cash', 'USD', '{}'::jsonb);
-        PERFORM create_account(
-            p_user_id,
-            'Default Bank',
-            'bank',
-            'USD',
-            '{"bank_name":"Default Bank","account_no":"0000","branch":"Main","account_holder_name":"User","balance":0}'::jsonb
+        -- Create Bank account
+        PERFORM public.create_account_internal(
+            p_user_id := p_user_id,
+            p_account_name := 'Default Bank',
+            p_type := 'bank'::account_type,
+            p_currency := 'USD',
+            p_details := '{
+                "bank_name": "Default Bank",
+                "account_no": "0000",
+                "branch": "Main",
+                "account_holder_name": "User",
+                "balance": 0
+            }'::jsonb
         );
 
         -- Insert default expense category and subcategory
         INSERT INTO expense_categories(user_id, name)
         VALUES (p_user_id, 'General')
-        ON CONFLICT (user_id, name) DO NOTHING
-        RETURNING id INTO default_category_id;
+        ON CONFLICT (user_id, name) DO NOTHING;
+
+        SELECT id INTO default_category_id
+        FROM expense_categories
+        WHERE user_id = p_user_id AND name = 'General';
 
         IF default_category_id IS NOT NULL THEN
             INSERT INTO expense_subcategories(category_id, name)
@@ -91,8 +92,8 @@ BEGIN
             (p_user_id, 'GBP', 'EUR', 1.15, 'ECB', NOW(), NOW()),
             (p_user_id, 'EUR', 'JPY', 158.00, 'ECB', NOW(), NOW()),
             (p_user_id, 'JPY', 'EUR', 0.0063, 'ECB', NOW(), NOW()),
-            (p_user_id, 'USD', 'LKR', 363.50, 'CBSL', NOW(), NOW()),
-            (p_user_id, 'LKR', 'USD', 0.00275, 'CBSL', NOW(), NOW()),
+            (p_user_id, 'USD', 'LKR', 320.00, 'CBSL', NOW(), NOW()),
+            (p_user_id, 'LKR', 'USD', 0.003125, 'CBSL', NOW(), NOW()),
             (p_user_id, 'EUR', 'LKR', 333.00, 'CBSL', NOW(), NOW()),
             (p_user_id, 'LKR', 'EUR', 0.00300, 'CBSL', NOW(), NOW()),
             (p_user_id, 'GBP', 'LKR', 448.00, 'CBSL', NOW(), NOW()),
@@ -117,64 +118,211 @@ BEGIN
         UPDATE profiles
         SET defaults_inserted = TRUE, updated_at = NOW()
         WHERE user_id = p_user_id;
+
+    EXCEPTION WHEN OTHERS THEN
+        -- Any error triggers a raised exception
+        RAISE EXCEPTION 'Failed to initialize defaults for user %: %', p_user_id, SQLERRM;
+    END;
+END;
+$$;
+
+-- =========================================
+-- 02. Function: initialize_my_defaults
+-- =========================================
+-- Purpose:
+--   Allows an authenticated user to initialize their own default data.
+--   Ensures a profile row exists, checks whether defaults were already inserted,
+--   and triggers default data creation only once.
+--
+-- Parameters:
+--   None
+--
+-- Returns:
+--   JSONB - Object containing:
+--     - user_id: the authenticated user's ID
+--     - defaults_inserted: true if defaults were inserted during this call
+--
+-- Notes:
+--   - Uses auth.uid() to identify the calling user
+--   - Enforces Row-Level Security during execution
+--   - Locks the user's profile row using FOR UPDATE to prevent race conditions
+--   - Delegates all default data creation to initialize_defaults_for_user_internal
+--   - Safe for repeated calls; defaults are only inserted once
+-- =========================================
+CREATE OR REPLACE FUNCTION public.initialize_my_defaults()
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+VOLATILE
+AS $$
+DECLARE
+    v_user_id UUID := auth.uid();
+    defaults_flag BOOLEAN;
+    did_insert BOOLEAN := FALSE;
+BEGIN
+    -- Enable RLS for this function
+    PERFORM set_config('row_security', 'on', true);
+
+    -- Authenticate the caller
+    IF v_user_id IS NULL THEN
+        RAISE EXCEPTION 'Unauthenticated call';
+    END IF;
+
+    -- Fetch profile row atomically and lock it
+    SELECT defaults_inserted
+    INTO defaults_flag
+    FROM profiles
+    WHERE user_id = v_user_id
+    FOR UPDATE;
+
+    -- If profile does not exist, create it
+    IF NOT FOUND THEN
+        INSERT INTO profiles(user_id, defaults_inserted)
+        VALUES (v_user_id, FALSE);
+        defaults_flag := FALSE;
+    END IF;
+
+    -- If defaults not inserted, insert them
+    IF NOT defaults_flag THEN
+        PERFORM public.initialize_defaults_for_user_internal(v_user_id);
+        -- Mark that we inserted defaults in this call
+        did_insert := TRUE;
     END IF;
 
     -- Return JSON to Supabase
     RETURN jsonb_build_object(
-        'user_id', p_user_id,
-        'defaults_inserted', TRUE
+        'user_id', v_user_id,
+        'defaults_inserted', did_insert
     );
 END;
 $$;
 
 -- =========================================
--- 02. Function: check_admin_permissions
+-- 03. Function: check_admin_permissions_internal
 -- =========================================
 -- Purpose:
 --   Determines whether the current session user has administrative privileges.
 --
 -- Behavior:
---   - SECURITY DEFINER allows the function to bypass RLS restrictions on the profiles table
---   - Retrieves the `is_admin` flag from the profiles table for the current session user
---   - Considers a user without a profile or with a deleted profile as non-admin
+--   - Retrieves the current session user ID via `auth.uid()`
+--   - Queries the `profiles` table for the `is_admin` flag of the active user
+--   - Considers users with no profile or a deleted profile as non-admin
 --
 -- Parameters:
---   None - The function uses the current session user from auth.uid()
+--   None - The function uses the current session user from `auth.uid()`
 --
 -- Returns:
 --   BOOLEAN - TRUE if the current user is an admin, FALSE otherwise
 --
 -- Notes:
---   - Useful for enforcing admin-only actions in triggers, policies, and functions
+--   - SECURITY DEFINER allows the function to bypass RLS restrictions on the `profiles` table
+--   - Useful for enforcing admin-only actions in triggers, policies, and other functions
 --   - Always returns FALSE if the session is unauthenticated
 -- =========================================
-CREATE OR REPLACE FUNCTION check_admin_permissions()
-RETURNS BOOLEAN 
+CREATE OR REPLACE FUNCTION public.check_admin_permissions_internal()
+RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = pg_catalog, public
 AS $$
 DECLARE
-    v_current_user UUID;
-    is_admin BOOLEAN := FALSE;
+    v_user_id UUID := auth.uid();
+    v_is_admin BOOLEAN;
 BEGIN
-    v_current_user := auth.uid();
-    
-    IF v_current_user IS NULL THEN
+    IF v_user_id IS NULL THEN
         RETURN FALSE;
     END IF;
-    
-    SELECT p.is_admin INTO is_admin
+
+    SELECT p.is_admin
+    INTO v_is_admin
     FROM public.profiles p
-    WHERE p.user_id = v_current_user
+    WHERE p.user_id = v_user_id
       AND p.deleted_at IS NULL;
-    
-    RETURN COALESCE(is_admin, FALSE);
+
+    RETURN COALESCE(v_is_admin, FALSE);
 END;
 $$;
 
 -- =========================================
--- 03. Function: check_rate_limit
+-- 04. Function: admin_initialize_user_defaults
+-- =========================================
+-- Purpose:
+--   Allows an administrator to initialize default data for any user.
+--   Ensures the target user's profile exists, checks whether defaults were
+--   already inserted, and triggers default data creation only once.
+--
+-- Parameters:
+--   p_user_id UUID - The ID of the user whose defaults should be initialized
+--
+-- Returns:
+--   JSONB - Object containing:
+--     - user_id: the target user's ID
+--     - defaults_inserted: true if defaults were inserted during this call
+--
+-- Notes:
+--   - Uses auth.uid() to identify the calling administrator
+--   - Enforces Row-Level Security during execution
+--   - Requires admin privileges via check_admin_permissions_internal
+--   - Locks the target user's profile row using FOR UPDATE to prevent race conditions
+--   - Delegates all default data creation to initialize_defaults_for_user_internal
+--   - Safe for repeated calls; defaults are only inserted once per user
+-- =========================================
+CREATE OR REPLACE FUNCTION public.admin_initialize_user_defaults(p_user_id UUID)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+VOLATILE
+AS $$
+DECLARE
+    v_admin_id UUID := auth.uid();
+    defaults_flag BOOLEAN;
+    did_insert BOOLEAN := FALSE;
+BEGIN
+    -- Enable RLS for this function
+    PERFORM set_config('row_security', 'on', true);
+
+    -- Authenticate the caller
+    IF v_admin_id IS NULL THEN
+        RAISE EXCEPTION 'Unauthenticated call';
+    END IF;
+
+    -- Only admins may initialize other users
+    IF NOT public.check_admin_permissions_internal(v_admin_id) THEN
+        RAISE EXCEPTION 'Not authorized to initialize defaults';
+    END IF;
+
+    -- Fetch profile row atomically and lock it
+    SELECT defaults_inserted
+    INTO defaults_flag
+    FROM profiles
+    WHERE user_id = p_user_id
+    FOR UPDATE;
+
+    -- If profile does not exist, create it
+    IF NOT FOUND THEN
+        INSERT INTO profiles(user_id, defaults_inserted)
+        VALUES (p_user_id, FALSE);
+        defaults_flag := FALSE;
+    END IF;
+
+    -- If defaults not inserted, insert them
+    IF NOT defaults_flag THEN
+        PERFORM public.initialize_defaults_for_user_internal(p_user_id);
+        did_insert := TRUE;
+    END IF;
+
+    -- Return JSON to Supabase
+    RETURN jsonb_build_object(
+        'user_id', p_user_id,
+        'defaults_inserted', did_insert
+    );
+END;
+$$;
+
+-- =========================================
+-- 05. Function: check_rate_limit_internal
 -- =========================================
 -- Purpose:
 --   Enforces per-user API rate limits for a given endpoint within a rolling time window.
@@ -199,87 +347,98 @@ $$;
 --   - Can be called in triggers or directly from API middleware
 --   - Designed to prevent abuse without blocking legitimate usage
 -- =========================================
-CREATE OR REPLACE FUNCTION check_rate_limit(
+CREATE OR REPLACE FUNCTION check_rate_limit_internal(
     p_endpoint VARCHAR(100),
     p_max_requests INTEGER DEFAULT 100,
     p_window_minutes INTEGER DEFAULT 60
 )
 RETURNS BOOLEAN
 LANGUAGE plpgsql
-SECURITY INVOKER
+SECURITY DEFINER
 SET search_path = pg_catalog, public
 VOLATILE
 AS $$
 DECLARE
-    v_user_id UUID;
-    v_current_count INTEGER;
+    v_user_id UUID := auth.uid();
+    v_counter RECORD;
     v_window_start TIMESTAMPTZ;
+    v_now TIMESTAMPTZ := NOW();
 BEGIN
-    v_user_id := auth.uid();
-    v_window_start := NOW() - (p_window_minutes || ' minutes')::INTERVAL;
-    
-    -- Get current count for this user/endpoint in the time window
-    SELECT COALESCE(SUM(request_count), 0)::INTEGER
-    INTO v_current_count
+    v_window_start := v_now - (p_window_minutes || ' minutes')::INTERVAL;
+
+    -- Lock the row for this user/endpoint to prevent race conditions
+    SELECT *
+    INTO v_counter
     FROM public.api_rate_limits
     WHERE user_id = v_user_id
       AND endpoint = p_endpoint
-      AND window_start > v_window_start;
-    
-    -- If under limit, record this request
-    IF v_current_count < p_max_requests THEN
-        INSERT INTO public.api_rate_limits (user_id, endpoint, request_count)
-        VALUES (v_user_id, p_endpoint, 1)
-        ON CONFLICT (user_id, endpoint) 
-        DO UPDATE SET 
-            request_count = public.api_rate_limits.request_count + 1,
-            created_at = NOW();
-        
+    FOR UPDATE;
+
+    IF NOT FOUND THEN
+        -- Row doesn't exist yet: create it
+        INSERT INTO public.api_rate_limits(user_id, endpoint, request_count, last_request_at)
+        VALUES (v_user_id, p_endpoint, 1, v_now);
         RETURN TRUE;
     ELSE
-        RETURN FALSE;
+        -- Row exists: check if the last_request_at is within the rolling window
+        IF v_counter.last_request_at < v_window_start THEN
+            -- Window expired: reset counter
+            UPDATE public.api_rate_limits
+            SET request_count = 1,
+                last_request_at = v_now
+            WHERE user_id = v_user_id
+              AND endpoint = p_endpoint;
+            RETURN TRUE;
+        ELSE
+            -- Within window: check if under max requests
+            IF v_counter.request_count < p_max_requests THEN
+                UPDATE public.api_rate_limits
+                SET request_count = request_count + 1,
+                    last_request_at = v_now
+                WHERE user_id = v_user_id
+                  AND endpoint = p_endpoint;
+                RETURN TRUE;
+            ELSE
+                -- Limit reached
+                RETURN FALSE;
+            END IF;
+        END IF;
     END IF;
 END;
 $$;
 
 -- =========================================
--- CLEAN-UP FUNCTIONS
--- =========================================
--- =========================================
--- 04. Function: hard_delete_record
+-- 06. Function: hard_delete_record_internal
 -- =========================================
 -- Purpose:
---   Permanently deletes a record from a specified table, handling dependencies
---   and specialized related tables for accounts, transactions, categories,
---   counterparties, and income sources.
+--   Executes a hard delete of a record from a specified table, including all
+--   dependent or related records. Designed to be called by administrative
+--   functions and bypasses standard soft-delete and RLS protections.
 --
 -- Behavior:
 --   - SECURITY DEFINER ensures the function runs with elevated privileges
---     regardless of the caller
---   - Authenticates the current user via auth.uid() and checks admin permissions
---   - Validates the table name to prevent SQL injection
---   - For 'accounts', deletes specialized account tables and associated transactions
---   - For 'transactions', deletes dependent transaction detail tables and recurring links
---   - For 'expense_categories', deletes linked subcategories
---   - For 'counterparties' and 'income_sources', deletes dependent transaction references
---   - Only deletes records that have already been soft-deleted (deleted_at IS NOT NULL)
---   - Uses dynamic SQL to delete the target record safely
+--   - Validates the table name against an approved list to prevent SQL injection
+--   - Handles table-specific dependencies:
+--       * Accounts: deletes specialized account tables, transactions, and recurring templates
+--       * Transactions: deletes related transaction detail tables and recurring transactions
+--       * Expense categories: deletes associated subcategories
+--       * Counterparties and income sources: deletes linked accounts or transaction records
+--   - Executes a DELETE query only on records marked as soft-deleted (deleted_at IS NOT NULL)
+--   - Returns TRUE if a record was successfully deleted, FALSE otherwise
 --
 -- Parameters:
---   table_name TEXT - Name of the table from which to delete the record
---   record_id  UUID - ID of the record to delete
+--   table_name  TEXT - Name of the table from which to delete the record
+--   record_id   UUID - Identifier of the record to be deleted
 --
 -- Returns:
---   BOOLEAN - TRUE if the record was successfully deleted, FALSE if no record
---             was deleted (e.g., record did not exist or was not soft-deleted)
+--   BOOLEAN - TRUE if deletion was successful, FALSE if no matching record was deleted
 --
 -- Notes:
---   - Sets 'app.hard_delete' session flag to allow bypassing soft delete constraints
---   - Ensures cascading deletions for related tables to maintain referential integrity
---   - Designed for administrative operations only; raises exceptions for non-admins
---   - Prevents accidental deletion by restricting to known table names
+--   - Must be invoked by an admin-level function to ensure proper authorization
+--   - Handles specialized deletion logic for accounts and transactions
+--   - Protects against invalid table names and non-existent records
 -- =========================================
-CREATE OR REPLACE FUNCTION public.hard_delete_record(
+CREATE OR REPLACE FUNCTION public.hard_delete_record_internal(
     table_name TEXT,
     record_id UUID
 )
@@ -289,27 +448,10 @@ SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
 DECLARE
-    current_user_id UUID;
-    is_admin BOOLEAN;
     sql_query TEXT;
     record_exists INTEGER;
     acc_type public.account_type;
 BEGIN
-    -- Authenticate and authorize user
-    current_user_id := auth.uid();
-    IF current_user_id IS NULL THEN
-        RAISE EXCEPTION 'Not authenticated';
-    END IF;
-
-    -- Check if current user is admin
-    is_admin := public.check_admin_permissions();
-    IF NOT is_admin THEN
-        RAISE EXCEPTION 'Permission denied: only admins can hard delete';
-    END IF;
-
-    -- Enable hard delete bypass for this session
-    PERFORM set_config('app.hard_delete', 'on', true);
-
     -- Validate table name to prevent SQL injection
     IF table_name NOT IN (
         'profiles',
@@ -329,6 +471,9 @@ BEGIN
     -- If deleting an account, first delete specialized account table + transaction details
     IF table_name = 'accounts' THEN
         SELECT type INTO acc_type FROM public.accounts WHERE id = record_id;
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'Account with id % does not exist', record_id;
+        END IF;
 
         CASE acc_type
             WHEN 'cash'        THEN DELETE FROM public.cash_accounts        WHERE account_id = record_id;
@@ -374,6 +519,12 @@ BEGIN
 
     -- If deleting transactions, delete dependent transaction detail tables first
     IF table_name = 'transactions' THEN
+        -- Raise error if transaction does not exist
+        PERFORM 1 FROM public.transactions WHERE id = record_id;
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'Transaction with id % does not exist', record_id;
+        END IF;
+
         -- Delete recurring transactions linked to this transaction
         DELETE FROM public.transactions_recurring
         WHERE transaction_template_id = record_id;
@@ -389,16 +540,31 @@ BEGIN
 
     -- If deleting expense category, delete subcategories first
     IF table_name = 'expense_categories' THEN
+        PERFORM 1 FROM public.expense_categories WHERE id = record_id;
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'Expense category with id % does not exist', record_id;
+        END IF;
+
         DELETE FROM public.expense_subcategories WHERE category_id = record_id;
     END IF;
 
     -- If deleting a counterparty
     IF table_name = 'counterparties' THEN
-        DELETE FROM public.transactions_borrow WHERE counterparty_id = record_id;
-        DELETE FROM public.transactions_lend   WHERE counterparty_id = record_id;
+        PERFORM 1 FROM public.counterparties WHERE id = record_id;
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'Counterparty with id % does not exist', record_id;
+        END IF;
+
+        DELETE FROM public.loan_accounts WHERE counterparty_id = record_id;
+        DELETE FROM public.receivable_accounts WHERE counterparty_id = record_id;
 
     -- If deleting an income source
     ELSIF table_name = 'income_sources' THEN
+        PERFORM 1 FROM public.income_sources WHERE id = record_id;
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'Income source with id % does not exist', record_id;
+        END IF;
+
         DELETE FROM public.transactions_income WHERE source_id = record_id;
     END IF;
 
@@ -419,7 +585,224 @@ END;
 $$;
 
 -- =========================================
--- 05. Function: cleanup_old_audit_logs
+-- 07. Function: admin_hard_delete_record
+-- =========================================
+-- Purpose:
+--   Performs a hard delete of a record from a specified table, bypassing
+--   standard soft-delete and RLS restrictions. Intended for administrative use only.
+--
+-- Behavior:
+--   - SECURITY DEFINER allows the function to run with elevated privileges
+--   - Enables row-level security (RLS) for this session
+--   - Authenticates the current user and ensures they are logged in
+--   - Checks if the current user has admin permissions; raises an exception if not
+--   - Temporarily enables app-level hard delete flag for the session
+--   - Delegates actual deletion logic to the internal helper function
+--   - Returns TRUE if deletion succeeds, otherwise raises an exception
+--
+-- Parameters:
+--   table_name  TEXT - Name of the table from which to delete the record
+--   record_id   UUID - Identifier of the record to be deleted
+--
+-- Returns:
+--   BOOLEAN - TRUE if the deletion was successful
+--
+-- Notes:
+--   - Only admins can execute this function
+--   - Relies on the helper function hard_delete_record_internal for actual deletion
+--   - Enforces strict authentication and authorization checks
+-- =========================================
+CREATE OR REPLACE FUNCTION public.admin_hard_delete_record(
+    table_name TEXT,
+    record_id UUID
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+    current_user_id UUID;
+    is_admin BOOLEAN;
+    sql_query TEXT;
+BEGIN
+    -- Enable RLS for this function
+    PERFORM set_config('row_security', 'on', true);
+
+    -- Authenticate and authorize user
+    current_user_id := auth.uid();
+    IF current_user_id IS NULL THEN
+        RAISE EXCEPTION 'Not authenticated';
+    END IF;
+
+    -- Check if current user is admin
+    is_admin := public.check_admin_permissions_internal();
+    IF NOT is_admin THEN
+        RAISE EXCEPTION 'Permission denied: only admins can hard delete';
+    END IF;
+
+    -- Enable hard delete bypass for this session
+    PERFORM set_config('app.hard_delete', 'on', true);
+
+    -- Delegate deletion logic to the helper
+    RETURN public.hard_delete_record_internal(table_name, record_id);
+END;
+$$;
+
+-- =========================================
+-- 08. Function: require_system_role_internal
+-- =========================================
+-- Purpose:
+--   Enforces that the current database session is executed under a system-level role.
+--
+-- Behavior:
+--   - Checks the PostgreSQL `current_user` for an allowed system role
+--   - Raises an exception if the session user is not authorized
+--   - Execution stops immediately on failure
+--
+-- Parameters:
+--   None - The function relies on the PostgreSQL `current_user`
+--
+-- Returns:
+--   VOID - Throws an exception if the role requirement is not met
+--
+-- Notes:
+--   - Intended for internal/system-only operations
+--   - Commonly used as a guard clause at the beginning of privileged functions
+--   - SECURITY DEFINER does not grant access unless the role check passes
+-- =========================================
+CREATE OR REPLACE FUNCTION public.require_system_role_internal()
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+    IF current_user NOT IN ('cron_admin') THEN
+        RAISE EXCEPTION 'System role required';
+    END IF;
+END;
+$$;
+
+-- =========================================
+-- 09. Function: cleanup_soft_deleted_records_internal
+-- =========================================
+-- Purpose:
+--   Permanently deletes soft-deleted records from key tables that are older than a specified number of days.
+--
+-- Behavior:
+--   - SECURITY DEFINER allows execution even with RLS enabled
+--   - Iterates through predefined tables (transactions, accounts, expense_categories, etc.)
+--   - For each soft-deleted record older than `older_than_days`, calls `hard_delete_record_internal` to remove it
+--   - Returns a summary of how many records were deleted per table
+--
+-- Parameters:
+--   older_than_days INTEGER DEFAULT 90
+--     - Number of days after which soft-deleted records should be permanently removed
+--
+-- Returns:
+--   TABLE (table_name TEXT, deleted_count BIGINT)
+--     - table_name: name of the table processed
+--     - deleted_count: number of records permanently deleted from that table
+--
+-- Notes:
+--   - Should only be run by admins; checks `check_admin_permissions_internal`
+--   - Can be scheduled via pg_cron to run automatically, e.g., nightly
+--   - Uses `hard_delete_record_internal` to handle dependencies and ensure safe deletion
+-- =========================================
+CREATE OR REPLACE FUNCTION public.cleanup_soft_deleted_records_internal(
+    older_than_days INTEGER DEFAULT 90
+)
+RETURNS TABLE(
+    table_name TEXT,
+    deleted_count BIGINT,
+    failed_count BIGINT
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+    cutoff_date TIMESTAMPTZ;
+    tables_to_clean TEXT[] := ARRAY[
+        'transactions', 'transactions_recurring', 'accounts', 'expense_categories',
+        'expense_subcategories', 'income_sources', 'counterparties',
+        'exchange_rates'
+    ];
+    tbl TEXT;
+    rec RECORD;
+    deleted_counter BIGINT;
+    failed_counter BIGINT;
+    v_system_uid UUID = '00000000-0000-0000-0000-000000000000'::UUID;
+BEGIN
+    -- Must be run only by cron_admin
+    PERFORM public.require_system_role_internal();
+
+    cutoff_date := NOW() - (older_than_days || ' days')::INTERVAL;
+
+    FOREACH tbl IN ARRAY tables_to_clean LOOP
+        deleted_counter := 0;
+        failed_counter := 0;
+
+        FOR rec IN EXECUTE format(
+            'SELECT id FROM %I WHERE deleted_at IS NOT NULL AND deleted_at < $1',
+            tbl
+        ) USING cutoff_date
+        LOOP
+            BEGIN
+                -- Call the existing admin_hard_delete_record function
+                IF public.hard_delete_record_internal(tbl, rec.id) THEN
+                    deleted_counter := deleted_counter + 1;
+                END IF;
+            EXCEPTION WHEN OTHERS THEN
+                failed_counter := failed_counter + 1;
+
+                -- Persistent error logging to audit_logs
+                INSERT INTO public.audit_logs(
+                    user_id,
+                    action_by,
+                    table_name,
+                    record_id,
+                    action,
+                    old_data,
+                    new_data
+                )
+                VALUES (
+                    v_system_uid,   -- affected user (cron job context)
+                    v_system_uid,   -- performed by cron user
+                    tbl,
+                    rec.id,
+                    'DELETE',
+                    NULL,
+                    jsonb_build_object(
+                        'error', SQLERRM
+                    )
+                );
+
+                -- Also raise notice for session visibility
+                RAISE NOTICE 'Failed to hard delete record % from table %: %', rec.id, tbl, SQLERRM;
+            END;
+        END LOOP;
+
+        -- Return the results for this table, including failed deletions
+        RETURN QUERY SELECT tbl, deleted_counter, failed_counter;
+    END LOOP;
+END;
+$$;
+
+-- Change the role to cron_admin and schedule the cleanup job
+SET ROLE cron_admin;
+-- Schedule the cleanup to run every night at 2:00 AM
+SELECT cron.schedule(
+  'cleanup_soft_deleted_records_nightly',  -- job name
+  '0 2 * * *',                            -- cron expression (2:00 AM daily)
+  $$ SELECT public.cleanup_soft_deleted_records_internal(90); $$
+);
+-- reset role back to previous
+RESET ROLE;
+
+-- =========================================
+-- 10. Function: cleanup_old_audit_logs_internal
 -- =========================================
 -- Purpose:
 --   Deletes audit log entries older than a specified number of days to manage table size.
@@ -439,7 +822,9 @@ $$;
 --   - Should be scheduled periodically (e.g., via a cron job or maintenance task)
 --   - Helps control storage growth for audit_logs table
 -- =========================================
-CREATE OR REPLACE FUNCTION cleanup_old_audit_logs(p_days_to_keep INTEGER DEFAULT 90)
+CREATE OR REPLACE FUNCTION public.cleanup_old_audit_logs_internal(
+    p_days_to_keep INTEGER DEFAULT 90
+)
 RETURNS INTEGER
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -448,26 +833,30 @@ AS $$
 DECLARE
     v_deleted_count INTEGER;
 BEGIN
-    IF NOT check_admin_permissions() THEN
-        RAISE EXCEPTION 'Access denied: only admins can run cleanup_old_audit_logs';
-    END IF;
+    -- Must be run only by cron_admin
+    PERFORM public.require_system_role_internal();
 
-    DELETE FROM public.audit_logs 
+    DELETE FROM public.audit_logs
     WHERE created_at < (CURRENT_DATE - (p_days_to_keep || ' days')::INTERVAL);
-    
+
     GET DIAGNOSTICS v_deleted_count = ROW_COUNT;
     RETURN v_deleted_count;
 END;
 $$;
 
+-- Change the role to cron_admin and schedule the cleanup job
+SET ROLE cron_admin;
+-- Schedule the cleanup to run every night at 2:00 AM
 SELECT cron.schedule(
   'cleanup_audit_logs_daily',
   '0 2 * * *',
-  $$ SELECT cleanup_old_audit_logs(90); $$
+  $$ SELECT cleanup_old_audit_logs_internal(90); $$
 );
+-- reset role back to previous
+RESET ROLE;
 
 -- =========================================
--- 06. Function: cleanup_old_rate_limits
+-- 11. Function: cleanup_old_rate_limits_internal
 -- =========================================
 -- Purpose:
 --   Deletes API rate limit records older than 24 hours to keep the table current.
@@ -487,7 +876,7 @@ SELECT cron.schedule(
 --   - Should be scheduled periodically to prevent stale rate limit data
 --   - Helps ensure accurate rate limiting without table bloat
 -- =========================================
-CREATE OR REPLACE FUNCTION cleanup_old_rate_limits(p_hours_to_keep INTEGER DEFAULT 24)
+CREATE OR REPLACE FUNCTION public.cleanup_old_rate_limits_internal(p_hours_to_keep INTEGER DEFAULT 24)
 RETURNS INTEGER
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -496,10 +885,8 @@ AS $$
 DECLARE
     v_deleted_count INTEGER;
 BEGIN
-    -- Protect: only admins can run this cleanup
-    IF NOT check_admin_permissions() THEN
-        RAISE EXCEPTION 'Access denied: only admins can run cleanup_old_rate_limits';
-    END IF;
+    -- Must be run only by cron_admin
+    PERFORM public.require_system_role_internal();
 
     DELETE FROM public.api_rate_limits
     WHERE created_at < (NOW() - (p_hours_to_keep || ' hours')::INTERVAL);
@@ -509,106 +896,29 @@ BEGIN
 END;
 $$;
 
+-- Change the role to cron_admin and schedule the cleanup job
+SET ROLE cron_admin;
 -- Run cleanup every night at midnight
 SELECT cron.schedule(
   'cleanup_api_rate_limits_daily',
   '0 0 * * *',
-  $$ SELECT cleanup_old_rate_limits(24); $$  -- explicitly pass 24 hours
+  $$ SELECT cleanup_old_rate_limits_internal(24); $$  -- explicitly pass 24 hours
 );
-
--- =========================================
--- 07. Function: cleanup_soft_deleted_records
--- =========================================
--- Purpose:
---   Permanently deletes soft-deleted records from key tables that are older than a specified number of days.
---
--- Behavior:
---   - SECURITY DEFINER allows execution even with RLS enabled
---   - Iterates through predefined tables (transactions, accounts, expense_categories, etc.)
---   - For each soft-deleted record older than `older_than_days`, calls `hard_delete_record` to remove it
---   - Returns a summary of how many records were deleted per table
---
--- Parameters:
---   older_than_days INTEGER DEFAULT 90
---     - Number of days after which soft-deleted records should be permanently removed
---
--- Returns:
---   TABLE (table_name TEXT, deleted_count BIGINT)
---     - table_name: name of the table processed
---     - deleted_count: number of records permanently deleted from that table
---
--- Notes:
---   - Should only be run by admins; checks `check_admin_permissions`
---   - Can be scheduled via pg_cron to run automatically, e.g., nightly
---   - Uses `hard_delete_record` to handle dependencies and ensure safe deletion
--- =========================================
-CREATE OR REPLACE FUNCTION public.cleanup_soft_deleted_records(
-    older_than_days INTEGER DEFAULT 90
-)
-RETURNS TABLE(
-    table_name TEXT,
-    deleted_count BIGINT
-)
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public
-AS $$
-DECLARE
-    cutoff_date TIMESTAMPTZ;
-    tables_to_clean TEXT[] := ARRAY[
-        'transactions', 'accounts', 'expense_categories', 'expense_subcategories',
-        'income_sources', 'counterparties', 'transactions_recurring',
-        'exchange_rates'
-    ];
-    tbl TEXT;
-    rec RECORD;
-    deleted_counter BIGINT;
-BEGIN
-    -- Only admins can run this
-    IF NOT check_admin_permissions() THEN
-        RAISE EXCEPTION 'Admin permissions required';
-    END IF;
-
-    cutoff_date := NOW() - (older_than_days || ' days')::INTERVAL;
-
-    FOREACH tbl IN ARRAY tables_to_clean LOOP
-        deleted_counter := 0;
-
-        FOR rec IN EXECUTE format(
-            'SELECT id FROM %I WHERE deleted_at IS NOT NULL AND deleted_at < $1',
-            tbl
-        ) USING cutoff_date
-        LOOP
-            -- Call the existing hard_delete_record function
-            PERFORM public.hard_delete_record(tbl, rec.id);
-            deleted_counter := deleted_counter + 1;
-        END LOOP;
-
-        -- Return the results for this table
-        RETURN QUERY SELECT tbl, deleted_counter;
-    END LOOP;
-END;
-$$;
-
--- Schedule the cleanup to run every night at 2:00 AM
-SELECT cron.schedule(
-  'cleanup_soft_deleted_records_nightly',  -- job name
-  '0 2 * * *',                            -- cron expression (2:00 AM daily)
-  $$ SELECT public.cleanup_soft_deleted_records(90); $$
-);
+-- reset role back to previous
+RESET ROLE;
 
 
 -- ================================
 -- Grant Permissions
 -- ================================
-GRANT EXECUTE ON FUNCTION initialize_user_defaults(UUID) TO authenticated;
-GRANT EXECUTE ON FUNCTION check_rate_limit(VARCHAR, INTEGER, INTEGER) TO authenticated;
-GRANT EXECUTE ON FUNCTION check_admin_permissions() TO authenticated;
+GRANT EXECUTE ON FUNCTION public.initialize_my_defaults() TO authenticated;
+GRANT EXECUTE ON FUNCTION public.admin_initialize_user_defaults(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.admin_hard_delete_record(TEXT, UUID) TO authenticated;
 
 
 -- ================================
 -- Function Documentation
 -- ================================
-COMMENT ON FUNCTION initialize_user_defaults(UUID) IS 
+COMMENT ON FUNCTION public.initialize_defaults_for_user_internal(UUID) IS 
 'Triggers default account and category creation for new users via existing trigger system';
-COMMENT ON FUNCTION check_rate_limit(VARCHAR, INTEGER, INTEGER) IS 'API rate limiting with configurable windows';
+COMMENT ON FUNCTION public.check_rate_limit_internal(VARCHAR, INTEGER, INTEGER) IS 'API rate limiting with configurable windows';
