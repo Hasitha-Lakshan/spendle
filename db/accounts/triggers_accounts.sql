@@ -24,7 +24,7 @@
 --     checks for account validation, balance restrictions, and soft-delete protection.
 --   - Marked STABLE to indicate it does not modify the database and can be safely used in triggers or queries.
 -- =========================================
-CREATE OR REPLACE FUNCTION public.account_has_active_transactions_internal_internal(
+CREATE OR REPLACE FUNCTION public.account_has_active_transactions_internal(
     p_account_id UUID,
     p_user_id UUID
 )
