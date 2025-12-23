@@ -1,5 +1,5 @@
 -- =========================================
--- 01. Function: get_json_numeric
+-- 01. Function: get_json_numeric_internal
 -- =========================================
 -- Purpose:
 --   Safely extracts a numeric value from a JSONB object for a specified field,
@@ -27,7 +27,7 @@
 --   - Designed as a reusable helper function for numeric field extraction
 --     from JSONB, centralizing validation and default handling.
 -- =========================================
-CREATE OR REPLACE FUNCTION public.get_json_numeric(
+CREATE OR REPLACE FUNCTION public.get_json_numeric_internal(
     p_json JSONB,
     p_field TEXT,
     p_type TEXT,        -- 'DECIMAL' or 'INT'
@@ -43,24 +43,27 @@ DECLARE
     v_result NUMERIC;
 BEGIN
     IF p_json ? p_field THEN
-        v_val := p_json->>p_field;
+        v_val := TRIM(p_json->>p_field);  -- Trim whitespace
+
         IF v_val IS NULL OR v_val = '' THEN
             RETURN p_default;
         END IF;
 
-        BEGIN
+        -- Pre-validate numeric value using regex
+        IF (p_type = 'DECIMAL' AND v_val ~ '^[-+]?\d*\.?\d+$') OR
+           (p_type = 'INT' AND v_val ~ '^[-+]?\d+$') THEN
+
             IF p_type = 'DECIMAL' THEN
                 v_result := v_val::DECIMAL(36,18);
-            ELSIF p_type = 'INT' THEN
+            ELSE  -- INT
                 v_result := v_val::INT;
-            ELSE
-                RAISE EXCEPTION 'Unsupported type: %', p_type;
             END IF;
-        EXCEPTION WHEN others THEN
-            RETURN p_default;
-        END;
 
-        RETURN v_result;
+            RETURN v_result;
+
+        ELSE
+            RETURN p_default;
+        END IF;
     ELSE
         RETURN p_default;
     END IF;
@@ -68,7 +71,7 @@ END;
 $$;
 
 -- =========================================
--- 02. Function: validate_account_ownership
+-- 02. Function: validate_account_ownership_internal
 -- =========================================
 -- Purpose:
 --   Checks whether the currently authenticated user owns a specified account.
@@ -96,7 +99,7 @@ $$;
 --   - Designed as a helper function for access control, validation, and
 --     permission checks within account-related operations.
 -- =========================================
-CREATE OR REPLACE FUNCTION public.validate_account_ownership(p_account_id UUID)
+CREATE OR REPLACE FUNCTION public.validate_account_ownership_internal(p_account_id UUID)
 RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -104,16 +107,16 @@ SET search_path = pg_catalog, public
 STABLE
 AS $$
 DECLARE
-    v_user_id UUID;
+    v_user_id UUID := auth.uid();
     v_exists BOOLEAN;
 BEGIN
-    v_user_id := auth.uid();
     
     SELECT EXISTS(
-        SELECT 1 FROM accounts 
+        SELECT 1 
+        FROM accounts 
         WHERE id = p_account_id 
-        AND user_id = v_user_id 
-        AND deleted_at IS NULL
+          AND user_id = v_user_id 
+          AND deleted_at IS NULL
     ) INTO v_exists;
     
     RETURN v_exists;
@@ -137,7 +140,7 @@ $$;
 --     the counterparty exists and belongs to the current user.
 --   - Inserts into the appropriate specialized table based on the account type:
 --       cash, bank, credit_card, loan, investment, crypto, wallet, receivable.
---   - Handles numeric fields safely using get_json_numeric to ensure proper casting
+--   - Handles numeric fields safely using get_json_numeric_internal to ensure proper casting
 --     and default values.
 --   - Raises clear exceptions for permission errors, invalid account type, invalid
 --     UUIDs, or missing mandatory fields.
@@ -174,6 +177,7 @@ SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
 DECLARE
+    v_user_id UUID := auth.uid();
     v_account_id UUID;
     v_counterparty_id UUID;
 
@@ -190,8 +194,16 @@ DECLARE
 
     v_type_text TEXT := p_type::TEXT;
 BEGIN
+    -- Enable Row-Level Security
+    PERFORM set_config('row_security', 'on', true);
+
+    -- Ensure authenticated user
+    IF v_user_id IS NULL THEN
+        RAISE EXCEPTION 'Not authenticated';
+    END IF;
+
     -- Ensure caller is creating account only for themselves
-    IF p_user_id IS DISTINCT FROM auth.uid() THEN
+    IF p_user_id IS DISTINCT FROM v_user_id THEN
         RAISE EXCEPTION 'Permission denied: cannot create account for another user'
             USING ERRCODE = '42501';
     END IF;
@@ -204,12 +216,7 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'Invalid account type: %', v_type_text;
     END IF;
-
-    -- Insert into base accounts table
-    INSERT INTO accounts(user_id, account_name, type, currency)
-    VALUES (p_user_id, p_account_name, p_type, p_currency)
-    RETURNING id INTO v_account_id;
-
+    
     -- Safely cast counterparty_id to UUID if present
     IF p_details ? 'counterparty_id' THEN
         BEGIN
@@ -220,15 +227,20 @@ BEGIN
     END IF;
 
     -- Parse numeric fields using helper function
-    v_balance := public.get_json_numeric(p_details, 'balance', 'DECIMAL', 0);
-    v_interest_rate := public.get_json_numeric(p_details, 'interest_rate', 'DECIMAL', 0);
-    v_credit_limit := public.get_json_numeric(p_details, 'credit_limit', 'DECIMAL', 0);
-    v_current_balance := public.get_json_numeric(p_details, 'current_balance', 'DECIMAL', 0);
-    v_principal_amount := public.get_json_numeric(p_details, 'principal_amount', 'DECIMAL', 0);
-    v_outstanding_amount := public.get_json_numeric(p_details, 'outstanding_amount', 'DECIMAL', 0);
-    v_term_months := public.get_json_numeric(p_details, 'term_months', 'INT', 12);
-    v_portfolio_value := public.get_json_numeric(p_details, 'portfolio_value', 'DECIMAL', 0);
-    v_amount_due := public.get_json_numeric(p_details, 'amount_due', 'DECIMAL', 0);
+    v_balance := public.get_json_numeric_internal(p_details, 'balance', 'DECIMAL', 0);
+    v_interest_rate := public.get_json_numeric_internal(p_details, 'interest_rate', 'DECIMAL', 0);
+    v_credit_limit := public.get_json_numeric_internal(p_details, 'credit_limit', 'DECIMAL', 0);
+    v_current_balance := public.get_json_numeric_internal(p_details, 'current_balance', 'DECIMAL', 0);
+    v_principal_amount := public.get_json_numeric_internal(p_details, 'principal_amount', 'DECIMAL', 0);
+    v_outstanding_amount := public.get_json_numeric_internal(p_details, 'outstanding_amount', 'DECIMAL', 0);
+    v_term_months := public.get_json_numeric_internal(p_details, 'term_months', 'INT', 12);
+    v_portfolio_value := public.get_json_numeric_internal(p_details, 'portfolio_value', 'DECIMAL', 0);
+    v_amount_due := public.get_json_numeric_internal(p_details, 'amount_due', 'DECIMAL', 0);
+
+    -- Insert into base accounts table
+    INSERT INTO accounts(user_id, account_name, type, currency)
+    VALUES (p_user_id, p_account_name, p_type, p_currency)
+    RETURNING id INTO v_account_id;
 
     -- Insert into specialized account table based on type
     CASE p_type
@@ -278,7 +290,7 @@ BEGIN
 
             -- Validate counterparty_id ownership
             IF NOT EXISTS (
-                SELECT 1 FROM counterparties WHERE id = v_counterparty_id AND user_id = auth.uid()
+                SELECT 1 FROM counterparties WHERE id = v_counterparty_id AND user_id = v_user_id
             ) THEN
                 RAISE EXCEPTION 'Invalid counterparty_id: % or does not belong to current user', v_counterparty_id;
             END IF;
@@ -341,7 +353,7 @@ BEGIN
 
             -- Validate counterparty_id ownership
             IF NOT EXISTS (
-                SELECT 1 FROM counterparties WHERE id = v_counterparty_id AND user_id = auth.uid()
+                SELECT 1 FROM counterparties WHERE id = v_counterparty_id AND user_id = v_user_id
             ) THEN
                 RAISE EXCEPTION 'Invalid counterparty_id: % or does not belong to current user', v_counterparty_id;
             END IF;
@@ -380,7 +392,7 @@ $$;
 --   - Retrieves the base account information and ensures the account is active
 --     (not soft-deleted).
 --   - Updates base account fields such as account_name and currency when provided.
---   - Safely parses and applies numeric fields using get_json_numeric, ensuring
+--   - Safely parses and applies numeric fields using get_json_numeric_internal, ensuring
 --     partial updates do not overwrite existing values unintentionally.
 --   - Validates and applies counterparty_id updates for account types that
 --     support counterparties (loan, receivable).
@@ -420,6 +432,7 @@ SET search_path = pg_catalog, public
 VOLATILE
 AS $$
 DECLARE
+    v_user_id UUID := auth.uid();
     v_max_requests INTEGER := 100;
     v_window_minutes INTEGER := 60;
     v_account_type account_type;
@@ -438,8 +451,16 @@ DECLARE
     v_portfolio_value DECIMAL(36,18);
     v_amount_due DECIMAL(36,18);
 BEGIN
+    -- Enable Row-Level Security
+    PERFORM set_config('row_security', 'on', true);
+
+    -- Ensure authenticated user
+    IF v_user_id IS NULL THEN
+        RAISE EXCEPTION 'Not authenticated';
+    END IF;
+
     -- Validate ownership
-    IF NOT public.validate_account_ownership(p_account_id) THEN
+    IF NOT public.validate_account_ownership_internal(p_account_id) THEN
         RAISE EXCEPTION 'Permission denied: cannot update this account'
         USING ERRCODE = '42501';
     END IF;
@@ -462,19 +483,13 @@ BEGIN
     )
     INTO v_base
     FROM accounts a
-    WHERE a.id = p_account_id AND a.deleted_at IS NULL;
+    WHERE a.id = p_account_id
+        AND a.user_id = v_user_id
+        AND a.deleted_at IS NULL;
 
     IF v_base IS NULL THEN
         RAISE EXCEPTION 'Account not found or access denied';
     END IF;
-
-    -- Update base account fields
-    UPDATE accounts
-    SET
-        account_name = COALESCE(p_update_data->>'account_name', account_name),
-        currency = COALESCE(p_update_data->>'currency', currency),
-        updated_at = NOW()
-    WHERE id = p_account_id AND deleted_at IS NULL;
 
     -- Validate and cast account type safely
     IF NOT EXISTS (
@@ -497,15 +512,23 @@ BEGIN
     END IF;
 
     -- Use helper function to parse numeric fields
-    v_balance := public.get_json_numeric(p_update_data, 'balance', 'DECIMAL', NULL);
-    v_interest_rate := public.get_json_numeric(p_update_data, 'interest_rate', 'DECIMAL', NULL);
-    v_credit_limit := public.get_json_numeric(p_update_data, 'credit_limit', 'DECIMAL', NULL);
-    v_current_balance := public.get_json_numeric(p_update_data, 'current_balance', 'DECIMAL', NULL);
-    v_principal_amount := public.get_json_numeric(p_update_data, 'principal_amount', 'DECIMAL', NULL);
-    v_outstanding_amount := public.get_json_numeric(p_update_data, 'outstanding_amount', 'DECIMAL', NULL);
-    v_term_months := public.get_json_numeric(p_update_data, 'term_months', 'INT', NULL);
-    v_portfolio_value := public.get_json_numeric(p_update_data, 'portfolio_value', 'DECIMAL', NULL);
-    v_amount_due := public.get_json_numeric(p_update_data, 'amount_due', 'DECIMAL', NULL);
+    v_balance := public.get_json_numeric_internal(p_update_data, 'balance', 'DECIMAL', NULL);
+    v_interest_rate := public.get_json_numeric_internal(p_update_data, 'interest_rate', 'DECIMAL', NULL);
+    v_credit_limit := public.get_json_numeric_internal(p_update_data, 'credit_limit', 'DECIMAL', NULL);
+    v_current_balance := public.get_json_numeric_internal(p_update_data, 'current_balance', 'DECIMAL', NULL);
+    v_principal_amount := public.get_json_numeric_internal(p_update_data, 'principal_amount', 'DECIMAL', NULL);
+    v_outstanding_amount := public.get_json_numeric_internal(p_update_data, 'outstanding_amount', 'DECIMAL', NULL);
+    v_term_months := public.get_json_numeric_internal(p_update_data, 'term_months', 'INT', NULL);
+    v_portfolio_value := public.get_json_numeric_internal(p_update_data, 'portfolio_value', 'DECIMAL', NULL);
+    v_amount_due := public.get_json_numeric_internal(p_update_data, 'amount_due', 'DECIMAL', NULL);
+
+    -- Update base account fields
+    UPDATE accounts
+    SET
+        account_name = COALESCE(p_update_data->>'account_name', account_name),
+        currency = COALESCE(p_update_data->>'currency', currency),
+        updated_at = NOW()
+    WHERE id = p_account_id AND deleted_at IS NULL;
 
     -- Update specialized tables
     CASE v_account_type
@@ -585,7 +608,7 @@ BEGIN
             -- Validate counterparty_id
             IF v_counterparty_id IS NOT NULL THEN
                 IF NOT EXISTS (
-                    SELECT 1 FROM counterparties WHERE id = v_counterparty_id AND user_id = auth.uid()
+                    SELECT 1 FROM counterparties WHERE id = v_counterparty_id AND user_id = v_user_id
                 ) THEN
                     RAISE EXCEPTION 'Invalid counterparty_id: % or does not belong to current user', v_counterparty_id;
                 END IF;
@@ -610,7 +633,7 @@ BEGIN
             -- Validate counterparty_id
             IF v_counterparty_id IS NOT NULL THEN
                 IF NOT EXISTS (
-                    SELECT 1 FROM counterparties WHERE id = v_counterparty_id AND user_id = auth.uid()
+                    SELECT 1 FROM counterparties WHERE id = v_counterparty_id AND user_id = v_user_id
                 ) THEN
                     RAISE EXCEPTION 'Invalid counterparty_id: % or does not belong to current user', v_counterparty_id;
                 END IF;
@@ -639,38 +662,136 @@ $$;
 -- 05. Function: soft_delete_account_internal
 -- =========================================
 -- Purpose:
---   Performs a soft delete on an account by marking it as deleted without
---   physically removing the record from the database.
+--   Performs a soft delete on a user-owned account by marking it as deleted
+--   without physically removing the record from the database.
 --
 -- Behavior:
---   - Validates that the caller either owns the account or has administrator
---     privileges.
+--   - Ensures the caller is authenticated.
+--   - Validates that the caller owns the account using the
+--     validate_account_ownership_internal helper.
 --   - Updates the account's deleted_at and updated_at timestamps to indicate
 --     a soft-deleted state.
 --   - Returns TRUE if the account was successfully soft-deleted.
---   - Returns FALSE if the account does not exist or was already soft-deleted.
---   - Relies on database triggers to handle cleanup or cascading logic for
---     specialized account tables.
+--   - Returns FALSE if the account does not exist or is already soft-deleted.
+--   - Relies on database triggers (e.g., cleanup_specialized_account) to handle
+--     cascading effects or cleanup for linked specialized account tables.
+--
+-- Parameters:
+--   p_account_id UUID - The ID of the account to soft-delete.
+--
+-- Returns:
+--   BOOLEAN - TRUE if the account was soft-deleted successfully,
+--             FALSE if no update was performed.
+--
+-- Notes:
+--   - Uses SECURITY DEFINER to allow controlled privilege escalation while
+--     respecting Row-Level Security (RLS).
+--   - Strictly enforces ownership: users can delete only their own accounts.
+--   - Explicit exception handling is provided for:
+--       * unique_violation
+--       * data_exception
+--       * other unexpected errors
+--     to provide clear and actionable error messages.
+--   - Does not physically remove records to preserve historical data and
+--     maintain referential integrity.
+-- =========================================
+CREATE OR REPLACE FUNCTION public.soft_delete_account_internal(p_account_id UUID)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+    v_user_id UUID := auth.uid();
+    v_exists UUID;
+BEGIN
+    -- Enable Row-Level Security
+    PERFORM set_config('row_security', 'on', true);
+
+    -- Ensure authenticated user
+    IF v_user_id IS NULL THEN
+        RAISE EXCEPTION 'Not authenticated';
+    END IF;
+
+    -- Validate ownership (users can delete only their own accounts)
+    IF NOT public.validate_account_ownership_internal(p_account_id) THEN
+        RAISE EXCEPTION
+            'Permission denied: user is not authorized to delete account (%s).',
+            p_account_id
+            USING ERRCODE = '42501';
+    END IF;
+
+    -- Perform soft delete (self-owned accounts only)
+    UPDATE public.accounts
+    SET deleted_at = NOW(),
+        updated_at = NOW()
+    WHERE id = p_account_id
+      AND user_id = v_user_id
+      AND deleted_at IS NULL
+    RETURNING id INTO v_exists;
+
+    -- If nothing was updated, either already deleted or nonexistent
+    IF v_exists IS NULL THEN
+        RETURN FALSE;
+    END IF;
+
+    -- Trigger cleanup_specialized_account will handle linked accounts
+    RETURN TRUE;
+
+EXCEPTION
+    WHEN unique_violation THEN
+        RAISE EXCEPTION
+            'Duplicate account ID (%s) detected during soft delete.',
+            p_account_id;
+    WHEN data_exception THEN
+        RAISE EXCEPTION
+            'Invalid data encountered while soft deleting account (%s): %s',
+            p_account_id, SQLERRM;
+    WHEN OTHERS THEN
+        RAISE EXCEPTION
+            'Unexpected error during soft delete of account (%s): %s',
+            p_account_id, SQLERRM;
+END;
+$$;
+
+-- =========================================
+-- 06. Function: admin_soft_delete_account_internal
+-- =========================================
+-- Purpose:
+--   Performs a soft delete on any account by marking it as deleted without
+--   physically removing the record from the database. This operation is
+--   restricted to administrators.
+--
+-- Behavior:
+--   - Validates that the caller has administrative privileges using
+--     check_admin_permissions().
+--   - Updates the account's deleted_at and updated_at timestamps to indicate
+--     a soft-deleted state.
+--   - Returns TRUE if the account was successfully soft-deleted.
+--   - Returns FALSE if the account does not exist or is already soft-deleted.
+--   - Relies on database triggers (e.g., cleanup_specialized_account) to handle
+--     cascading effects or cleanup for linked specialized account tables.
 --
 -- Parameters:
 --   p_account_id UUID - The ID of the account to be soft-deleted.
 --
 -- Returns:
 --   BOOLEAN - TRUE if the account was soft-deleted successfully,
---             FALSE if no changes were made.
+--             FALSE if no update was performed.
 --
 -- Notes:
---   - Uses SECURITY DEFINER to allow controlled privilege escalation and
---     bypass Row-Level Security (RLS) where required.
---   - Allows deletion by either the account owner or an administrator.
---   - Does not physically remove records, preserving historical data
---     and referential integrity.
---   - Designed to work in conjunction with triggers (e.g.,
---     cleanup_specialized_account) that handle related specialized records.
---   - Explicit exception handling is included to surface clear and
---     actionable error messages.
+--   - Uses SECURITY DEFINER to allow controlled privilege escalation while
+--     respecting Row-Level Security (RLS).
+--   - Only callable by administrators; regular users cannot invoke this function.
+--   - Explicit exception handling is provided for:
+--       * unique_violation
+--       * data_exception
+--       * other unexpected errors
+--     to provide clear and actionable error messages.
+--   - Does not physically remove records to preserve historical data and
+--     maintain referential integrity.
 -- =========================================
-CREATE OR REPLACE FUNCTION public.soft_delete_account_internal(p_account_id UUID)
+CREATE OR REPLACE FUNCTION public.admin_soft_delete_account_internal(p_account_id UUID)
 RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -680,14 +801,16 @@ DECLARE
     v_is_admin BOOLEAN := public.check_admin_permissions();
     v_exists UUID;
 BEGIN
-    -- Validate ownership or admin privilege
-    IF NOT v_is_admin AND NOT public.validate_account_ownership(p_account_id) THEN
-        RAISE EXCEPTION 'Permission denied: user is not authorized to delete account (%s).',
-            p_account_id
+    -- Enable Row-Level Security
+    PERFORM set_config('row_security', 'on', true);
+
+    -- Ensure caller is an admin
+    IF NOT v_is_admin THEN
+        RAISE EXCEPTION 'Permission denied: only admins can soft delete accounts.'
             USING ERRCODE = '42501';
     END IF;
 
-    -- Perform soft delete
+    -- Perform soft delete (any user’s account)
     UPDATE public.accounts
     SET deleted_at = NOW(),
         updated_at = NOW()
@@ -714,7 +837,7 @@ END;
 $$;
 
 -- =========================================
--- 06. Function: hard_delete_account_internal
+-- 07. Function: admin_hard_delete_account_internal
 -- =========================================
 -- Purpose:
 --   Permanently removes an account and all related data from the system,
@@ -750,7 +873,7 @@ $$;
 --     integrity and avoid orphaned records.
 --   - Intended for administrative or maintenance workflows only.
 -- =========================================
-CREATE OR REPLACE FUNCTION public.hard_delete_account_internal(p_account_id UUID)
+CREATE OR REPLACE FUNCTION public.admin_hard_delete_account_internal(p_account_id UUID)
 RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -763,6 +886,9 @@ DECLARE
     is_admin BOOLEAN;
     v_deleted_at timestamptz;
 BEGIN
+    -- Enable Row-Level Security
+    PERFORM set_config('row_security', 'on', true);
+
     current_user_id := auth.uid();
 
     IF current_user_id IS NULL THEN
@@ -845,7 +971,7 @@ END;
 $$;
 
 -- =========================================
--- 07. Function: create_account
+-- 08. Function: create_account
 -- =========================================
 -- Purpose:
 --   Provides a public-facing wrapper for creating a new account, delegating
@@ -901,7 +1027,7 @@ END;
 $$;
 
 -- =========================================
--- 08. Function: update_account
+-- 09. Function: update_account
 -- =========================================
 -- Purpose:
 --   Provides a public-facing wrapper for updating an existing account,
@@ -944,32 +1070,29 @@ END;
 $$;
 
 -- =========================================
--- 09. Function: soft_delete_account
+-- 10. Function: soft_delete_account
 -- =========================================
 -- Purpose:
---   Provides a public-facing wrapper for performing a soft delete on an account,
---   delegating all authorization and deletion logic to soft_delete_account_internal.
+--   Provides a SECURITY INVOKER wrapper for performing a soft delete on a 
+--   user-owned account by delegating to soft_delete_account_internal().
 --
 -- Behavior:
---   - Executes as SECURITY INVOKER, preserving the caller’s authentication
---     and permission context.
---   - Forwards the account ID directly to the internal soft delete function.
---   - Relies entirely on the internal function for ownership checks,
---     admin validation, and data integrity enforcement.
+--   - Simply calls soft_delete_account_internal() which performs all
+--     authentication, ownership validation, and soft-delete logic.
+--   - Returns the result of the internal function.
 --
 -- Parameters:
 --   p_account_id UUID - The ID of the account to be soft-deleted.
 --
 -- Returns:
 --   BOOLEAN - TRUE if the account was soft-deleted successfully,
---             FALSE if the account did not exist or was already deleted.
+--             FALSE if the account does not exist or is already soft-deleted.
 --
 -- Notes:
---   - Designed as a thin wrapper to clearly separate invoker-level access
---     from definer-level delete logic.
---   - Ensures consistent soft-delete behavior across application and API layers.
---   - Intended for regular user-facing delete operations where data must
---     remain recoverable.
+--   - SECURITY INVOKER ensures that the caller's privileges are used, while
+--     the internal function handles SECURITY DEFINER operations.
+--   - Acts as a safe, public-facing interface to the internal function.
+--   - No direct validation or RLS handling occurs here; all logic is delegated.
 -- =========================================
 CREATE OR REPLACE FUNCTION public.soft_delete_account(p_account_id UUID)
 RETURNS BOOLEAN
@@ -984,11 +1107,48 @@ END;
 $$;
 
 -- =========================================
--- 10. Function: hard_delete_account
+-- 11. Function: admin_soft_delete_account
+-- =========================================
+-- Purpose:
+--   Provides a SECURITY INVOKER wrapper for performing a soft delete on any
+--   account by delegating to admin_soft_delete_account_internal().
+--
+-- Behavior:
+--   - Calls admin_soft_delete_account_internal(), which performs all
+--     administrative privilege checks and soft-delete logic.
+--   - Returns the result of the internal function.
+--
+-- Parameters:
+--   p_account_id UUID - The ID of the account to be soft-deleted.
+--
+-- Returns:
+--   BOOLEAN - TRUE if the account was soft-deleted successfully,
+--             FALSE if the account does not exist or is already soft-deleted.
+--
+-- Notes:
+--   - SECURITY INVOKER ensures the function runs with the caller's privileges,
+--     while the internal function handles SECURITY DEFINER operations.
+--   - Acts as a safe, public-facing interface for administrators.
+--   - All authentication, permission validation, and RLS handling are
+--     performed inside the internal function.
+-- =========================================
+CREATE OR REPLACE FUNCTION public.admin_soft_delete_account(p_account_id UUID)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+    -- All checks happen inside the internal definer function
+    RETURN admin_soft_delete_account_internal(p_account_id);
+END;
+$$;
+-- =========================================
+-- 12. Function: admin_hard_delete_account
 -- =========================================
 -- Purpose:
 --   Provides a public-facing wrapper for permanently deleting an account,
---   delegating all authorization and deletion logic to hard_delete_account_internal.
+--   delegating all authorization and deletion logic to admin_hard_delete_account_internal.
 --
 -- Behavior:
 --   - Executes as SECURITY INVOKER, preserving the caller’s authentication
@@ -1011,18 +1171,18 @@ $$;
 --   - Completes the account lifecycle by providing controlled access to
 --     permanent data removal.
 -- =========================================
-CREATE OR REPLACE FUNCTION public.hard_delete_account(p_account_id UUID)
+CREATE OR REPLACE FUNCTION public.admin_hard_delete_account(p_account_id UUID)
 RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY INVOKER
 AS $$
 BEGIN
-    RETURN hard_delete_account_internal(p_account_id);
+    RETURN admin_hard_delete_account_internal(p_account_id);
 END;
 $$;
 
 -- =========================================
--- 11. Function: get_all_accounts
+-- 13. Function: get_all_accounts
 -- =========================================
 -- Purpose:
 --   Retrieves a unified list of all active accounts belonging to the
@@ -1072,7 +1232,16 @@ SECURITY DEFINER
 SET search_path = pg_catalog, public
 STABLE
 AS $$
+DECLARE
+    v_user_id UUID := auth.uid();
 BEGIN
+    -- Enable Row-Level Security
+    PERFORM set_config('row_security', 'on', true);
+    
+    IF v_user_id IS NULL THEN
+        RAISE EXCEPTION 'Not authenticated';
+    END IF;
+
     RETURN QUERY
     SELECT 
         a.id as account_id,
@@ -1111,13 +1280,13 @@ BEGIN
     LEFT JOIN wallet_accounts wa ON a.id = wa.account_id AND wa.deleted_at IS NULL
     LEFT JOIN receivable_accounts ra ON a.id = ra.account_id AND ra.deleted_at IS NULL
     WHERE a.deleted_at IS NULL
-      AND a.user_id = auth.uid()
+      AND a.user_id = v_user_id
     ORDER BY a.account_name;
 END;
 $$;
 
 -- =========================================
--- 12. Function: get_account_details
+-- 14. Function: get_account_details
 -- =========================================
 -- Purpose:
 --   Retrieves the complete details of a single account, combining
@@ -1161,11 +1330,20 @@ SET search_path = pg_catalog, public
 STABLE
 AS $$
 DECLARE
+    v_user_id UUID := auth.uid();
     v_account_type account_type;
     v_base JSONB;
     v_details JSONB;
     v_type_text TEXT;
 BEGIN
+    -- Enable Row-Level Security
+    PERFORM set_config('row_security', 'on', true);
+
+    -- Validate ownership
+    IF v_user_id IS NULL THEN
+        RAISE EXCEPTION 'Not authenticated';
+    END IF;
+
     -- Get base account info (ownership enforced here)
     SELECT jsonb_build_object(
         'id', a.id,
@@ -1180,7 +1358,7 @@ BEGIN
     FROM accounts a
     WHERE a.id = p_account_id
       AND a.deleted_at IS NULL
-      AND a.user_id = auth.uid();  -- enforce ownership
+      AND a.user_id = v_user_id;  -- enforce ownership
 
     IF v_base IS NULL THEN
         RAISE EXCEPTION 'Account not found or access denied';
@@ -1257,7 +1435,7 @@ END;
 $$;
 
 -- =========================================
--- 13. Function: get_accounts_by_type
+-- 15. Function: get_accounts_by_type
 -- =========================================
 -- Purpose:
 --   Retrieves all non-deleted accounts of a specified account type
@@ -1301,7 +1479,15 @@ STABLE
 AS $$
 DECLARE
     v_result JSONB := '[]'::jsonb;
+    v_user_id UUID := auth.uid();
 BEGIN
+    -- Enable Row-Level Security
+    PERFORM set_config('row_security', 'on', true);
+
+    IF v_user_id IS NULL THEN
+        RAISE EXCEPTION 'Not authenticated';
+    END IF;
+    
     -- Cash accounts
     IF p_account_type = 'cash' THEN
         SELECT jsonb_agg(to_jsonb(a_base) || COALESCE(to_jsonb(ca) - 'account_id', '{}'::jsonb))
@@ -1310,7 +1496,7 @@ BEGIN
         LEFT JOIN cash_accounts ca ON a_base.id = ca.account_id AND ca.deleted_at IS NULL
         WHERE a_base.type = 'cash'
           AND a_base.deleted_at IS NULL
-          AND a_base.user_id = auth.uid();
+          AND a_base.user_id = v_user_id;
 
     -- Bank accounts
     ELSIF p_account_type = 'bank' THEN
@@ -1320,7 +1506,7 @@ BEGIN
         LEFT JOIN bank_accounts ba ON a_base.id = ba.account_id AND ba.deleted_at IS NULL
         WHERE a_base.type = 'bank'
           AND a_base.deleted_at IS NULL
-          AND a_base.user_id = auth.uid();
+          AND a_base.user_id = v_user_id;
 
     -- Credit card accounts
     ELSIF p_account_type = 'credit_card' THEN
@@ -1330,7 +1516,7 @@ BEGIN
         LEFT JOIN credit_card_accounts cc ON a_base.id = cc.account_id AND cc.deleted_at IS NULL
         WHERE a_base.type = 'credit_card'
           AND a_base.deleted_at IS NULL
-          AND a_base.user_id = auth.uid();
+          AND a_base.user_id = v_user_id;
 
     -- Loan accounts
     ELSIF p_account_type = 'loan' THEN
@@ -1340,7 +1526,7 @@ BEGIN
         LEFT JOIN loan_accounts la ON a_base.id = la.account_id AND la.deleted_at IS NULL
         WHERE a_base.type = 'loan'
           AND a_base.deleted_at IS NULL
-          AND a_base.user_id = auth.uid();
+          AND a_base.user_id = v_user_id;
 
     -- Investment accounts
     ELSIF p_account_type = 'investment' THEN
@@ -1350,7 +1536,7 @@ BEGIN
         LEFT JOIN investment_accounts ia ON a_base.id = ia.account_id AND ia.deleted_at IS NULL
         WHERE a_base.type = 'investment'
           AND a_base.deleted_at IS NULL
-          AND a_base.user_id = auth.uid();
+          AND a_base.user_id = v_user_id;
 
     -- Crypto accounts
     ELSIF p_account_type = 'crypto' THEN
@@ -1360,7 +1546,7 @@ BEGIN
         LEFT JOIN crypto_accounts cra ON a_base.id = cra.account_id AND cra.deleted_at IS NULL
         WHERE a_base.type = 'crypto'
           AND a_base.deleted_at IS NULL
-          AND a_base.user_id = auth.uid();
+          AND a_base.user_id = v_user_id;
 
     -- Wallet accounts
     ELSIF p_account_type = 'wallet' THEN
@@ -1370,7 +1556,7 @@ BEGIN
         LEFT JOIN wallet_accounts wa ON a_base.id = wa.account_id AND wa.deleted_at IS NULL
         WHERE a_base.type = 'wallet'
           AND a_base.deleted_at IS NULL
-          AND a_base.user_id = auth.uid();
+          AND a_base.user_id = v_user_id;
 
     -- Receivable accounts
     ELSIF p_account_type = 'receivable' THEN
@@ -1380,7 +1566,7 @@ BEGIN
         LEFT JOIN receivable_accounts ra ON a_base.id = ra.account_id AND ra.deleted_at IS NULL
         WHERE a_base.type = 'receivable'
           AND a_base.deleted_at IS NULL
-          AND a_base.user_id = auth.uid();
+          AND a_base.user_id = v_user_id;
 
     ELSE
         RAISE EXCEPTION 'Unknown account type: %', p_account_type;
@@ -1400,7 +1586,8 @@ GRANT EXECUTE ON FUNCTION public.get_account_details(UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.get_accounts_by_type(account_type) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.update_account(UUID, JSONB) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.soft_delete_account(UUID) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.hard_delete_account(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.admin_soft_delete_account(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.admin_hard_delete_account(UUID) TO authenticated;
 
 
 -- ================================
@@ -1408,4 +1595,4 @@ GRANT EXECUTE ON FUNCTION public.hard_delete_account(UUID) TO authenticated;
 -- ================================
 COMMENT ON FUNCTION public.get_account_details(UUID) IS
 'RLS-compliant function to return full account details as JSON, including base and specialized fields, excluding soft-deleted records';
-COMMENT ON FUNCTION public.validate_account_ownership(UUID) IS 'Validate user owns specified account';
+COMMENT ON FUNCTION public.validate_account_ownership_internal(UUID) IS 'Validate user owns specified account';

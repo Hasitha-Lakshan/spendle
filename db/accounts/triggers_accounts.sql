@@ -1,5 +1,5 @@
 -- =========================================
--- 01. Function: account_has_active_transactions
+-- 01. Function: account_has_active_transactions_internal
 -- =========================================
 -- Purpose:
 --   Checks whether a given account has any active (non-deleted) transactions 
@@ -24,7 +24,7 @@
 --     checks for account validation, balance restrictions, and soft-delete protection.
 --   - Marked STABLE to indicate it does not modify the database and can be safely used in triggers or queries.
 -- =========================================
-CREATE OR REPLACE FUNCTION public.account_has_active_transactions(
+CREATE OR REPLACE FUNCTION public.account_has_active_transactions_internal_internal(
     p_account_id UUID,
     p_user_id UUID
 )
@@ -345,7 +345,7 @@ SET search_path = pg_catalog, public
 AS $$
 BEGIN
     -- Only check if there are active transactions
-    IF public.account_has_active_transactions(OLD.account_id, OLD.user_id) THEN
+    IF public.account_has_active_transactions_internal(OLD.account_id, OLD.user_id) THEN
         -- Prevent modification of currency
         IF TG_OP = 'UPDATE' AND OLD.currency IS DISTINCT FROM NEW.currency THEN
             RAISE EXCEPTION 'Cannot modify account currency when transactions exist';
@@ -384,7 +384,7 @@ EXECUTE FUNCTION public.validate_account_modification();
 -- Behavior:
 --   - Triggered BEFORE UPDATE or DELETE on account tables.
 --   - Checks if the account has any active transactions using
---     the helper function `account_has_active_transactions`.
+--     the helper function `account_has_active_transactions_internal`.
 --   - Raises exceptions to block:
 --       * Balance changes (per account type: cash, bank, credit card, loan, investment, crypto, wallet, receivable)
 --       * Currency changes
@@ -400,7 +400,7 @@ EXECUTE FUNCTION public.validate_account_modification();
 --
 -- Notes:
 --   - Uses SECURITY DEFINER to bypass Row-Level Security (RLS) policies.
---   - Relies on the centralized helper function `account_has_active_transactions` to detect active transactions.
+--   - Relies on the centralized helper function `account_has_active_transactions_internal` to detect active transactions.
 --   - Prevents accidental or unauthorized modifications to critical account data when transactions exist.
 --   - Applied per account type via dedicated triggers.
 -- =========================================
@@ -414,7 +414,7 @@ DECLARE
     v_balance_changed BOOLEAN := FALSE;
 BEGIN
     -- Only check if there are active transactions
-    IF public.account_has_active_transactions(OLD.account_id, OLD.user_id) THEN
+    IF public.account_has_active_transactions_internal(OLD.account_id, OLD.user_id) THEN
         -- Detect balance changes per account type
         CASE TG_TABLE_NAME
             WHEN 'cash_accounts' THEN
