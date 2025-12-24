@@ -699,7 +699,7 @@ BEGIN
     IF OLD.deleted_at IS NULL 
        AND NEW.deleted_at IS NOT NULL 
        AND current_setting('app.allow_specialized_soft_delete', true) IS DISTINCT FROM 'true' THEN
-        RAISE EXCEPTION 'Direct soft-delete on specialized accounts is not allowed. Use parent account operations';
+        RAISE EXCEPTION 'Direct soft-delete on % (id=%) is not allowed. Use parent account operations', TG_TABLE_NAME, OLD.account_id;
     END IF;
 
     RETURN NEW;
