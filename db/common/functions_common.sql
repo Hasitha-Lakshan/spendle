@@ -26,6 +26,7 @@ RETURNS VOID
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
+VOLATILE
 AS $$
 DECLARE
     default_category_id UUID;
@@ -127,29 +128,35 @@ END;
 $$;
 
 -- =========================================
--- 02. Function: initialize_my_defaults
+-- 02. Function: initialize_my_defaults_internal
 -- =========================================
 -- Purpose:
---   Allows an authenticated user to initialize their own default data.
---   Ensures a profile row exists, checks whether defaults were already inserted,
---   and triggers default data creation only once.
+--   Initializes default data for the current session user if not already inserted.
+--
+-- Behavior:
+--   - Authenticates the current session user via `auth.uid()`
+--   - Enables RLS (`row_security`) for this session to respect policies where applicable
+--   - Fetches the user's profile row with a row-level lock
+--   - If the profile does not exist, creates a new profile row
+--   - Checks if defaults have already been inserted
+--   - If defaults are missing, calls `initialize_defaults_for_user_internal()` to insert them
+--   - Returns a JSONB object indicating whether defaults were inserted during this call
 --
 -- Parameters:
---   None
+--   None - operates on the currently authenticated session user
 --
 -- Returns:
---   JSONB - Object containing:
---     - user_id: the authenticated user's ID
---     - defaults_inserted: true if defaults were inserted during this call
+--   JSONB - containing:
+--       * `user_id`: UUID of the current user
+--       * `defaults_inserted`: BOOLEAN indicating if defaults were inserted in this execution
 --
 -- Notes:
---   - Uses auth.uid() to identify the calling user
---   - Enforces Row-Level Security during execution
---   - Locks the user's profile row using FOR UPDATE to prevent race conditions
---   - Delegates all default data creation to initialize_defaults_for_user_internal
---   - Safe for repeated calls; defaults are only inserted once
+--   - SECURITY DEFINER allows the function to bypass RLS restrictions when inserting defaults
+--   - VOLATILE since it may modify database state
+--   - Raises an exception if the session is unauthenticated
+--   - Intended to be called internally or via a SECURITY INVOKER wrapper function for end users
 -- =========================================
-CREATE OR REPLACE FUNCTION public.initialize_my_defaults()
+CREATE OR REPLACE FUNCTION public.initialize_my_defaults_internal()
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -199,7 +206,47 @@ END;
 $$;
 
 -- =========================================
--- 03. Function: check_admin_permissions_internal
+-- 03. Function: initialize_my_defaults
+-- =========================================
+-- Purpose:
+--   Wrapper function to initialize default data for the current session user.
+--
+-- Behavior:
+--   - Calls the internal function `initialize_my_defaults_internal()` which:
+--       * Authenticates the session user via `auth.uid()`
+--       * Ensures a profile row exists for the user
+--       * Inserts default data if not already inserted
+--       * Returns a JSONB object summarizing the operation
+--
+-- Parameters:
+--   None - operates on the currently authenticated session user
+--
+-- Returns:
+--   JSONB - containing:
+--       * `user_id`: UUID of the current user
+--       * `defaults_inserted`: BOOLEAN indicating if defaults were inserted during this call
+--
+-- Notes:
+--   - SECURITY INVOKER ensures RLS policies are applied according to the calling user
+--   - Delegates privileged operations to the SECURITY DEFINER internal function
+--   - VOLATILE since the function may modify database state
+--   - Designed for safe invocation by ordinary users in Supabase or client applications
+-- =========================================
+CREATE OR REPLACE FUNCTION public.initialize_my_defaults()
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY INVOKER
+VOLATILE
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+    RETURN public.initialize_my_defaults_internal();
+END;
+$$;
+
+
+-- =========================================
+-- 04. Function: check_admin_permissions_internal
 -- =========================================
 -- Purpose:
 --   Determines whether the current session user has administrative privileges.
@@ -225,6 +272,7 @@ RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
+STABLE
 AS $$
 DECLARE
     v_user_id UUID := auth.uid();
@@ -245,7 +293,7 @@ END;
 $$;
 
 -- =========================================
--- 04. Function: admin_initialize_user_defaults
+-- 05. Function: admin_initialize_user_defaults
 -- =========================================
 -- Purpose:
 --   Allows an administrator to initialize default data for any user.
@@ -322,7 +370,7 @@ END;
 $$;
 
 -- =========================================
--- 05. Function: check_rate_limit_internal
+-- 06. Function: check_rate_limit_internal
 -- =========================================
 -- Purpose:
 --   Enforces per-user API rate limits for a given endpoint within a rolling time window.
@@ -408,7 +456,7 @@ END;
 $$;
 
 -- =========================================
--- 06. Function: hard_delete_record_internal
+-- 07. Function: hard_delete_record_internal
 -- =========================================
 -- Purpose:
 --   Executes a hard delete of a record from a specified table, including all
@@ -446,6 +494,7 @@ RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
+VOLATILE
 AS $$
 DECLARE
     sql_query TEXT;
@@ -585,7 +634,7 @@ END;
 $$;
 
 -- =========================================
--- 07. Function: admin_hard_delete_record
+-- 08. Function: admin_hard_delete_record
 -- =========================================
 -- Purpose:
 --   Performs a hard delete of a record from a specified table, bypassing
@@ -620,6 +669,7 @@ RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
+VOLATILE
 AS $$
 DECLARE
     current_user_id UUID;
@@ -650,7 +700,7 @@ END;
 $$;
 
 -- =========================================
--- 08. Function: require_system_role_internal
+-- 09. Function: require_system_role_internal
 -- =========================================
 -- Purpose:
 --   Enforces that the current database session is executed under a system-level role.
@@ -676,6 +726,7 @@ RETURNS VOID
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
+IMMUTABLE
 AS $$
 BEGIN
     IF current_user NOT IN ('cron_admin') THEN
@@ -685,7 +736,7 @@ END;
 $$;
 
 -- =========================================
--- 09. Function: cleanup_soft_deleted_records_internal
+-- 10. Function: cleanup_soft_deleted_records_internal
 -- =========================================
 -- Purpose:
 --   Permanently deletes soft-deleted records from key tables that are older than a specified number of days.
@@ -721,6 +772,7 @@ RETURNS TABLE(
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
+VOLATILE
 AS $$
 DECLARE
     cutoff_date TIMESTAMPTZ;
@@ -802,7 +854,7 @@ SELECT cron.schedule(
 RESET ROLE;
 
 -- =========================================
--- 10. Function: cleanup_old_audit_logs_internal
+-- 11. Function: cleanup_old_audit_logs_internal
 -- =========================================
 -- Purpose:
 --   Deletes audit log entries older than a specified number of days to manage table size.
@@ -829,6 +881,7 @@ RETURNS INTEGER
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
+VOLATILE
 AS $$
 DECLARE
     v_deleted_count INTEGER;
@@ -856,7 +909,7 @@ SELECT cron.schedule(
 RESET ROLE;
 
 -- =========================================
--- 11. Function: cleanup_old_rate_limits_internal
+-- 12. Function: cleanup_old_rate_limits_internal
 -- =========================================
 -- Purpose:
 --   Deletes API rate limit records older than 24 hours to keep the table current.
@@ -881,6 +934,7 @@ RETURNS INTEGER
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
+VOLATILE
 AS $$
 DECLARE
     v_deleted_count INTEGER;
@@ -919,6 +973,7 @@ GRANT EXECUTE ON FUNCTION public.admin_hard_delete_record(TEXT, UUID) TO authent
 -- ================================
 -- Function Documentation
 -- ================================
+COMMENT ON FUNCTION public.initialize_my_defaults IS 'Invoker wrapper for initialize_my_defaults_internal() to enforce RLS';
 COMMENT ON FUNCTION public.initialize_defaults_for_user_internal(UUID) IS 
 'Triggers default account and category creation for new users via existing trigger system';
 COMMENT ON FUNCTION public.check_rate_limit_internal(VARCHAR, INTEGER, INTEGER) IS 'API rate limiting with configurable windows';
