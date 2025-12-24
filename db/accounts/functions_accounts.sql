@@ -37,6 +37,7 @@ RETURNS NUMERIC
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
+STABLE
 AS $$
 DECLARE
     v_val TEXT;
@@ -175,6 +176,7 @@ RETURNS UUID
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
+VOLATILE
 AS $$
 DECLARE
     v_user_id UUID := auth.uid();
@@ -700,6 +702,7 @@ RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
+VOLATILE
 AS $$
 DECLARE
     v_user_id UUID := auth.uid();
@@ -796,6 +799,7 @@ RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
+VOLATILE
 AS $$
 DECLARE
     v_is_admin BOOLEAN := public.check_admin_permissions_internal();
@@ -878,6 +882,7 @@ RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
+VOLATILE
 AS $$
 DECLARE
     current_user_id UUID;
@@ -1014,6 +1019,7 @@ RETURNS uuid
 LANGUAGE plpgsql
 SECURITY INVOKER
 SET search_path = pg_catalog, public
+VOLATILE
 AS $$
 BEGIN
     RETURN create_account_internal(
@@ -1063,6 +1069,8 @@ CREATE OR REPLACE FUNCTION public.update_account(
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY INVOKER
+SET search_path = pg_catalog, public
+VOLATILE
 AS $$
 BEGIN
     RETURN update_account_internal(p_account_id, p_update_data);
@@ -1099,6 +1107,7 @@ RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY INVOKER
 SET search_path = pg_catalog, public
+VOLATILE
 AS $$
 BEGIN
     -- All checks happen inside the internal definer function
@@ -1137,6 +1146,7 @@ RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY INVOKER
 SET search_path = pg_catalog, public
+VOLATILE
 AS $$
 BEGIN
     -- All checks happen inside the internal definer function
@@ -1175,6 +1185,7 @@ CREATE OR REPLACE FUNCTION public.admin_hard_delete_account(p_account_id UUID)
 RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY INVOKER
+VOLATILE
 AS $$
 BEGIN
     RETURN admin_hard_delete_account_internal(p_account_id);

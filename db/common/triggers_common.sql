@@ -28,6 +28,7 @@ RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog
+VOLATILE
 AS $$
 BEGIN
     -- Only update timestamp when row data actually changes
@@ -102,6 +103,7 @@ RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
+VOLATILE
 AS $$
 DECLARE
     pk_col text;
@@ -228,6 +230,7 @@ RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog
+VOLATILE
 AS $$
 BEGIN
     -- Log only when admin flag actually changes
@@ -303,6 +306,7 @@ RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
+VOLATILE
 AS $$
 DECLARE
     affected_user_id UUID;

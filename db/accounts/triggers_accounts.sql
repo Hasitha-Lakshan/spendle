@@ -126,6 +126,7 @@ RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
+VOLATILE
 AS $$
 BEGIN
     IF NEW.amount_due <= 0 THEN
@@ -172,6 +173,7 @@ RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
+VOLATILE
 AS $$
 BEGIN
     IF NEW.outstanding_amount <= 0 THEN
@@ -217,6 +219,7 @@ RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
+VOLATILE
 AS $$
 BEGIN
     CASE TG_TABLE_NAME
@@ -342,6 +345,7 @@ RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
+VOLATILE
 AS $$
 BEGIN
     -- Only check if there are active transactions
@@ -409,6 +413,7 @@ RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
+VOLATILE
 AS $$
 DECLARE
     v_balance_changed BOOLEAN := FALSE;
@@ -555,6 +560,7 @@ RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
+VOLATILE
 AS $$
 BEGIN
     -- Prevent changing account type after creation
@@ -602,6 +608,7 @@ RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
+VOLATILE
 AS $$
 BEGIN
     -- Allow soft-delete operation on specialized accounts
@@ -693,6 +700,7 @@ RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
+VOLATILE
 AS $$
 BEGIN
     -- Block direct soft-delete unless parent trigger flagged it
