@@ -1591,7 +1591,7 @@ $$;
 -- ================================
 -- Grant Permissions
 -- ================================
-GRANT EXECUTE ON FUNCTION public.create_account(UUID, VARCHAR, account_type, VARCHAR, JSONB) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.create_account(UUID, text, account_type, text, JSONB) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.get_all_accounts() TO authenticated;
 GRANT EXECUTE ON FUNCTION public.get_account_details(UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.get_accounts_by_type(account_type) TO authenticated;

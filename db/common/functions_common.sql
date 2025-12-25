@@ -726,10 +726,10 @@ RETURNS VOID
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
-IMMUTABLE
+VOLATILE
 AS $$
 BEGIN
-    IF current_user NOT IN ('cron_admin') THEN
+    IF current_user NOT IN ('postgres') THEN
         RAISE EXCEPTION 'System role required';
     END IF;
 END;
@@ -842,16 +842,12 @@ BEGIN
 END;
 $$;
 
--- Change the role to cron_admin and schedule the cleanup job
-SET ROLE cron_admin;
 -- Schedule the cleanup to run every night at 2:00 AM
 SELECT cron.schedule(
   'cleanup_soft_deleted_records_nightly',  -- job name
   '0 2 * * *',                            -- cron expression (2:00 AM daily)
   $$ SELECT public.cleanup_soft_deleted_records_internal(90); $$
 );
--- reset role back to previous
-RESET ROLE;
 
 -- =========================================
 -- 11. Function: cleanup_old_audit_logs_internal
@@ -897,16 +893,12 @@ BEGIN
 END;
 $$;
 
--- Change the role to cron_admin and schedule the cleanup job
-SET ROLE cron_admin;
 -- Schedule the cleanup to run every night at 2:00 AM
 SELECT cron.schedule(
   'cleanup_audit_logs_daily',
   '0 2 * * *',
   $$ SELECT cleanup_old_audit_logs_internal(90); $$
 );
--- reset role back to previous
-RESET ROLE;
 
 -- =========================================
 -- 12. Function: cleanup_old_rate_limits_internal
@@ -950,16 +942,12 @@ BEGIN
 END;
 $$;
 
--- Change the role to cron_admin and schedule the cleanup job
-SET ROLE cron_admin;
 -- Run cleanup every night at midnight
 SELECT cron.schedule(
   'cleanup_api_rate_limits_daily',
   '0 0 * * *',
   $$ SELECT cleanup_old_rate_limits_internal(24); $$  -- explicitly pass 24 hours
 );
--- reset role back to previous
-RESET ROLE;
 
 
 -- ================================

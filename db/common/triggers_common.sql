@@ -55,18 +55,20 @@ BEGIN
         -- Deterministic, length-safe trigger name
         trigger_name := 'trg_updated_at_' || substr(md5(r.table_name), 1, 10);
 
-        EXECUTE format(
-            'CREATE TRIGGER %I
-             BEFORE UPDATE ON public.%I
-             FOR EACH ROW
-             EXECUTE FUNCTION public.set_updated_at();',
-            trigger_name,
-            r.table_name
-        );
-    EXCEPTION
-        WHEN duplicate_object THEN
-            -- Trigger already exists, safe to ignore
-            NULL;
+        BEGIN
+            EXECUTE format(
+                'CREATE TRIGGER %I
+                 BEFORE UPDATE ON public.%I
+                 FOR EACH ROW
+                 EXECUTE FUNCTION public.set_updated_at();',
+                trigger_name,
+                r.table_name
+            );
+        EXCEPTION
+            WHEN duplicate_object THEN
+                -- Trigger already exists, safe to ignore
+                NULL;
+        END;
     END LOOP;
 END;
 $$;
@@ -133,8 +135,11 @@ BEGIN
         RAISE EXCEPTION 'Cannot determine primary key column for %', TG_TABLE_NAME;
     END IF;
 
-    -- Get primary key value from OLD row
-    pk_val := OLD.(pk_col)::text;
+    -- Get primary key value from OLD row dynamically
+    EXECUTE format('SELECT ($1).%I::text', pk_col)
+    INTO pk_val
+    USING OLD;
+
 
     -- Perform soft delete with schema-qualified table
     IF pk_type LIKE '%uuid%' THEN
