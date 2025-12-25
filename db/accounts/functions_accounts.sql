@@ -1185,6 +1185,7 @@ CREATE OR REPLACE FUNCTION public.admin_hard_delete_account(p_account_id UUID)
 RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY INVOKER
+SET search_path = pg_catalog, public
 VOLATILE
 AS $$
 BEGIN
