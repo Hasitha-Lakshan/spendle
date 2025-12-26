@@ -232,7 +232,7 @@ $$;
 --   - VOLATILE since the function may modify database state
 --   - Designed for safe invocation by ordinary users in Supabase or client applications
 -- =========================================
-CREATE OR REPLACE FUNCTION api.initialize_my_defaults()
+CREATE OR REPLACE FUNCTION public.initialize_my_defaults()
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY INVOKER
@@ -401,7 +401,7 @@ $$;
 --   - VOLATILE since the function may create or modify user-scoped data
 --   - Intended for controlled administrative access via Supabase RPC endpoints
 -- =========================================
-CREATE OR REPLACE FUNCTION api.admin_initialize_user_defaults(
+CREATE OR REPLACE FUNCTION public.admin_initialize_user_defaults(
     p_user_id UUID
 )
 RETURNS JSONB
@@ -441,7 +441,7 @@ $$;
 --   - Can be called in triggers or directly from API middleware
 --   - Designed to prevent abuse without blocking legitimate usage
 -- =========================================
-CREATE OR REPLACE FUNCTION util.check_rate_limit_internal(
+CREATE OR REPLACE FUNCTION api.check_rate_limit_internal(
     p_endpoint VARCHAR(100),
     p_max_requests INTEGER DEFAULT 100,
     p_window_minutes INTEGER DEFAULT 60
@@ -778,7 +778,7 @@ $$;
 --   - VOLATILE due to irreversible data mutation
 --   - Intended for tightly controlled administrative access via Supabase RPC endpoints
 -- =========================================
-CREATE OR REPLACE FUNCTION api.admin_hard_delete_record(
+CREATE OR REPLACE FUNCTION public.admin_hard_delete_record(
     table_name TEXT,
     record_id UUID
 )
@@ -1066,15 +1066,15 @@ SELECT cron.schedule(
 -- ================================
 -- Grant Permissions
 -- ================================
-GRANT EXECUTE ON FUNCTION api.initialize_my_defaults() TO authenticated;
-GRANT EXECUTE ON FUNCTION api.admin_initialize_user_defaults(UUID) TO authenticated;
-GRANT EXECUTE ON FUNCTION api.admin_hard_delete_record(TEXT, UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.initialize_my_defaults() TO authenticated;
+GRANT EXECUTE ON FUNCTION public.admin_initialize_user_defaults(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.admin_hard_delete_record(TEXT, UUID) TO authenticated;
 
 
 -- ================================
 -- Function Documentation
 -- ================================
-COMMENT ON FUNCTION api.initialize_my_defaults IS 'Invoker wrapper for initialize_my_defaults_internal() to enforce RLS';
+COMMENT ON FUNCTION public.initialize_my_defaults IS 'Invoker wrapper for initialize_my_defaults_internal() to enforce RLS';
 COMMENT ON FUNCTION finance.initialize_defaults_for_user_internal(UUID) IS 
 'Triggers default account and category creation for new users via existing trigger system';
-COMMENT ON FUNCTION util.check_rate_limit_internal(VARCHAR, INTEGER, INTEGER) IS 'API rate limiting with configurable windows';
+COMMENT ON FUNCTION api.check_rate_limit_internal(VARCHAR, INTEGER, INTEGER) IS 'API rate limiting with configurable windows';
