@@ -24,41 +24,42 @@
 --     checks for account validation, balance restrictions, and soft-delete protection.
 --   - Marked STABLE to indicate it does not modify the database and can be safely used in triggers or queries.
 -- =========================================
-CREATE OR REPLACE FUNCTION public.account_has_active_transactions_internal(
+CREATE OR REPLACE FUNCTION finance.account_has_active_transactions_internal(
     p_account_id UUID,
     p_user_id UUID
 )
 RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, public
+SET search_path = pg_catalog, finance
 STABLE
 AS $$
 BEGIN
+    -- Check if the account has any active (non-deleted) transactions
     RETURN EXISTS (
         SELECT 1
-        FROM transactions t
+        FROM finance.transactions t
         WHERE t.user_id = p_user_id
           AND t.deleted_at IS NULL
           AND t.id IN (
 
               -- Income
               SELECT transaction_id
-              FROM transactions_income
+              FROM finance.transactions_income
               WHERE account_id = p_account_id
                 AND deleted_at IS NULL
 
               UNION ALL
               -- Expense
               SELECT transaction_id
-              FROM transactions_expense
+              FROM finance.transactions_expense
               WHERE account_id = p_account_id
                 AND deleted_at IS NULL
 
               UNION ALL
               -- Investment
               SELECT transaction_id
-              FROM transactions_investment
+              FROM finance.transactions_investment
               WHERE (funding_account_id = p_account_id
                      OR investment_account_id = p_account_id)
                 AND deleted_at IS NULL
@@ -66,7 +67,7 @@ BEGIN
               UNION ALL
               -- Borrow
               SELECT transaction_id
-              FROM transactions_borrow
+              FROM finance.transactions_borrow
               WHERE (loan_account_id = p_account_id
                      OR disbursement_account_id = p_account_id)
                 AND deleted_at IS NULL
@@ -74,7 +75,7 @@ BEGIN
               UNION ALL
               -- Lend
               SELECT transaction_id
-              FROM transactions_lend
+              FROM finance.transactions_lend
               WHERE (funding_account_id = p_account_id
                      OR receivable_account_id = p_account_id)
                 AND deleted_at IS NULL
@@ -82,7 +83,7 @@ BEGIN
               UNION ALL
               -- Transfer
               SELECT transaction_id
-              FROM transactions_transfer
+              FROM finance.transactions_transfer
               WHERE (from_account = p_account_id
                      OR to_account = p_account_id)
                 AND deleted_at IS NULL
@@ -90,7 +91,7 @@ BEGIN
               UNION ALL
               -- Adjustment
               SELECT transaction_id
-              FROM transactions_adjustment
+              FROM finance.transactions_adjustment
               WHERE account_id = p_account_id
                 AND deleted_at IS NULL
           )
@@ -121,14 +122,15 @@ $$;
 --   - Uses SECURITY DEFINER to enforce consistent logic regardless of RLS
 --   - Ensures receivable status is always accurate based on business rules
 -- =========================================
-CREATE OR REPLACE FUNCTION public.update_receivable_status() 
+CREATE OR REPLACE FUNCTION finance.update_receivable_status() 
 RETURNS TRIGGER 
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, public
+SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
 BEGIN
+    -- Update receivable status based on amount_due and due_date
     IF NEW.amount_due <= 0 THEN
         NEW.status := 'paid';
     ELSIF NEW.due_date IS NOT NULL AND NEW.due_date < CURRENT_DATE THEN
@@ -141,9 +143,10 @@ BEGIN
 END;
 $$;
 
+-- Create trigger on receivable_accounts table (fully schema-qualified)
 CREATE TRIGGER trg_receivable_status
-    BEFORE INSERT OR UPDATE ON receivable_accounts
-    FOR EACH ROW EXECUTE FUNCTION public.update_receivable_status();
+    BEFORE INSERT OR UPDATE ON finance.receivable_accounts
+    FOR EACH ROW EXECUTE FUNCTION finance.update_receivable_status();
 
 -- =========================================
 -- 03. Function: update_loan_status
@@ -168,14 +171,15 @@ CREATE TRIGGER trg_receivable_status
 --   - Uses SECURITY DEFINER to ensure logic executes correctly regardless of RLS
 --   - Ensures loan status is always accurate based on business rules
 -- =========================================
-CREATE OR REPLACE FUNCTION public.update_loan_status() 
+CREATE OR REPLACE FUNCTION finance.update_loan_status() 
 RETURNS TRIGGER 
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, public
+SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
 BEGIN
+    -- Update loan status based on outstanding_amount and end_date
     IF NEW.outstanding_amount <= 0 THEN
         NEW.status := 'closed';
     ELSIF NEW.end_date IS NOT NULL AND NEW.end_date < CURRENT_DATE AND NEW.outstanding_amount > 0 THEN
@@ -188,9 +192,10 @@ BEGIN
 END;
 $$;
 
+-- Create trigger on loan_accounts table (fully schema-qualified)
 CREATE TRIGGER trg_loan_status
-    BEFORE INSERT OR UPDATE ON loan_accounts
-    FOR EACH ROW EXECUTE FUNCTION public.update_loan_status();
+    BEFORE INSERT OR UPDATE ON finance.loan_accounts
+    FOR EACH ROW EXECUTE FUNCTION finance.update_loan_status();
 
 -- =========================================
 -- 04. Function: validate_account_balance
@@ -214,14 +219,15 @@ CREATE TRIGGER trg_loan_status
 --   - Applied per account type via dedicated triggers
 --   - Helps detect potential overdraft or accounting issues without enforcing strict constraints
 -- =========================================
-CREATE OR REPLACE FUNCTION public.validate_account_balance() 
+CREATE OR REPLACE FUNCTION finance.validate_account_balance() 
 RETURNS TRIGGER 
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, public
+SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
 BEGIN
+    -- Validate account balances according to account type
     CASE TG_TABLE_NAME
         WHEN 'cash_accounts' THEN
             IF NEW.balance < 0 THEN
@@ -275,45 +281,47 @@ BEGIN
 END;
 $$;
 
+-- Create triggers on each specialized account table (fully schema-qualified)
+
 -- Cash
 CREATE TRIGGER trg_validate_cash_balance
-    BEFORE INSERT OR UPDATE ON cash_accounts
-    FOR EACH ROW EXECUTE FUNCTION public.validate_account_balance();
+    BEFORE INSERT OR UPDATE ON finance.cash_accounts
+    FOR EACH ROW EXECUTE FUNCTION finance.validate_account_balance();
 
 -- Bank
 CREATE TRIGGER trg_validate_bank_balance
-    BEFORE INSERT OR UPDATE ON bank_accounts
-    FOR EACH ROW EXECUTE FUNCTION public.validate_account_balance();
+    BEFORE INSERT OR UPDATE ON finance.bank_accounts
+    FOR EACH ROW EXECUTE FUNCTION finance.validate_account_balance();
 
 -- Wallet
 CREATE TRIGGER trg_validate_wallet_balance
-    BEFORE INSERT OR UPDATE ON wallet_accounts
-    FOR EACH ROW EXECUTE FUNCTION public.validate_account_balance();
+    BEFORE INSERT OR UPDATE ON finance.wallet_accounts
+    FOR EACH ROW EXECUTE FUNCTION finance.validate_account_balance();
 
 -- Crypto
 CREATE TRIGGER trg_validate_crypto_balance
-    BEFORE INSERT OR UPDATE ON crypto_accounts
-    FOR EACH ROW EXECUTE FUNCTION public.validate_account_balance();
+    BEFORE INSERT OR UPDATE ON finance.crypto_accounts
+    FOR EACH ROW EXECUTE FUNCTION finance.validate_account_balance();
 
 -- Credit Card
 CREATE TRIGGER trg_validate_credit_card_balance
-    BEFORE INSERT OR UPDATE ON credit_card_accounts
-    FOR EACH ROW EXECUTE FUNCTION public.validate_account_balance();
+    BEFORE INSERT OR UPDATE ON finance.credit_card_accounts
+    FOR EACH ROW EXECUTE FUNCTION finance.validate_account_balance();
 
 -- Loan
 CREATE TRIGGER trg_validate_loan_balance
-    BEFORE INSERT OR UPDATE ON loan_accounts
-    FOR EACH ROW EXECUTE FUNCTION public.validate_account_balance();
+    BEFORE INSERT OR UPDATE ON finance.loan_accounts
+    FOR EACH ROW EXECUTE FUNCTION finance.validate_account_balance();
 
 -- Investment
 CREATE TRIGGER trg_validate_investment_balance
-    BEFORE INSERT OR UPDATE ON investment_accounts
-    FOR EACH ROW EXECUTE FUNCTION public.validate_account_balance();
+    BEFORE INSERT OR UPDATE ON finance.investment_accounts
+    FOR EACH ROW EXECUTE FUNCTION finance.validate_account_balance();
 
 -- Receivable
 CREATE TRIGGER trg_validate_receivable_balance
-    BEFORE INSERT OR UPDATE ON receivable_accounts
-    FOR EACH ROW EXECUTE FUNCTION public.validate_account_balance();
+    BEFORE INSERT OR UPDATE ON finance.receivable_accounts
+    FOR EACH ROW EXECUTE FUNCTION finance.validate_account_balance();
 
 
 
@@ -340,16 +348,17 @@ CREATE TRIGGER trg_validate_receivable_balance
 --   - Checks all related transaction detail tables to enforce constraints
 --   - Helps maintain consistency between accounts and transactions
 -- =========================================
-CREATE OR REPLACE FUNCTION public.validate_account_modification()
+CREATE OR REPLACE FUNCTION finance.validate_account_modification()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, public
+SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
 BEGIN
     -- Only check if there are active transactions
-    IF public.account_has_active_transactions_internal(OLD.account_id, OLD.user_id) THEN
+    IF finance.account_has_active_transactions_internal(OLD.account_id, OLD.user_id) THEN
+
         -- Prevent modification of currency
         IF TG_OP = 'UPDATE' AND OLD.currency IS DISTINCT FROM NEW.currency THEN
             RAISE EXCEPTION 'Cannot modify account currency when transactions exist';
@@ -368,15 +377,16 @@ BEGIN
         END IF;
     END IF;
 
+    -- Return the appropriate row
     RETURN COALESCE(NEW, OLD);
 END;
 $$;
 
 -- Add triggers for account validation
 CREATE TRIGGER trg_validate_account_modification
-BEFORE UPDATE OR DELETE ON accounts
+BEFORE UPDATE OR DELETE ON finance.accounts
 FOR EACH ROW
-EXECUTE FUNCTION public.validate_account_modification();
+EXECUTE FUNCTION finance.validate_account_modification();
 
 -- =========================================
 -- 06. Function: prevent_balance_change_if_transactions
@@ -408,18 +418,19 @@ EXECUTE FUNCTION public.validate_account_modification();
 --   - Prevents accidental or unauthorized modifications to critical account data when transactions exist.
 --   - Applied per account type via dedicated triggers.
 -- =========================================
-CREATE OR REPLACE FUNCTION public.prevent_balance_change_if_transactions()
+CREATE OR REPLACE FUNCTION finance.prevent_balance_change_if_transactions()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, public
+SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
 DECLARE
     v_balance_changed BOOLEAN := FALSE;
 BEGIN
     -- Only check if there are active transactions
-    IF public.account_has_active_transactions_internal(OLD.account_id, OLD.user_id) THEN
+    IF finance.account_has_active_transactions_internal(OLD.account_id, OLD.user_id) THEN
+
         -- Detect balance changes per account type
         CASE TG_TABLE_NAME
             WHEN 'cash_accounts' THEN
@@ -466,11 +477,13 @@ BEGIN
                    OR OLD.amount_due IS DISTINCT FROM NEW.amount_due THEN
                     v_balance_changed := TRUE;
                 END IF;
+
             ELSE
                 -- Unhandled table
                 RAISE EXCEPTION 'prevent_balance_change_if_transactions: unhandled table %', TG_TABLE_NAME;
         END CASE;
 
+        -- Raise exception if balance modifications detected
         IF v_balance_changed THEN
             RAISE EXCEPTION 'Cannot modify account balances when transactions exist';
         END IF;
@@ -484,51 +497,54 @@ BEGIN
         IF TG_OP = 'UPDATE' AND OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL THEN
             RAISE EXCEPTION 'Cannot soft-delete account with existing transactions';
         END IF;
+
     END IF;
 
     RETURN COALESCE(NEW, OLD);
 END;
 $$;
 
+-- Create triggers on each specialized account table (fully schema-qualified)
+
 -- Cash
 CREATE TRIGGER trg_prevent_cash_balance_change
-BEFORE UPDATE OR DELETE ON cash_accounts
-FOR EACH ROW EXECUTE FUNCTION public.prevent_balance_change_if_transactions();
+BEFORE UPDATE OR DELETE ON finance.cash_accounts
+FOR EACH ROW EXECUTE FUNCTION finance.prevent_balance_change_if_transactions();
 
 -- Bank
 CREATE TRIGGER trg_prevent_bank_balance_change
-BEFORE UPDATE OR DELETE ON bank_accounts
-FOR EACH ROW EXECUTE FUNCTION public.prevent_balance_change_if_transactions();
+BEFORE UPDATE OR DELETE ON finance.bank_accounts
+FOR EACH ROW EXECUTE FUNCTION finance.prevent_balance_change_if_transactions();
 
 -- Wallet
 CREATE TRIGGER trg_prevent_wallet_balance_change
-BEFORE UPDATE OR DELETE ON wallet_accounts
-FOR EACH ROW EXECUTE FUNCTION public.prevent_balance_change_if_transactions();
+BEFORE UPDATE OR DELETE ON finance.wallet_accounts
+FOR EACH ROW EXECUTE FUNCTION finance.prevent_balance_change_if_transactions();
 
 -- Crypto
 CREATE TRIGGER trg_prevent_crypto_balance_change
-BEFORE UPDATE OR DELETE ON crypto_accounts
-FOR EACH ROW EXECUTE FUNCTION public.prevent_balance_change_if_transactions();
+BEFORE UPDATE OR DELETE ON finance.crypto_accounts
+FOR EACH ROW EXECUTE FUNCTION finance.prevent_balance_change_if_transactions();
 
 -- Credit Card
 CREATE TRIGGER trg_prevent_credit_card_balance_change
-BEFORE UPDATE OR DELETE ON credit_card_accounts
-FOR EACH ROW EXECUTE FUNCTION public.prevent_balance_change_if_transactions();
+BEFORE UPDATE OR DELETE ON finance.credit_card_accounts
+FOR EACH ROW EXECUTE FUNCTION finance.prevent_balance_change_if_transactions();
 
 -- Investment
 CREATE TRIGGER trg_prevent_investment_balance_change
-BEFORE UPDATE OR DELETE ON investment_accounts
-FOR EACH ROW EXECUTE FUNCTION public.prevent_balance_change_if_transactions();
+BEFORE UPDATE OR DELETE ON finance.investment_accounts
+FOR EACH ROW EXECUTE FUNCTION finance.prevent_balance_change_if_transactions();
 
 -- Loan
 CREATE TRIGGER trg_prevent_loan_balance_change
-BEFORE UPDATE OR DELETE ON loan_accounts
-FOR EACH ROW EXECUTE FUNCTION public.prevent_balance_change_if_transactions();
+BEFORE UPDATE OR DELETE ON finance.loan_accounts
+FOR EACH ROW EXECUTE FUNCTION finance.prevent_balance_change_if_transactions();
 
 -- Receivable
 CREATE TRIGGER trg_prevent_receivable_balance_change
-BEFORE UPDATE OR DELETE ON receivable_accounts
-FOR EACH ROW EXECUTE FUNCTION public.prevent_balance_change_if_transactions();
+BEFORE UPDATE OR DELETE ON finance.receivable_accounts
+FOR EACH ROW EXECUTE FUNCTION finance.prevent_balance_change_if_transactions();
 
 -- =========================================
 -- 07. Function: prevent_account_type_change
@@ -555,11 +571,11 @@ FOR EACH ROW EXECUTE FUNCTION public.prevent_balance_change_if_transactions();
 --   - Uses IS DISTINCT FROM for NULL-safe comparison
 --   - Prevents orphaned or inconsistent specialized account records
 -- =========================================
-CREATE OR REPLACE FUNCTION public.prevent_account_type_change()
+CREATE OR REPLACE FUNCTION finance.prevent_account_type_change()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, public
+SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
 BEGIN
@@ -575,10 +591,11 @@ BEGIN
 END;
 $$;
 
+-- Create trigger on accounts table (fully schema-qualified)
 CREATE TRIGGER trg_prevent_account_type_change
-BEFORE UPDATE ON accounts
+BEFORE UPDATE ON finance.accounts
 FOR EACH ROW
-EXECUTE FUNCTION public.prevent_account_type_change();
+EXECUTE FUNCTION finance.prevent_account_type_change();
 
 -- =========================================
 -- 08. Function: soft_delete_specialized_account
@@ -603,11 +620,11 @@ EXECUTE FUNCTION public.prevent_account_type_change();
 --   - SECURITY DEFINER allows this trigger to bypass RLS when updating specialized accounts
 --   - Only applies if the parent account was not previously deleted
 -- =========================================
-CREATE OR REPLACE FUNCTION public.soft_delete_specialized_account() 
+CREATE OR REPLACE FUNCTION finance.soft_delete_specialized_account() 
 RETURNS TRIGGER 
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, public
+SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
 BEGIN
@@ -618,35 +635,35 @@ BEGIN
     IF OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL THEN
         CASE OLD.type
             WHEN 'cash' THEN
-                UPDATE public.cash_accounts 
+                UPDATE finance.cash_accounts 
                 SET deleted_at = NEW.deleted_at, updated_at = NOW() 
                 WHERE account_id = OLD.id AND deleted_at IS NULL;
             WHEN 'bank' THEN
-                UPDATE public.bank_accounts 
+                UPDATE finance.bank_accounts 
                 SET deleted_at = NEW.deleted_at, updated_at = NOW() 
                 WHERE account_id = OLD.id AND deleted_at IS NULL;
             WHEN 'credit_card' THEN
-                UPDATE public.credit_card_accounts 
+                UPDATE finance.credit_card_accounts 
                 SET deleted_at = NEW.deleted_at, updated_at = NOW() 
                 WHERE account_id = OLD.id AND deleted_at IS NULL;
             WHEN 'loan' THEN
-                UPDATE public.loan_accounts 
+                UPDATE finance.loan_accounts 
                 SET deleted_at = NEW.deleted_at, updated_at = NOW() 
                 WHERE account_id = OLD.id AND deleted_at IS NULL;
             WHEN 'investment' THEN
-                UPDATE public.investment_accounts 
+                UPDATE finance.investment_accounts 
                 SET deleted_at = NEW.deleted_at, updated_at = NOW() 
                 WHERE account_id = OLD.id AND deleted_at IS NULL;
             WHEN 'crypto' THEN
-                UPDATE public.crypto_accounts 
+                UPDATE finance.crypto_accounts 
                 SET deleted_at = NEW.deleted_at, updated_at = NOW() 
                 WHERE account_id = OLD.id AND deleted_at IS NULL;
             WHEN 'wallet' THEN
-                UPDATE public.wallet_accounts 
+                UPDATE finance.wallet_accounts 
                 SET deleted_at = NEW.deleted_at, updated_at = NOW() 
                 WHERE account_id = OLD.id AND deleted_at IS NULL;
             WHEN 'receivable' THEN
-                UPDATE public.receivable_accounts 
+                UPDATE finance.receivable_accounts 
                 SET deleted_at = NEW.deleted_at, updated_at = NOW() 
                 WHERE account_id = OLD.id AND deleted_at IS NULL;
             ELSE
@@ -661,9 +678,10 @@ BEGIN
 END;
 $$;
 
+-- Create trigger on accounts table (fully schema-qualified)
 CREATE TRIGGER trg_cleanup_specialized_account
-    AFTER UPDATE ON accounts
-    FOR EACH ROW EXECUTE FUNCTION public.soft_delete_specialized_account();
+AFTER UPDATE ON finance.accounts
+FOR EACH ROW EXECUTE FUNCTION finance.soft_delete_specialized_account();
 
 
 
@@ -695,11 +713,11 @@ CREATE TRIGGER trg_cleanup_specialized_account
 --   - Ensures consistency between parent accounts and their specialized accounts.
 --   - Applied per specialized account table via dedicated triggers.
 -- =========================================
-CREATE OR REPLACE FUNCTION public.prevent_specialized_soft_delete()
+CREATE OR REPLACE FUNCTION finance.prevent_specialized_soft_delete()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, public
+SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
 BEGIN
@@ -716,48 +734,48 @@ $$;
 
 -- Cash
 CREATE TRIGGER trg_prevent_cash_soft_delete
-BEFORE UPDATE ON cash_accounts
+BEFORE UPDATE ON finance.cash_accounts
 FOR EACH ROW
-EXECUTE FUNCTION public.prevent_specialized_soft_delete();
+EXECUTE FUNCTION finance.prevent_specialized_soft_delete();
 
 -- Bank
 CREATE TRIGGER trg_prevent_bank_soft_delete
-BEFORE UPDATE ON bank_accounts
+BEFORE UPDATE ON finance.bank_accounts
 FOR EACH ROW
-EXECUTE FUNCTION public.prevent_specialized_soft_delete();
+EXECUTE FUNCTION finance.prevent_specialized_soft_delete();
 
 -- Credit Card
 CREATE TRIGGER trg_prevent_credit_card_soft_delete
-BEFORE UPDATE ON credit_card_accounts
+BEFORE UPDATE ON finance.credit_card_accounts
 FOR EACH ROW
-EXECUTE FUNCTION public.prevent_specialized_soft_delete();
+EXECUTE FUNCTION finance.prevent_specialized_soft_delete();
 
 -- Loan
 CREATE TRIGGER trg_prevent_loan_soft_delete
-BEFORE UPDATE ON loan_accounts
+BEFORE UPDATE ON finance.loan_accounts
 FOR EACH ROW
-EXECUTE FUNCTION public.prevent_specialized_soft_delete();
+EXECUTE FUNCTION finance.prevent_specialized_soft_delete();
 
 -- Investment
 CREATE TRIGGER trg_prevent_investment_soft_delete
-BEFORE UPDATE ON investment_accounts
+BEFORE UPDATE ON finance.investment_accounts
 FOR EACH ROW
-EXECUTE FUNCTION public.prevent_specialized_soft_delete();
+EXECUTE FUNCTION finance.prevent_specialized_soft_delete();
 
 -- Crypto
 CREATE TRIGGER trg_prevent_crypto_soft_delete
-BEFORE UPDATE ON crypto_accounts
+BEFORE UPDATE ON finance.crypto_accounts
 FOR EACH ROW
-EXECUTE FUNCTION public.prevent_specialized_soft_delete();
+EXECUTE FUNCTION finance.prevent_specialized_soft_delete();
 
 -- Wallet
 CREATE TRIGGER trg_prevent_wallet_soft_delete
-BEFORE UPDATE ON wallet_accounts
+BEFORE UPDATE ON finance.wallet_accounts
 FOR EACH ROW
-EXECUTE FUNCTION public.prevent_specialized_soft_delete();
+EXECUTE FUNCTION finance.prevent_specialized_soft_delete();
 
 -- Receivable
 CREATE TRIGGER trg_prevent_receivable_soft_delete
-BEFORE UPDATE ON receivable_accounts
+BEFORE UPDATE ON finance.receivable_accounts
 FOR EACH ROW
-EXECUTE FUNCTION public.prevent_specialized_soft_delete();
+EXECUTE FUNCTION finance.prevent_specialized_soft_delete();
