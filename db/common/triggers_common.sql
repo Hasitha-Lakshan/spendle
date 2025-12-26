@@ -339,7 +339,7 @@ DECLARE
     affected_user_id UUID;
     actor_user_id UUID;
     record_id UUID;
-    row_data extensions.hstore;
+    row_data hstore;
     system_user CONSTANT UUID := '00000000-0000-0000-0000-000000000000'::uuid;
 BEGIN
     -- SAFETY GUARD: never audit the audit_logs table itself
@@ -360,9 +360,9 @@ BEGIN
 
     -- Normalize row data for dynamic access
     IF TG_OP = 'DELETE' THEN
-        row_data := extensions.hstore(OLD);
+        row_data := hstore(OLD);
     ELSE
-        row_data := extensions.hstore(NEW);
+        row_data := hstore(NEW);
     END IF;
 
     -- Resolve affected user
