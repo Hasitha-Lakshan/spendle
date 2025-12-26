@@ -164,36 +164,54 @@ $$;
 -- Apply Soft Delete Triggers to all major tables
 DO $$
 DECLARE
-    tbl_rec RECORD;
+    tbl text[];
     trigger_name text;
     -- List of tables with schema qualification
     tables_to_protect text[][] := ARRAY[
-        ['finance','profiles'], ['finance','accounts'], ['finance','transactions'], ['finance','counterparties'],
-        ['finance','expense_categories'], ['finance','expense_subcategories'], ['finance','income_sources'], ['finance','transactions_recurring'],
-        ['finance','cash_accounts'], ['finance','bank_accounts'], ['finance','credit_card_accounts'], ['finance','loan_accounts'],
-        ['finance','investment_accounts'], ['finance','crypto_accounts'], ['finance','wallet_accounts'], ['finance','receivable_accounts'],
-        ['finance','transactions_income'], ['finance','transactions_expense'], ['finance','transactions_investment'],
-        ['finance','transactions_borrow'], ['finance','transactions_lend'], ['finance','transactions_transfer'], ['finance','transactions_adjustment'],
+        ['core','profiles'], 
+        ['finance','accounts'], 
+        ['finance','transactions'], 
+        ['finance','counterparties'],
+        ['finance','expense_categories'], 
+        ['finance','expense_subcategories'], 
+        ['finance','income_sources'], 
+        ['finance','transactions_recurring'],
+        ['finance','cash_accounts'], 
+        ['finance','bank_accounts'], 
+        ['finance','credit_card_accounts'], 
+        ['finance','loan_accounts'], 
+        ['finance','investment_accounts'], 
+        ['finance','crypto_accounts'], 
+        ['finance','wallet_accounts'], 
+        ['finance','receivable_accounts'],
+        ['finance','transactions_income'], 
+        ['finance','transactions_expense'], 
+        ['finance','transactions_investment'],
+        ['finance','transactions_borrow'], 
+        ['finance','transactions_lend'], 
+        ['finance','transactions_transfer'], 
+        ['finance','transactions_adjustment'],
         ['finance','exchange_rates']
     ];
+    i int;
 BEGIN
-    FOREACH tbl_rec SLICE 1 IN ARRAY tables_to_protect LOOP
-     -- Deterministic trigger name
-        trigger_name := 'trg_' || tbl_rec[2] || '_no_delete';
+    FOR i IN array_lower(tables_to_protect,1)..array_upper(tables_to_protect,1) LOOP
+        -- Deterministic trigger name
+        trigger_name := 'trg_' || tables_to_protect[i][2] || '_no_delete';
 
         -- Attempt trigger creation, ignore duplicates
         BEGIN
             EXECUTE format(
                 'CREATE TRIGGER %I
-                 BEFORE DELETE ON %I.%I
-                 FOR EACH ROW
-                 EXECUTE FUNCTION util.enforce_soft_delete();',
+                BEFORE DELETE ON %I.%I
+                FOR EACH ROW
+                EXECUTE FUNCTION util.enforce_soft_delete();',
                 trigger_name,
-                tbl_rec[1], tbl_rec[2]
+                tables_to_protect[i][1], tables_to_protect[i][2]
             );
         EXCEPTION
             WHEN duplicate_object THEN
-                -- Trigger already exists, safe to ignore
+                    -- Trigger already exists, safe to ignore
                 NULL;
         END;
     END LOOP;
@@ -321,7 +339,7 @@ DECLARE
     affected_user_id UUID;
     actor_user_id UUID;
     record_id UUID;
-    row_data hstore;
+    row_data extensions.hstore;
     system_user CONSTANT UUID := '00000000-0000-0000-0000-000000000000'::uuid;
 BEGIN
     -- SAFETY GUARD: never audit the audit_logs table itself
@@ -342,9 +360,9 @@ BEGIN
 
     -- Normalize row data for dynamic access
     IF TG_OP = 'DELETE' THEN
-        row_data := hstore(OLD);
+        row_data := extensions.hstore(OLD);
     ELSE
-        row_data := hstore(NEW);
+        row_data := extensions.hstore(NEW);
     END IF;
 
     -- Resolve affected user
@@ -488,7 +506,7 @@ DECLARE
 BEGIN
     FOR t IN
         SELECT r.table_schema, r.table_name
-        FROM audit_table_registry r
+        FROM audit.audit_table_registry r
         WHERE r.enabled = TRUE
     LOOP
         trigger_name := 'trg_audit_' || t.table_schema || '_' || t.table_name;
