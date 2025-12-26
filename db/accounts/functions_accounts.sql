@@ -473,7 +473,7 @@ BEGIN
     END IF;
 
     -- Enforce rate limit
-    IF NOT public.check_rate_limit_internal('update_account', v_max_requests, v_window_minutes) THEN
+    IF NOT util.check_rate_limit_internal('update_account', v_max_requests, v_window_minutes) THEN
         RAISE EXCEPTION 'Rate limit exceeded: max % requests per % minutes',
         v_max_requests, v_window_minutes;
     END IF;
@@ -1013,7 +1013,7 @@ $$;
 --     within create_account_internal.
 --   - Suitable for direct use by application code or API layers.
 -- =========================================
-CREATE OR REPLACE FUNCTION public.create_account(
+CREATE OR REPLACE FUNCTION api.create_account(
     p_user_id UUID,
     p_account_name text,
     p_type finance.account_type,
@@ -1068,7 +1068,7 @@ $$;
 --   - Centralizes complex update behavior within update_account_internal
 --     for consistency and maintainability.
 -- =========================================
-CREATE OR REPLACE FUNCTION public.update_account(
+CREATE OR REPLACE FUNCTION api.update_account(
     p_account_id UUID,
     p_update_data JSONB
 )
@@ -1109,7 +1109,7 @@ $$;
 --   - Acts as a safe, public-facing interface to the internal function.
 --   - No direct validation or RLS handling occurs here; all logic is delegated.
 -- =========================================
-CREATE OR REPLACE FUNCTION public.soft_delete_account(p_account_id UUID)
+CREATE OR REPLACE FUNCTION api.soft_delete_account(p_account_id UUID)
 RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY INVOKER
@@ -1148,7 +1148,7 @@ $$;
 --   - All authentication, permission validation, and RLS handling are
 --     performed inside the internal function.
 -- =========================================
-CREATE OR REPLACE FUNCTION public.admin_soft_delete_account(p_account_id UUID)
+CREATE OR REPLACE FUNCTION api.admin_soft_delete_account(p_account_id UUID)
 RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY INVOKER
@@ -1189,7 +1189,7 @@ $$;
 --   - Completes the account lifecycle by providing controlled access to
 --     permanent data removal.
 -- =========================================
-CREATE OR REPLACE FUNCTION public.admin_hard_delete_account(p_account_id UUID)
+CREATE OR REPLACE FUNCTION api.admin_hard_delete_account(p_account_id UUID)
 RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY INVOKER
@@ -1307,7 +1307,7 @@ END;
 $$;
 
 -- =========================================
--- 14. Function: get_account_details
+-- 14. Function: get_account_details_internal
 -- =========================================
 -- Purpose:
 --   Retrieves the complete details of a single account, combining
@@ -1629,7 +1629,7 @@ $$;
 --   - All authorization, visibility rules, and data shaping are handled
 --     inside the internal function.
 -- =========================================
-CREATE OR REPLACE FUNCTION public.get_all_accounts()
+CREATE OR REPLACE FUNCTION api.get_all_accounts()
 RETURNS TABLE(
     account_id UUID,
     account_name VARCHAR,
@@ -1676,7 +1676,7 @@ $$;
 --   - All permission checks and error handling are implemented in the
 --     internal function.
 -- =========================================
-CREATE OR REPLACE FUNCTION public.get_account_details(p_account_id UUID)
+CREATE OR REPLACE FUNCTION api.get_account_details(p_account_id UUID)
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY INVOKER
@@ -1715,7 +1715,7 @@ $$;
 --   - Business rules and RLS logic are fully encapsulated within the
 --     internal function.
 -- =========================================
-CREATE OR REPLACE FUNCTION public.get_accounts_by_type(p_account_type finance.account_type)
+CREATE OR REPLACE FUNCTION api.get_accounts_by_type(p_account_type finance.account_type)
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY INVOKER
@@ -1731,19 +1731,19 @@ $$;
 -- ================================
 -- Grant Permissions
 -- ================================
-GRANT EXECUTE ON FUNCTION public.create_account(UUID, text, account_type, text, JSONB) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.get_all_accounts() TO authenticated;
-GRANT EXECUTE ON FUNCTION public.get_account_details(UUID) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.get_accounts_by_type(account_type) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.update_account(UUID, JSONB) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.soft_delete_account(UUID) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.admin_soft_delete_account(UUID) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.admin_hard_delete_account(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION api.create_account(UUID, text, account_type, text, JSONB) TO authenticated;
+GRANT EXECUTE ON FUNCTION api.get_all_accounts() TO authenticated;
+GRANT EXECUTE ON FUNCTION api.get_account_details(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION api.get_accounts_by_type(account_type) TO authenticated;
+GRANT EXECUTE ON FUNCTION api.update_account(UUID, JSONB) TO authenticated;
+GRANT EXECUTE ON FUNCTION api.soft_delete_account(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION api.admin_soft_delete_account(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION api.admin_hard_delete_account(UUID) TO authenticated;
 
 
 -- ================================
 -- Function Documentation
 -- ================================
-COMMENT ON FUNCTION public.get_account_details_internal(UUID) IS
+COMMENT ON FUNCTION finance.get_account_details_internal(UUID) IS
 'RLS-compliant function to return full account details as JSON, including base and specialized fields, excluding soft-deleted records';
 COMMENT ON FUNCTION finance.validate_account_ownership_internal(UUID) IS 'Validate user owns specified account';
