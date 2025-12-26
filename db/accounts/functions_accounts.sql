@@ -138,7 +138,7 @@ $$;
 --
 -- Behavior:
 --   - Validates that the caller is creating the account for themselves.
---   - Ensures the provided account type is valid according to the account_type enum.
+--   - Ensures the provided account type is valid according to the finance.account_type enum.
 --   - Inserts a record into the base 'accounts' table and returns the generated account ID.
 --   - Parses specialized fields from the provided JSONB 'p_details', using defaults
 --     where values are missing or invalid.
@@ -154,7 +154,7 @@ $$;
 -- Parameters:
 --   p_user_id UUID        - The user ID for whom the account is being created.
 --   p_account_name VARCHAR - Name of the new account.
---   p_type account_type   - Enum specifying the type of account to create.
+--   p_type finance.account_type   - Enum specifying the type of account to create.
 --   p_currency VARCHAR    - Currency code for the account (ISO 4217).
 --   p_details JSONB       - Optional JSON containing specialized fields for the account type.
 --
@@ -173,7 +173,7 @@ $$;
 CREATE OR REPLACE FUNCTION finance.create_account_internal(
     p_user_id UUID,
     p_account_name VARCHAR,
-    p_type account_type,
+    p_type finance.account_type,
     p_currency VARCHAR,
     p_details JSONB DEFAULT '{}' -- contains specialized fields per account type
 )
@@ -998,7 +998,7 @@ $$;
 -- Parameters:
 --   p_user_id UUID        - The user ID for whom the account is being created.
 --   p_account_name TEXT  - Name of the new account.
---   p_type account_type  - Enum specifying the type of account to create.
+--   p_type finance.account_type  - Enum specifying the type of account to create.
 --   p_currency TEXT      - Currency code for the account.
 --   p_details JSONB      - JSON object containing specialized fields for the
 --                          account type.
@@ -1224,7 +1224,7 @@ $$;
 --   TABLE (
 --     account_id   UUID        - Unique identifier of the account.
 --     account_name VARCHAR     - Display name of the account.
---     account_type account_type- Type of the account (cash, bank, loan, etc.).
+--     account_type finance.account_type- Type of the account (cash, bank, loan, etc.).
 --     currency     VARCHAR     - Account currency code.
 --     balance      DECIMAL     - Computed current balance or value for the account.
 --     status       VARCHAR     - Current operational status of the account.
@@ -1473,7 +1473,7 @@ $$;
 --     records before merging into the result.
 --
 -- Parameters:
---   p_account_type account_type - The account type to filter by
+--   p_account_type finance.account_type - The account type to filter by
 --     (e.g. cash, bank, credit_card, loan, investment, crypto,
 --      wallet, receivable).
 --
@@ -1644,7 +1644,8 @@ SET search_path = pg_catalog, finance
 STABLE
 AS $$
 BEGIN
-    RETURN finance.get_all_accounts_internal();
+    RETURN QUERY
+    SELECT * FROM finance.get_all_accounts_internal();
 END;
 $$;
 
@@ -1731,10 +1732,10 @@ $$;
 -- ================================
 -- Grant Permissions
 -- ================================
-GRANT EXECUTE ON FUNCTION api.create_account(UUID, text, account_type, text, JSONB) TO authenticated;
+GRANT EXECUTE ON FUNCTION api.create_account(UUID, text, finance.account_type, text, JSONB) TO authenticated;
 GRANT EXECUTE ON FUNCTION api.get_all_accounts() TO authenticated;
 GRANT EXECUTE ON FUNCTION api.get_account_details(UUID) TO authenticated;
-GRANT EXECUTE ON FUNCTION api.get_accounts_by_type(account_type) TO authenticated;
+GRANT EXECUTE ON FUNCTION api.get_accounts_by_type(finance.account_type) TO authenticated;
 GRANT EXECUTE ON FUNCTION api.update_account(UUID, JSONB) TO authenticated;
 GRANT EXECUTE ON FUNCTION api.soft_delete_account(UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION api.admin_soft_delete_account(UUID) TO authenticated;
