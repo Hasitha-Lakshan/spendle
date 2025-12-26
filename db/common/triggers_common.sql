@@ -271,7 +271,7 @@ $$;
 DO $$
 BEGIN
     CREATE TRIGGER trg_log_admin_changes
-        AFTER UPDATE ON auth.profiles
+        AFTER UPDATE ON core.profiles
         FOR EACH ROW
         EXECUTE FUNCTION audit.log_admin_changes();
 EXCEPTION

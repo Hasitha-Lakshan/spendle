@@ -8,16 +8,16 @@
 -- =========================================
 -- PROFILES
 -- =========================================
-ALTER TABLE auth.profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE core.profiles ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY select_own_profiles ON auth.profiles
+CREATE POLICY select_own_profiles ON core.profiles
     FOR SELECT USING (user_id = (select auth.uid()) AND deleted_at IS NULL);
-CREATE POLICY insert_own_profiles ON auth.profiles
+CREATE POLICY insert_own_profiles ON core.profiles
     FOR INSERT WITH CHECK (user_id = (select auth.uid()));
-CREATE POLICY update_own_profiles ON auth.profiles
+CREATE POLICY update_own_profiles ON core.profiles
     FOR UPDATE USING (user_id = (select auth.uid()) AND deleted_at IS NULL)
-    WITH CHECK (user_id = (select auth.uid()) AND deleted_at IS NULL);
-CREATE POLICY delete_profiles_combined ON auth.profiles
+    WITH CHECK (user_id = (select core.uid()) AND deleted_at IS NULL);
+CREATE POLICY delete_profiles_combined ON core.profiles
     FOR DELETE USING (
         deleted_at IS NOT NULL
         AND util.check_admin_permissions_internal()

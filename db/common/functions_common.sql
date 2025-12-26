@@ -25,7 +25,7 @@ CREATE OR REPLACE FUNCTION finance.initialize_defaults_for_user_internal(p_user_
 RETURNS VOID
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, finance
+SET search_path = pg_catalog, finance, core
 VOLATILE
 AS $$
 DECLARE
@@ -116,7 +116,7 @@ BEGIN
         ON CONFLICT (user_id, from_currency, to_currency) DO NOTHING;
 
         -- Mark defaults as inserted
-        UPDATE auth.profiles
+        UPDATE core.profiles
         SET defaults_inserted = TRUE, updated_at = NOW()
         WHERE user_id = p_user_id;
 
@@ -160,7 +160,7 @@ CREATE OR REPLACE FUNCTION finance.initialize_my_defaults_internal()
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, finance, auth
+SET search_path = pg_catalog, finance, core
 VOLATILE
 AS $$
 DECLARE
@@ -179,13 +179,13 @@ BEGIN
     -- Fetch profile row atomically and lock it
     SELECT defaults_inserted
     INTO defaults_flag
-    FROM auth.profiles
+    FROM core.profiles
     WHERE user_id = v_user_id
     FOR UPDATE;
 
     -- If profile does not exist, create it
     IF NOT FOUND THEN
-        INSERT INTO auth.profiles(user_id, defaults_inserted)
+        INSERT INTO core.profiles(user_id, defaults_inserted)
         VALUES (v_user_id, FALSE);
         defaults_flag := FALSE;
     END IF;
@@ -270,7 +270,7 @@ CREATE OR REPLACE FUNCTION util.check_admin_permissions_internal()
 RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, auth
+SET search_path = pg_catalog, core
 STABLE
 AS $$
 DECLARE
@@ -282,10 +282,10 @@ BEGIN
         RETURN FALSE;
     END IF;
 
-    -- Check admin flag from auth.profiles
+    -- Check admin flag from core.profiles
     SELECT p.is_admin
     INTO v_is_admin
-    FROM auth.profiles p
+    FROM core.profiles p
     WHERE p.user_id = v_user_id
       AND p.deleted_at IS NULL;
 
@@ -321,7 +321,7 @@ CREATE OR REPLACE FUNCTION finance.admin_initialize_user_defaults_internal(p_use
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, finance, auth, util
+SET search_path = pg_catalog, finance, core, util
 VOLATILE
 AS $$
 DECLARE
@@ -345,13 +345,13 @@ BEGIN
     -- Fetch profile row atomically and lock it
     SELECT defaults_inserted
     INTO defaults_flag
-    FROM auth.profiles
+    FROM core.profiles
     WHERE user_id = p_user_id
     FOR UPDATE;
 
     -- If profile does not exist, create it
     IF NOT FOUND THEN
-        INSERT INTO auth.profiles(user_id, defaults_inserted)
+        INSERT INTO core.profiles(user_id, defaults_inserted)
         VALUES (p_user_id, FALSE);
         defaults_flag := FALSE;
     END IF;
@@ -539,7 +539,7 @@ CREATE OR REPLACE FUNCTION finance.hard_delete_record_internal(
 RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, finance
+SET search_path = pg_catalog, finance, core
 VOLATILE
 AS $$
 DECLARE
@@ -549,7 +549,7 @@ DECLARE
 BEGIN
     -- Validate table name to prevent SQL injection
     IF table_name NOT IN (
-        'auth.profiles',
+        'core.profiles',
         'finance.accounts', 'finance.transactions', 'finance.expense_categories', 'finance.expense_subcategories',
         'finance.income_sources', 'finance.counterparties', 'finance.transactions_recurring',
         'finance.cash_accounts', 'finance.bank_accounts', 'finance.credit_card_accounts', 'finance.loan_accounts',
