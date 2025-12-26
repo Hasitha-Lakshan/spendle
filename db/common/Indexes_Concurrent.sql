@@ -7,10 +7,10 @@
 -- -------------------------------------------------
 -- 1. Transactions: Index by user and original_amount
 -- Speeds up queries filtering transactions by user and original_amount.
--- Example: SELECT * FROM transactions WHERE user_id = ? AND original_amount > 100;
+-- Example: SELECT * FROM finance.transactions WHERE user_id = ? AND original_amount > 100;
 -- -------------------------------------------------
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_transactions_original_amount_range
-    ON transactions(user_id, original_amount)
+    ON finance.transactions(user_id, original_amount)
     WHERE deleted_at IS NULL;
 
 -- -------------------------------------------------
@@ -18,7 +18,7 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_transactions_original_amount_range
 -- Speeds up queries filtering transactions by user and converted_amount.
 -- -------------------------------------------------
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_transactions_converted_amount_range
-    ON transactions(user_id, converted_amount)
+    ON finance.transactions(user_id, converted_amount)
     WHERE deleted_at IS NULL;
 
 -- -------------------------------------------------
@@ -27,7 +27,7 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_transactions_converted_amount_range
 -- Uses `transaction_month` populated by trigger
 -- -------------------------------------------------
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_transactions_transaction_month
-    ON transactions(user_id, transaction_month)
+    ON finance.transactions(user_id, transaction_month)
     WHERE deleted_at IS NULL;
 
 -- -------------------------------------------------
@@ -35,7 +35,7 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_transactions_transaction_month
 -- Uses `type_amount_jsonb` populated by trigger
 -- -------------------------------------------------
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_transaction_details_jsonb
-    ON transactions USING gin(type_amount_jsonb)
+    ON finance.transactions USING gin(type_amount_jsonb)
     WHERE deleted_at IS NULL;
 
 -- -------------------------------------------------
@@ -43,6 +43,6 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_transaction_details_jsonb
 -- Uses `is_recent` populated by trigger
 -- -------------------------------------------------
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_recent_transactions
-    ON transactions(user_id, transaction_date DESC)
+    ON finance.transactions(user_id, transaction_date DESC)
     WHERE deleted_at IS NULL
     AND is_recent = TRUE;

@@ -23,7 +23,7 @@
 --   - Trigger names are deterministically generated using the first 10 characters of the table name's MD5 hash.
 --   - Ensures consistent timestamp maintenance across multiple tables without manual intervention.
 -- =========================================
-CREATE OR REPLACE FUNCTION public.set_updated_at()
+CREATE OR REPLACE FUNCTION util.set_updated_at()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -40,28 +40,29 @@ BEGIN
 END;
 $$;
 
--- Apply to all tables with updated_at column
+-- Apply to all tables with updated_at column in relevant schemas
 DO $$
 DECLARE
     r record;
     trigger_name text;
 BEGIN
     FOR r IN
-        SELECT c.table_name
+        SELECT table_schema, table_name
         FROM information_schema.columns c
-        WHERE c.table_schema = 'public'
-          AND c.column_name = 'updated_at'
+        WHERE c.column_name = 'updated_at'
+          AND c.table_schema IN ('finance', 'audit', 'api')  -- include all relevant schemas
     LOOP
         -- Deterministic, length-safe trigger name
-        trigger_name := 'trg_updated_at_' || substr(md5(r.table_name), 1, 10);
+        trigger_name := 'trg_updated_at_' || substr(md5(r.table_schema || '.' || r.table_name), 1, 10);
 
         BEGIN
             EXECUTE format(
                 'CREATE TRIGGER %I
-                 BEFORE UPDATE ON public.%I
+                 BEFORE UPDATE ON %I.%I
                  FOR EACH ROW
-                 EXECUTE FUNCTION public.set_updated_at();',
+                 EXECUTE FUNCTION util.set_updated_at();',
                 trigger_name,
+                r.table_schema,
                 r.table_name
             );
         EXCEPTION
@@ -100,17 +101,18 @@ $$;
 --   - Triggers are dynamically created for a predefined list of major tables to enforce soft deletes.
 --   - Ensures consistent soft delete behavior across the schema without modifying application logic.
 -- =========================================
-CREATE OR REPLACE FUNCTION public.enforce_soft_delete()
+CREATE OR REPLACE FUNCTION util.enforce_soft_delete()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, public
+SET search_path = pg_catalog
 VOLATILE
 AS $$
 DECLARE
     pk_col text;
     pk_type text;
     pk_val text;
+    target_schema text := TG_TABLE_SCHEMA;
 BEGIN
     -- Skip soft delete if bypass flag is set
     IF current_setting('app.hard_delete', true) = 'on' THEN
@@ -121,7 +123,7 @@ BEGIN
     SELECT column_name, data_type
     INTO pk_col, pk_type
     FROM information_schema.columns
-    WHERE table_schema = 'public'
+    WHERE table_schema = target_schema
       AND table_name = TG_TABLE_NAME
       AND column_name IN ('id','account_id','transaction_id')
     ORDER BY CASE column_name 
@@ -132,7 +134,7 @@ BEGIN
     LIMIT 1;
 
     IF pk_col IS NULL THEN
-        RAISE EXCEPTION 'Cannot determine primary key column for %', TG_TABLE_NAME;
+        RAISE EXCEPTION 'Cannot determine primary key column for %.%', target_schema, TG_TABLE_NAME;
     END IF;
 
     -- Get primary key value from OLD row dynamically
@@ -140,17 +142,16 @@ BEGIN
     INTO pk_val
     USING OLD;
 
-
     -- Perform soft delete with schema-qualified table
     IF pk_type LIKE '%uuid%' THEN
         EXECUTE format(
-            'UPDATE public.%I SET deleted_at = NOW(), updated_at = NOW() WHERE %I = $1::uuid',
-            TG_TABLE_NAME, pk_col
+            'UPDATE %I.%I SET deleted_at = NOW(), updated_at = NOW() WHERE %I = $1::uuid',
+            target_schema, TG_TABLE_NAME, pk_col
         ) USING pk_val;
     ELSE
         EXECUTE format(
-            'UPDATE public.%I SET deleted_at = NOW(), updated_at = NOW() WHERE %I = $1',
-            TG_TABLE_NAME, pk_col
+            'UPDATE %I.%I SET deleted_at = NOW(), updated_at = NOW() WHERE %I = $1',
+            target_schema, TG_TABLE_NAME, pk_col
         ) USING pk_val;
     END IF;
 
@@ -159,38 +160,40 @@ BEGIN
 END;
 $$;
 
--- Apply to all major tables
+
+-- Apply Soft Delete Triggers to all major tables
 DO $$
 DECLARE
-    tbl text;
+    tbl_rec RECORD;
     trigger_name text;
-    tables_to_protect text[] := ARRAY[
-        'profiles','accounts','transactions','counterparties',
-        'expense_categories','expense_subcategories','income_sources',
-        'transactions_recurring','cash_accounts','bank_accounts',
-        'credit_card_accounts','loan_accounts','investment_accounts',
-        'crypto_accounts','wallet_accounts','receivable_accounts',
-        'transactions_income','transactions_expense','transactions_investment',
-        'transactions_borrow','transactions_lend','transactions_transfer',
-        'transactions_adjustment','exchange_rates'
+    -- List of tables with schema qualification
+    tables_to_protect text[][] := ARRAY[
+        ['finance','profiles'], ['finance','accounts'], ['finance','transactions'], ['finance','counterparties'],
+        ['finance','expense_categories'], ['finance','expense_subcategories'], ['finance','income_sources'], ['finance','transactions_recurring'],
+        ['finance','cash_accounts'], ['finance','bank_accounts'], ['finance','credit_card_accounts'], ['finance','loan_accounts'],
+        ['finance','investment_accounts'], ['finance','crypto_accounts'], ['finance','wallet_accounts'], ['finance','receivable_accounts'],
+        ['finance','transactions_income'], ['finance','transactions_expense'], ['finance','transactions_investment'],
+        ['finance','transactions_borrow'], ['finance','transactions_lend'], ['finance','transactions_transfer'], ['finance','transactions_adjustment'],
+        ['finance','exchange_rates']
     ];
 BEGIN
-    FOREACH tbl IN ARRAY tables_to_protect LOOP
-        -- Deterministic trigger name
-        trigger_name := 'trg_' || tbl || '_no_delete';
+    FOREACH tbl_rec SLICE 1 IN ARRAY tables_to_protect LOOP
+     -- Deterministic trigger name
+        trigger_name := 'trg_' || tbl_rec[2] || '_no_delete';
 
         -- Attempt trigger creation, ignore duplicates
         BEGIN
             EXECUTE format(
                 'CREATE TRIGGER %I
-                 BEFORE DELETE ON public.%I
+                 BEFORE DELETE ON %I.%I
                  FOR EACH ROW
-                 EXECUTE FUNCTION public.enforce_soft_delete();',
-                 trigger_name, tbl
+                 EXECUTE FUNCTION util.enforce_soft_delete();',
+                trigger_name,
+                tbl_rec[1], tbl_rec[2]
             );
         EXCEPTION
             WHEN duplicate_object THEN
-                -- Trigger already exists, ignore
+                -- Trigger already exists, safe to ignore
                 NULL;
         END;
     END LOOP;
@@ -230,17 +233,17 @@ $$;
 --     for compliance and audit purposes.
 --   - Duplicate trigger creation is safely ignored.
 -- =========================================
-CREATE OR REPLACE FUNCTION public.log_admin_changes()
+CREATE OR REPLACE FUNCTION audit.log_admin_changes()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog
+SET search_path = pg_catalog, audit
 VOLATILE
 AS $$
 BEGIN
     -- Log only when admin flag actually changes
     IF OLD.is_admin IS DISTINCT FROM NEW.is_admin THEN
-        INSERT INTO public.audit_logs (
+        INSERT INTO audit.audit_logs (
             user_id,
             action_by,
             table_name,
@@ -252,7 +255,7 @@ BEGIN
         VALUES (
             NEW.user_id,
             current_user,
-            TG_TABLE_NAME,
+            TG_TABLE_SCHEMA || '.' || TG_TABLE_NAME, -- fully qualified table name
             NEW.id,
             'ADMIN_PRIVILEGE_CHANGE',
             jsonb_build_object('is_admin', OLD.is_admin),
@@ -264,12 +267,13 @@ BEGIN
 END;
 $$;
 
+-- Apply Trigger
 DO $$
 BEGIN
     CREATE TRIGGER trg_log_admin_changes
-        AFTER UPDATE ON public.profiles
+        AFTER UPDATE ON auth.profiles
         FOR EACH ROW
-        EXECUTE FUNCTION public.log_admin_changes();
+        EXECUTE FUNCTION audit.log_admin_changes();
 EXCEPTION
     WHEN duplicate_object THEN
         NULL;
@@ -306,11 +310,11 @@ $$;
 --   - Triggers are dynamically created for relevant tables excluding `audit_logs` itself.
 --   - Ensures comprehensive audit logging without modifying individual table logic.
 -- =========================================
-CREATE OR REPLACE FUNCTION public.log_audit()
+CREATE OR REPLACE FUNCTION audit.log_audit()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, public
+SET search_path = pg_catalog, audit, finance
 VOLATILE
 AS $$
 DECLARE
@@ -320,8 +324,8 @@ DECLARE
     row_data hstore;
     system_user CONSTANT UUID := '00000000-0000-0000-0000-000000000000'::uuid;
 BEGIN
-    -- SAFETY GUARD: never audit the audit table itself
-    IF TG_TABLE_NAME = 'audit_logs' THEN
+    -- SAFETY GUARD: never audit the audit_logs table itself
+    IF TG_TABLE_SCHEMA || '.' || TG_TABLE_NAME = 'audit.audit_logs' THEN
         RETURN NULL;
     END IF;
 
@@ -358,7 +362,7 @@ BEGIN
         BEGIN
             SELECT a.user_id
             INTO affected_user_id
-            FROM accounts a
+            FROM finance.accounts a
             WHERE a.id = (row_data -> 'account_id')::uuid;
         EXCEPTION WHEN OTHERS THEN
             affected_user_id := NULL;
@@ -370,7 +374,7 @@ BEGIN
         BEGIN
             SELECT t.user_id
             INTO affected_user_id
-            FROM transactions t
+            FROM finance.transactions t
             WHERE t.id = (row_data -> 'transaction_id')::uuid;
         EXCEPTION WHEN OTHERS THEN
             affected_user_id := NULL;
@@ -382,7 +386,7 @@ BEGIN
         BEGIN
             SELECT ec.user_id
             INTO affected_user_id
-            FROM expense_categories ec
+            FROM finance.expense_categories ec
             WHERE ec.id = (row_data -> 'category_id')::uuid;
         EXCEPTION WHEN OTHERS THEN
             affected_user_id := NULL;
@@ -415,7 +419,7 @@ BEGIN
     -- Insert audit log (never fails outward)
     BEGIN
         IF TG_OP = 'INSERT' THEN
-            INSERT INTO public.audit_logs (
+            INSERT INTO audit.audit_logs (
                 user_id,
                 action_by,
                 table_name,
@@ -425,14 +429,14 @@ BEGIN
             ) VALUES (
                 affected_user_id,
                 actor_user_id,
-                TG_TABLE_NAME,
+                TG_TABLE_SCHEMA || '.' || TG_TABLE_NAME,
                 record_id,
                 'INSERT',
                 row_to_json(NEW)
             );
 
         ELSIF TG_OP = 'UPDATE' THEN
-            INSERT INTO public.audit_logs (
+            INSERT INTO audit.audit_logs (
                 user_id,
                 action_by,
                 table_name,
@@ -443,7 +447,7 @@ BEGIN
             ) VALUES (
                 affected_user_id,
                 actor_user_id,
-                TG_TABLE_NAME,
+                TG_TABLE_SCHEMA || '.' || TG_TABLE_NAME,
                 record_id,
                 'UPDATE',
                 row_to_json(OLD),
@@ -451,7 +455,7 @@ BEGIN
             );
 
         ELSIF TG_OP = 'DELETE' THEN
-            INSERT INTO public.audit_logs (
+            INSERT INTO audit.audit_logs (
                 user_id,
                 action_by,
                 table_name,
@@ -461,7 +465,7 @@ BEGIN
             ) VALUES (
                 affected_user_id,
                 actor_user_id,
-                TG_TABLE_NAME,
+                TG_TABLE_SCHEMA || '.' || TG_TABLE_NAME,
                 record_id,
                 'DELETE',
                 row_to_json(OLD)
@@ -476,26 +480,28 @@ BEGIN
 END;
 $$;
 
--- Create Audit Triggers for All Relevant Tables
+-- Create Audit Triggers for All Enabled Tables
 DO $$
 DECLARE
-    t TEXT;
+    t RECORD;
     trigger_name TEXT;
 BEGIN
     FOR t IN
-        SELECT r.table_name
+        SELECT r.table_schema, r.table_name
         FROM audit_table_registry r
         WHERE r.enabled = TRUE
     LOOP
-        trigger_name := 'trg_audit_' || t;
+        trigger_name := 'trg_audit_' || t.table_schema || '_' || t.table_name;
 
         BEGIN
             EXECUTE format(
                 'CREATE TRIGGER %I
-                 AFTER INSERT OR UPDATE OR DELETE ON public.%I
+                 AFTER INSERT OR UPDATE OR DELETE ON %I.%I
                  FOR EACH ROW
-                 EXECUTE FUNCTION public.log_audit();',
-                trigger_name, t
+                 EXECUTE FUNCTION audit.log_audit();',
+                trigger_name,
+                t.table_schema,
+                t.table_name
             );
         EXCEPTION
             WHEN duplicate_object THEN
