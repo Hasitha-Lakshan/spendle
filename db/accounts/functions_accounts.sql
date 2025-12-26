@@ -219,7 +219,7 @@ BEGIN
     IF NOT EXISTS (
         SELECT 1
         FROM unnest(enum_range(NULL::finance.account_type)) AS t(val)
-        WHERE t.val = v_type_text
+        WHERE t.val::TEXT = v_type_text
     ) THEN
         RAISE EXCEPTION 'Invalid account type: %', v_type_text;
     END IF;
@@ -502,7 +502,7 @@ BEGIN
     IF NOT EXISTS (
         SELECT 1
         FROM unnest(enum_range(NULL::finance.account_type)) AS t(val)
-        WHERE t.val = v_base->>'type'
+        WHERE t.val::TEXT = v_base->>'type'
     ) THEN
         RAISE EXCEPTION 'Invalid account type in database: %', v_base->>'type';
     END IF;
@@ -1390,7 +1390,7 @@ BEGIN
     IF NOT EXISTS (
         SELECT 1
         FROM unnest(enum_range(NULL::finance.account_type)) AS t(val)
-        WHERE t.val = v_type_text
+        WHERE t.val::TEXT = v_type_text
     ) THEN
         RAISE EXCEPTION 'Invalid account type: %', v_type_text;
     END IF;

@@ -57,25 +57,33 @@ BEGIN
             }'::jsonb
         );
 
-        -- Insert default expense category and subcategory
+        -- Insert default expense category
         INSERT INTO finance.expense_categories(user_id, name)
         VALUES (p_user_id, 'General')
-        ON CONFLICT (user_id, name) DO NOTHING;
+        ON CONFLICT (user_id, lower(name)) 
+        WHERE deleted_at IS NULL
+        DO NOTHING;
 
+        -- Get the inserted category id
         SELECT id INTO default_category_id
         FROM finance.expense_categories
         WHERE user_id = p_user_id AND name = 'General';
 
+        -- Insert default expense subcategory
         IF default_category_id IS NOT NULL THEN
             INSERT INTO finance.expense_subcategories(category_id, name)
             VALUES (default_category_id, 'Miscellaneous')
-            ON CONFLICT (category_id, name) DO NOTHING;
+            ON CONFLICT (category_id, lower(name))
+            WHERE deleted_at IS NULL
+            DO NOTHING;
         END IF;
 
         -- Insert default income source
         INSERT INTO finance.income_sources(user_id, name)
         VALUES (p_user_id, 'Salary')
-        ON CONFLICT (user_id, name) DO NOTHING;
+        ON CONFLICT (user_id, lower(name))
+        WHERE deleted_at IS NULL
+        DO NOTHING;
 
         -- Insert default exchange rates
         INSERT INTO finance.exchange_rates(
@@ -113,7 +121,9 @@ BEGIN
             (p_user_id, 'LKR', 'BTC', 0.00000010005, 'CoinGecko', NOW(), NOW()),
             (p_user_id, 'ETH', 'LKR', 655000.00, 'CoinGecko', NOW(), NOW()),
             (p_user_id, 'LKR', 'ETH', 0.000001526, 'CoinGecko', NOW(), NOW())
-        ON CONFLICT (user_id, from_currency, to_currency) DO NOTHING;
+        ON CONFLICT (user_id, from_currency, to_currency)
+        WHERE deleted_at IS NULL
+        DO NOTHING;
 
         -- Mark defaults as inserted
         UPDATE core.profiles
@@ -235,7 +245,7 @@ $$;
 CREATE OR REPLACE FUNCTION public.initialize_my_defaults()
 RETURNS JSONB
 LANGUAGE plpgsql
-SECURITY INVOKER
+SECURITY DEFINER
 SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
