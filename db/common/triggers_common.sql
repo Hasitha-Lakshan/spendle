@@ -332,7 +332,7 @@ CREATE OR REPLACE FUNCTION audit.log_audit()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, audit, finance
+SET search_path = pg_catalog, extensions, audit, finance
 VOLATILE
 AS $$
 DECLARE
