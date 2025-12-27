@@ -902,7 +902,7 @@ DECLARE
     rec RECORD;
     deleted_counter BIGINT;
     failed_counter BIGINT;
-    v_system_uid UUID = '00000000-0000-0000-0000-000000000000'::UUID;
+    v_internal_actor_id UUID = '059fd8b9-f48b-4347-93b7-23d852b48a8a'::UUID;
 BEGIN
     -- Must be run only by cron_admin
     PERFORM util.require_system_role_internal();
@@ -937,8 +937,8 @@ BEGIN
                     new_data
                 )
                 VALUES (
-                    v_system_uid,   -- affected user (cron job context)
-                    v_system_uid,   -- performed by cron user
+                    v_internal_actor_id,   -- affected user (cron job context)
+                    v_internal_actor_id,   -- performed by cron user
                     tbl,
                     rec.id,
                     'DELETE',
