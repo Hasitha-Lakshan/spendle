@@ -265,8 +265,32 @@ SECURITY DEFINER
 SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
+DECLARE
+    v_user_id UUID := auth.uid();
 BEGIN
-    RETURN finance.initialize_my_defaults_internal();
+    IF v_user_id IS NULL THEN
+        RAISE EXCEPTION 'Not authenticated';
+    END IF;
+
+    PERFORM finance.initialize_my_defaults_internal();
+
+    RETURN jsonb_build_object(
+        'success', true,
+        'message', 'Defaults initialized successfully'
+    );
+
+EXCEPTION
+    WHEN unique_violation THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'message', 'Defaults already initialized'
+        );
+
+    WHEN OTHERS THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'message', 'Failed to initialize defaults'
+        );
 END;
 $$;
 
@@ -453,7 +477,32 @@ SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
 BEGIN
-    RETURN finance.admin_initialize_user_defaults_internal(p_user_id);
+    IF p_user_id IS NULL THEN
+        RAISE EXCEPTION 'User id is required';
+    END IF;
+
+    PERFORM finance.admin_initialize_user_defaults_internal(p_user_id);
+
+    RETURN jsonb_build_object(
+        'success', true,
+        'user_id', p_user_id,
+        'message', 'Defaults initialized successfully'
+    );
+
+EXCEPTION
+    WHEN unique_violation THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'user_id', p_user_id,
+            'message', 'Defaults already initialized for this user'
+        );
+
+    WHEN OTHERS THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'user_id', p_user_id,
+            'message', 'Failed to initialize defaults for user'
+        );
 END;
 $$;
 
@@ -824,14 +873,54 @@ CREATE OR REPLACE FUNCTION public.admin_hard_delete_record(
     table_name TEXT,
     record_id UUID
 )
-RETURNS BOOLEAN
+RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY INVOKER
 SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
 BEGIN
-    RETURN finance.admin_hard_delete_record_internal(table_name, record_id);
+    IF table_name IS NULL OR table_name = '' THEN
+        RAISE EXCEPTION 'Table name is required';
+    END IF;
+
+    IF record_id IS NULL THEN
+        RAISE EXCEPTION 'Record id is required';
+    END IF;
+
+    PERFORM finance.admin_hard_delete_record_internal(table_name, record_id);
+
+    RETURN jsonb_build_object(
+        'success', true,
+        'table', table_name,
+        'record_id', record_id,
+        'message', 'Record permanently deleted'
+    );
+
+EXCEPTION
+    WHEN foreign_key_violation THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'table', table_name,
+            'record_id', record_id,
+            'message', 'Record cannot be deleted due to existing references'
+        );
+
+    WHEN undefined_table THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'table', table_name,
+            'record_id', record_id,
+            'message', 'Target table does not exist'
+        );
+
+    WHEN OTHERS THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'table', table_name,
+            'record_id', record_id,
+            'message', 'Failed to delete record'
+        );
 END;
 $$;
 
