@@ -267,29 +267,39 @@ VOLATILE
 AS $$
 DECLARE
     v_user_id UUID := auth.uid();
+    v_result JSONB;
 BEGIN
     IF v_user_id IS NULL THEN
-        RAISE EXCEPTION 'Not authenticated';
+        RETURN jsonb_build_object(
+            'success', false,
+            'message', 'Not authenticated',
+            'data', NULL
+        );
     END IF;
 
-    PERFORM finance.initialize_my_defaults_internal();
+    -- Execute the internal function
+    v_result := finance.initialize_my_defaults_internal();
 
+    -- Always return a consistent success structure
     RETURN jsonb_build_object(
         'success', true,
-        'message', 'Defaults initialized successfully'
+        'message', 'Defaults initialized successfully',
+        'data', v_result
     );
 
 EXCEPTION
     WHEN unique_violation THEN
         RETURN jsonb_build_object(
             'success', false,
-            'message', 'Defaults already initialized'
+            'message', 'Defaults already initialized',
+            'data', NULL
         );
 
     WHEN OTHERS THEN
         RETURN jsonb_build_object(
             'success', false,
-            'message', 'Failed to initialize defaults'
+            'message', 'Failed to initialize defaults',
+            'data', NULL
         );
 END;
 $$;
@@ -476,17 +486,27 @@ SECURITY INVOKER
 SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
+DECLARE
+    v_result JSONB;
 BEGIN
     IF p_user_id IS NULL THEN
-        RAISE EXCEPTION 'User id is required';
+        RETURN jsonb_build_object(
+            'success', false,
+            'user_id', NULL,
+            'message', 'User id is required',
+            'data', NULL
+        );
     END IF;
 
-    PERFORM finance.admin_initialize_user_defaults_internal(p_user_id);
+    -- Execute internal function and capture result
+    v_result := finance.admin_initialize_user_defaults_internal(p_user_id);
 
+    -- Return consistent success JSON
     RETURN jsonb_build_object(
         'success', true,
         'user_id', p_user_id,
-        'message', 'Defaults initialized successfully'
+        'message', 'Defaults initialized successfully',
+        'data', v_result
     );
 
 EXCEPTION
@@ -494,14 +514,16 @@ EXCEPTION
         RETURN jsonb_build_object(
             'success', false,
             'user_id', p_user_id,
-            'message', 'Defaults already initialized for this user'
+            'message', 'Defaults already initialized for this user',
+            'data', NULL
         );
 
     WHEN OTHERS THEN
         RETURN jsonb_build_object(
             'success', false,
             'user_id', p_user_id,
-            'message', 'Failed to initialize defaults for user'
+            'message', 'Failed to initialize defaults for user',
+            'data', NULL
         );
 END;
 $$;
@@ -879,22 +901,40 @@ SECURITY INVOKER
 SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
+DECLARE
+    v_result BOOLEAN;
 BEGIN
+    -- Input validation
     IF table_name IS NULL OR table_name = '' THEN
-        RAISE EXCEPTION 'Table name is required';
+        RETURN jsonb_build_object(
+            'success', false,
+            'table', NULL,
+            'record_id', NULL,
+            'message', 'Table name is required',
+            'data', NULL
+        );
     END IF;
 
     IF record_id IS NULL THEN
-        RAISE EXCEPTION 'Record id is required';
+        RETURN jsonb_build_object(
+            'success', false,
+            'table', table_name,
+            'record_id', NULL,
+            'message', 'Record id is required',
+            'data', NULL
+        );
     END IF;
 
-    PERFORM finance.admin_hard_delete_record_internal(table_name, record_id);
+    -- Execute the internal function and capture result
+    v_result := finance.admin_hard_delete_record_internal(table_name, record_id);
 
+    -- Always return consistent JSON
     RETURN jsonb_build_object(
         'success', true,
         'table', table_name,
         'record_id', record_id,
-        'message', 'Record permanently deleted'
+        'message', 'Record permanently deleted',
+        'data', v_result
     );
 
 EXCEPTION
@@ -903,7 +943,8 @@ EXCEPTION
             'success', false,
             'table', table_name,
             'record_id', record_id,
-            'message', 'Record cannot be deleted due to existing references'
+            'message', 'Record cannot be deleted due to existing references',
+            'data', NULL
         );
 
     WHEN undefined_table THEN
@@ -911,7 +952,8 @@ EXCEPTION
             'success', false,
             'table', table_name,
             'record_id', record_id,
-            'message', 'Target table does not exist'
+            'message', 'Target table does not exist',
+            'data', NULL
         );
 
     WHEN OTHERS THEN
@@ -919,7 +961,8 @@ EXCEPTION
             'success', false,
             'table', table_name,
             'record_id', record_id,
-            'message', 'Failed to delete record'
+            'message', 'Failed to delete record',
+            'data', NULL
         );
 END;
 $$;
