@@ -177,6 +177,8 @@ DECLARE
     v_user_id UUID := auth.uid();
     defaults_flag BOOLEAN;
     did_insert BOOLEAN := FALSE;
+    is_soft_deleted BOOLEAN := FALSE;
+    result_message TEXT;
 BEGIN
     -- Enable RLS for this function
     PERFORM set_config('row_security', 'on', true);
@@ -186,12 +188,22 @@ BEGIN
         RAISE EXCEPTION 'Unauthenticated call';
     END IF;
 
-    -- Fetch profile row atomically and lock it
-    SELECT defaults_inserted
-    INTO defaults_flag
+    -- Check if profile exists and lock it
+    SELECT defaults_inserted, deleted_at IS NOT NULL
+    INTO defaults_flag, is_soft_deleted
     FROM core.profiles
     WHERE user_id = v_user_id
     FOR UPDATE;
+
+    -- Handle soft-deleted profile
+    IF FOUND AND is_soft_deleted THEN
+        result_message := 'Profile is soft-deleted; defaults not initialized';
+        RETURN jsonb_build_object(
+            'user_id', v_user_id,
+            'defaults_inserted', FALSE,
+            'message', result_message
+        );
+    END IF;
 
     -- If profile does not exist, create it
     IF NOT FOUND THEN
@@ -205,12 +217,16 @@ BEGIN
         PERFORM finance.initialize_defaults_for_user_internal(v_user_id);
         -- Mark that we inserted defaults in this call
         did_insert := TRUE;
+        result_message := 'Defaults inserted successfully';
+    ELSE
+        result_message := 'Defaults were already inserted';
     END IF;
 
     -- Return JSON to Supabase
     RETURN jsonb_build_object(
         'user_id', v_user_id,
-        'defaults_inserted', did_insert
+        'defaults_inserted', did_insert,
+        'message', result_message
     );
 END;
 $$;
@@ -338,6 +354,8 @@ DECLARE
     v_admin_id UUID := auth.uid();
     defaults_flag BOOLEAN;
     did_insert BOOLEAN := FALSE;
+    is_soft_deleted BOOLEAN := FALSE;
+    result_message TEXT;
 BEGIN
     -- Enable RLS for this function
     PERFORM set_config('row_security', 'on', true);
@@ -353,11 +371,21 @@ BEGIN
     END IF;
 
     -- Fetch profile row atomically and lock it
-    SELECT defaults_inserted
-    INTO defaults_flag
+    SELECT defaults_inserted, deleted_at IS NOT NULL
+    INTO defaults_flag, is_soft_deleted
     FROM core.profiles
     WHERE user_id = p_user_id
     FOR UPDATE;
+
+    -- Handle soft-deleted profile
+    IF FOUND AND is_soft_deleted THEN
+        result_message := 'Profile is soft-deleted; defaults not initialized';
+        RETURN jsonb_build_object(
+            'user_id', p_user_id,
+            'defaults_inserted', FALSE,
+            'message', result_message
+        );
+    END IF;
 
     -- If profile does not exist, create it
     IF NOT FOUND THEN
@@ -370,12 +398,16 @@ BEGIN
     IF NOT defaults_flag THEN
         PERFORM finance.initialize_defaults_for_user_internal(p_user_id);
         did_insert := TRUE;
+        result_message := 'Defaults inserted successfully';
+    ELSE
+        result_message := 'Defaults were already inserted';
     END IF;
 
     -- Return JSON to Supabase
     RETURN jsonb_build_object(
         'user_id', p_user_id,
-        'defaults_inserted', did_insert
+        'defaults_inserted', did_insert,
+        'message', result_message
     );
 END;
 $$;
