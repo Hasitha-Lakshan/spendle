@@ -259,7 +259,8 @@ BEGIN
                 v_balance,
                 COALESCE(p_details->>'status', 'active'),
                 COALESCE(p_details->>'notes', 'Default cash account')
-            );
+            )
+            ON CONFLICT (account_id) DO NOTHING;
 
         WHEN 'bank' THEN
             INSERT INTO finance.bank_accounts(account_id, bank_name, account_no, branch, account_holder_name, balance, interest_rate, status, notes)
@@ -273,7 +274,8 @@ BEGIN
                 v_interest_rate,
                 COALESCE(p_details->>'status', 'active'),
                 COALESCE(p_details->>'notes', 'Default bank account')
-            );
+            )
+            ON CONFLICT (account_id) DO NOTHING;
 
         WHEN 'credit_card' THEN
             INSERT INTO finance.credit_card_accounts(account_id, card_number, card_type, credit_limit, current_balance, billing_cycle, interest_rate, status, notes)
@@ -287,7 +289,8 @@ BEGIN
                 v_interest_rate,
                 COALESCE(p_details->>'status', 'active'),
                 COALESCE(p_details->>'notes', 'Default credit card')
-            );
+            )
+            ON CONFLICT (account_id) DO NOTHING;
 
         WHEN 'loan' THEN
             -- Ensure counterparty_id is mandatory
@@ -316,7 +319,8 @@ BEGIN
                 COALESCE(p_details->>'notes', 'Default loan account'),
                 v_counterparty_id,
                 p_details->>'collateral'
-            );
+            )
+            ON CONFLICT (account_id) DO NOTHING;
 
         WHEN 'investment' THEN
             INSERT INTO finance.investment_accounts(account_id, investment_type, institution_name, account_no, portfolio_value, status, notes)
@@ -328,7 +332,8 @@ BEGIN
                 v_portfolio_value,
                 COALESCE(p_details->>'status', 'active'),
                 COALESCE(p_details->>'notes', 'Default investment account')
-            );
+            )
+            ON CONFLICT (account_id) DO NOTHING;
 
         WHEN 'crypto' THEN
             INSERT INTO finance.crypto_accounts(account_id, crypto_wallet_address, exchange_name, balance, status, notes)
@@ -339,7 +344,8 @@ BEGIN
                 v_balance,
                 COALESCE(p_details->>'status', 'active'),
                 COALESCE(p_details->>'notes', 'Default crypto account')
-            );
+            )
+            ON CONFLICT (account_id) DO NOTHING;
 
         WHEN 'wallet' THEN
             INSERT INTO finance.wallet_accounts(account_id, wallet_name, provider, balance, status, notes)
@@ -350,7 +356,8 @@ BEGIN
                 v_balance,
                 COALESCE(p_details->>'status', 'active'),
                 COALESCE(p_details->>'notes', 'Default wallet account')
-            );
+            )
+            ON CONFLICT (account_id) DO NOTHING;
 
         WHEN 'receivable' THEN
             -- Ensure counterparty_id is mandatory
@@ -375,7 +382,8 @@ BEGIN
                 COALESCE((p_details->>'due_date')::DATE, CURRENT_DATE),
                 COALESCE(p_details->>'status', 'pending'),
                 COALESCE(p_details->>'notes', 'Default receivable account')
-            );
+            )
+            ON CONFLICT (account_id) DO NOTHING;
 
         ELSE
             RAISE EXCEPTION 'Unknown account type: %', p_type;
@@ -469,13 +477,13 @@ BEGIN
     -- Validate ownership
     IF NOT finance.validate_account_ownership_internal(p_account_id) THEN
         RAISE EXCEPTION 'Permission denied: cannot update this account'
-        USING ERRCODE = '42501';
+            USING ERRCODE = '42501';
     END IF;
 
     -- Enforce rate limit
     IF NOT api.check_rate_limit_internal('update_account', v_max_requests, v_window_minutes) THEN
         RAISE EXCEPTION 'Rate limit exceeded: max % requests per % minutes',
-        v_max_requests, v_window_minutes;
+            v_max_requests, v_window_minutes;
     END IF;
 
     -- Fetch base account info
@@ -491,8 +499,8 @@ BEGIN
     INTO v_base
     FROM finance.accounts a
     WHERE a.id = p_account_id
-        AND a.user_id = v_user_id
-        AND a.deleted_at IS NULL;
+      AND a.user_id = v_user_id
+      AND a.deleted_at IS NULL;
 
     IF v_base IS NULL THEN
         RAISE EXCEPTION 'Account not found or access denied';
@@ -514,7 +522,8 @@ BEGIN
         BEGIN
             v_counterparty_id := (p_update_data->>'counterparty_id')::UUID;
         EXCEPTION WHEN invalid_text_representation THEN
-            RAISE EXCEPTION 'Invalid counterparty_id: % is not a valid UUID', p_update_data->>'counterparty_id';
+            RAISE EXCEPTION 'Invalid counterparty_id: % is not a valid UUID',
+                p_update_data->>'counterparty_id';
         END;
     END IF;
 
@@ -535,7 +544,8 @@ BEGIN
         account_name = COALESCE(p_update_data->>'account_name', account_name),
         currency = COALESCE(p_update_data->>'currency', currency),
         updated_at = NOW()
-    WHERE id = p_account_id AND deleted_at IS NULL;
+    WHERE id = p_account_id
+        AND deleted_at IS NULL;
 
     -- Update specialized tables
     CASE v_account_type
@@ -615,9 +625,14 @@ BEGIN
             -- Validate counterparty_id
             IF v_counterparty_id IS NOT NULL THEN
                 IF NOT EXISTS (
-                    SELECT 1 FROM finance.counterparties WHERE id = v_counterparty_id AND user_id = v_user_id
+                    SELECT 1
+                    FROM finance.counterparties
+                    WHERE id = v_counterparty_id
+                      AND user_id = v_user_id
                 ) THEN
-                    RAISE EXCEPTION 'Invalid counterparty_id: % or does not belong to current user', v_counterparty_id;
+                    RAISE EXCEPTION
+                        'Invalid counterparty_id: % or does not belong to current user',
+                        v_counterparty_id;
                 END IF;
             END IF;
 
@@ -640,9 +655,14 @@ BEGIN
             -- Validate counterparty_id
             IF v_counterparty_id IS NOT NULL THEN
                 IF NOT EXISTS (
-                    SELECT 1 FROM finance.counterparties WHERE id = v_counterparty_id AND user_id = v_user_id
+                    SELECT 1
+                    FROM finance.counterparties
+                    WHERE id = v_counterparty_id
+                      AND user_id = v_user_id
                 ) THEN
-                    RAISE EXCEPTION 'Invalid counterparty_id: % or does not belong to current user', v_counterparty_id;
+                    RAISE EXCEPTION
+                        'Invalid counterparty_id: % or does not belong to current user',
+                        v_counterparty_id;
                 END IF;
             END IF;
 
@@ -1015,26 +1035,69 @@ $$;
 -- =========================================
 CREATE OR REPLACE FUNCTION public.create_account(
     p_user_id UUID,
-    p_account_name text,
+    p_account_name TEXT,
     p_type finance.account_type,
-    p_currency text,
-    p_details jsonb
+    p_currency TEXT,
+    p_details JSONB
 )
-RETURNS uuid
+RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY INVOKER
 SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
+DECLARE
+    v_account_id UUID;
 BEGIN
-    -- Call internal function to create account with details
-    RETURN finance.create_account_internal(
+    -- Basic input validation
+    IF p_user_id IS NULL THEN
+        RAISE EXCEPTION 'User id is required';
+    END IF;
+
+    IF p_account_name IS NULL OR trim(p_account_name) = '' THEN
+        RAISE EXCEPTION 'Account name is required';
+    END IF;
+
+    IF p_currency IS NULL OR trim(p_currency) = '' THEN
+        RAISE EXCEPTION 'Currency is required';
+    END IF;
+
+    -- Call internal function
+    v_account_id := finance.create_account_internal(
         p_user_id,
         p_account_name,
         p_type,
         p_currency,
         p_details
     );
+
+    RETURN jsonb_build_object(
+        'success', true,
+        'account_id', v_account_id,
+        'message', 'Account created successfully'
+    );
+
+EXCEPTION
+    WHEN unique_violation THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'account_id', NULL,
+            'message', 'An account with the same name and type already exists'
+        );
+
+    WHEN check_violation OR foreign_key_violation THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'account_id', NULL,
+            'message', 'Invalid account data'
+        );
+
+    WHEN OTHERS THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'account_id', NULL,
+            'message', 'Failed to create account'
+        );
 END;
 $$;
 
@@ -1078,9 +1141,57 @@ SECURITY INVOKER
 SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
+DECLARE
+    v_result JSONB;
 BEGIN
-    -- Call internal function to update account with provided JSONB data
-    RETURN finance.update_account_internal(p_account_id, p_update_data);
+    -- Basic input validation
+    IF p_account_id IS NULL THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'account_id', NULL,
+            'message', 'Account ID is required'
+        );
+    END IF;
+
+    IF p_update_data IS NULL OR jsonb_typeof(p_update_data) <> 'object' THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'account_id', p_account_id,
+            'message', 'Update data must be a valid JSON object'
+        );
+    END IF;
+
+    -- Call internal function
+    v_result := finance.update_account_internal(p_account_id, p_update_data);
+
+    RETURN jsonb_build_object(
+        'success', true,
+        'account_id', p_account_id,
+        'updated_data', v_result,
+        'message', 'Account updated successfully'
+    );
+
+EXCEPTION
+    WHEN unique_violation THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'account_id', p_account_id,
+            'message', 'Account with the same name already exists'
+        );
+
+    WHEN check_violation OR foreign_key_violation THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'account_id', p_account_id,
+            'message', 'Invalid update data'
+        );
+
+    WHEN OTHERS THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'account_id', p_account_id,
+            'message', 'Failed to update account'
+        );
 END;
 $$;
 
@@ -1109,16 +1220,50 @@ $$;
 --   - Acts as a safe, public-facing interface to the internal function.
 --   - No direct validation or RLS handling occurs here; all logic is delegated.
 -- =========================================
-CREATE OR REPLACE FUNCTION public.soft_delete_account(p_account_id UUID)
-RETURNS BOOLEAN
+CREATE OR REPLACE FUNCTION public.soft_delete_account(
+    p_account_id UUID
+)
+RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY INVOKER
 SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
+DECLARE
+    v_success BOOLEAN;
 BEGIN
-    -- All checks happen inside the internal definer function
-    RETURN finance.soft_delete_account_internal(p_account_id);
+    IF p_account_id IS NULL THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'account_id', NULL,
+            'message', 'Account ID is required'
+        );
+    END IF;
+
+    -- Call internal function
+    v_success := finance.soft_delete_account_internal(p_account_id);
+
+    IF v_success THEN
+        RETURN jsonb_build_object(
+            'success', true,
+            'account_id', p_account_id,
+            'message', 'Account soft-deleted successfully'
+        );
+    ELSE
+        RETURN jsonb_build_object(
+            'success', false,
+            'account_id', p_account_id,
+            'message', 'Account could not be soft-deleted'
+        );
+    END IF;
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'account_id', p_account_id,
+            'message', 'Failed to soft-delete account'
+        );
 END;
 $$;
 
@@ -1148,16 +1293,50 @@ $$;
 --   - All authentication, permission validation, and RLS handling are
 --     performed inside the internal function.
 -- =========================================
-CREATE OR REPLACE FUNCTION public.admin_soft_delete_account(p_account_id UUID)
-RETURNS BOOLEAN
+CREATE OR REPLACE FUNCTION public.admin_soft_delete_account(
+    p_account_id UUID
+)
+RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY INVOKER
 SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
+DECLARE
+    v_success BOOLEAN;
 BEGIN
-    -- All checks happen inside the internal definer function
-    RETURN finance.admin_soft_delete_account_internal(p_account_id);
+    IF p_account_id IS NULL THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'account_id', NULL,
+            'message', 'Account ID is required'
+        );
+    END IF;
+
+    -- Call internal function
+    v_success := finance.admin_soft_delete_account_internal(p_account_id);
+
+    IF v_success THEN
+        RETURN jsonb_build_object(
+            'success', true,
+            'account_id', p_account_id,
+            'message', 'Account soft-deleted successfully by admin'
+        );
+    ELSE
+        RETURN jsonb_build_object(
+            'success', false,
+            'account_id', p_account_id,
+            'message', 'Account could not be soft-deleted by admin'
+        );
+    END IF;
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'account_id', p_account_id,
+            'message', 'Failed to soft-delete account'
+        );
 END;
 $$;
 
@@ -1189,16 +1368,50 @@ $$;
 --   - Completes the account lifecycle by providing controlled access to
 --     permanent data removal.
 -- =========================================
-CREATE OR REPLACE FUNCTION public.admin_hard_delete_account(p_account_id UUID)
-RETURNS BOOLEAN
+CREATE OR REPLACE FUNCTION public.admin_hard_delete_account(
+    p_account_id UUID
+)
+RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY INVOKER
 SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
+DECLARE
+    v_success BOOLEAN;
 BEGIN
-    -- Call internal definer function to perform hard delete
-    RETURN finance.admin_hard_delete_account_internal(p_account_id);
+    IF p_account_id IS NULL THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'account_id', NULL,
+            'message', 'Account ID is required'
+        );
+    END IF;
+
+    -- Call internal function
+    v_success := finance.admin_hard_delete_account_internal(p_account_id);
+
+    IF v_success THEN
+        RETURN jsonb_build_object(
+            'success', true,
+            'account_id', p_account_id,
+            'message', 'Account hard-deleted successfully by admin'
+        );
+    ELSE
+        RETURN jsonb_build_object(
+            'success', false,
+            'account_id', p_account_id,
+            'message', 'Account could not be hard-deleted by admin'
+        );
+    END IF;
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'account_id', p_account_id,
+            'message', 'Failed to hard-delete account'
+        );
 END;
 $$;
 
@@ -1630,22 +1843,31 @@ $$;
 --     inside the internal function.
 -- =========================================
 CREATE OR REPLACE FUNCTION public.get_all_accounts()
-RETURNS TABLE(
-    account_id UUID,
-    account_name VARCHAR,
-    account_type finance.account_type,
-    currency VARCHAR,
-    balance DECIMAL,
-    status VARCHAR
-)
+RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY INVOKER
 SET search_path = pg_catalog, finance
 STABLE
 AS $$
+DECLARE
+    v_accounts JSONB;
 BEGIN
-    RETURN QUERY
-    SELECT * FROM finance.get_all_accounts_internal();
+    -- Fetch all accounts via internal function
+    BEGIN
+        v_accounts := to_jsonb(finance.get_all_accounts_internal());
+        RETURN jsonb_build_object(
+            'success', true,
+            'accounts', v_accounts,
+            'message', 'Fetched all accounts successfully'
+        );
+    EXCEPTION
+        WHEN OTHERS THEN
+            RETURN jsonb_build_object(
+                'success', false,
+                'accounts', '[]'::jsonb,
+                'message', 'Failed to fetch accounts'
+            );
+    END;
 END;
 $$;
 
@@ -1684,8 +1906,24 @@ SECURITY INVOKER
 SET search_path = pg_catalog, finance
 STABLE
 AS $$
+DECLARE
+    v_account JSONB;
 BEGIN
-    RETURN finance.get_account_details_internal(p_account_id);
+    BEGIN
+        v_account := finance.get_account_details_internal(p_account_id);
+        RETURN jsonb_build_object(
+            'success', true,
+            'account', v_account,
+            'message', 'Fetched account details successfully'
+        );
+    EXCEPTION
+        WHEN OTHERS THEN
+            RETURN jsonb_build_object(
+                'success', false,
+                'account', '{}'::jsonb,
+                'message', 'Failed to fetch account details'
+            );
+    END;
 END;
 $$;
 
@@ -1723,8 +1961,24 @@ SECURITY INVOKER
 SET search_path = pg_catalog, finance
 STABLE
 AS $$
+DECLARE
+    v_accounts JSONB;
 BEGIN
-    RETURN finance.get_accounts_by_type_internal(p_account_type);
+    BEGIN
+        v_accounts := finance.get_accounts_by_type_internal(p_account_type);
+        RETURN jsonb_build_object(
+            'success', true,
+            'accounts', v_accounts,
+            'message', 'Fetched accounts successfully'
+        );
+    EXCEPTION
+        WHEN OTHERS THEN
+            RETURN jsonb_build_object(
+                'success', false,
+                'accounts', '[]'::jsonb,
+                'message', 'Failed to fetch accounts by type'
+            );
+    END;
 END;
 $$;
 
@@ -1733,13 +1987,13 @@ $$;
 -- Grant Permissions
 -- ================================
 GRANT EXECUTE ON FUNCTION public.create_account(UUID, text, finance.account_type, text, JSONB) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.get_all_accounts() TO authenticated;
-GRANT EXECUTE ON FUNCTION public.get_account_details(UUID) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.get_accounts_by_type(finance.account_type) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.update_account(UUID, JSONB) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.soft_delete_account(UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.admin_soft_delete_account(UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.admin_hard_delete_account(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_all_accounts() TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_account_details(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_accounts_by_type(finance.account_type) TO authenticated;
 
 
 -- ================================
