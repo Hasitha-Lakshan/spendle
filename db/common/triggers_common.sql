@@ -142,12 +142,22 @@ BEGIN
     INTO pk_val
     USING OLD;
 
-    -- Perform soft delete with schema-qualified table
+    -- Skip if pk_val is NULL
+    IF pk_val IS NULL THEN
+        RETURN OLD;
+    END IF;
+
+    -- Perform soft delete with safe UUID handling
     IF pk_type LIKE '%uuid%' THEN
-        EXECUTE format(
-            'UPDATE %I.%I SET deleted_at = NOW(), updated_at = NOW() WHERE %I = $1::uuid',
-            target_schema, TG_TABLE_NAME, pk_col
-        ) USING pk_val;
+        BEGIN
+            EXECUTE format(
+                'UPDATE %I.%I SET deleted_at = NOW(), updated_at = NOW() WHERE %I = $1::uuid',
+                target_schema, TG_TABLE_NAME, pk_col
+            ) USING pk_val;
+        EXCEPTION WHEN invalid_text_representation THEN
+            -- skip rows with invalid UUIDs instead of failing
+            RETURN OLD;
+        END;
     ELSE
         EXECUTE format(
             'UPDATE %I.%I SET deleted_at = NOW(), updated_at = NOW() WHERE %I = $1',
@@ -258,8 +268,26 @@ SECURITY DEFINER
 SET search_path = pg_catalog, audit
 VOLATILE
 AS $$
+DECLARE
+    actor_user_id UUID;
+    system_user_text CONSTANT TEXT := '059fd8b9-f48b-4347-93b7-23d852b48a8a';
+    session_setting TEXT;
+    final_id_text TEXT;
 BEGIN
-    -- Log only when admin flag actually changes
+    -- 1. Get the session setting as text
+    session_setting := current_setting('request.jwt.claim.sub', true);
+
+    -- 2. Determine which string to use (Regex check)
+    IF session_setting IS NOT NULL AND session_setting ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN
+        final_id_text := session_setting;
+    ELSE
+        final_id_text := system_user_text;
+    END IF;
+
+    -- 3. Perform a single cast to the UUID variable
+    actor_user_id := final_id_text::uuid;
+
+    -- 4. Only log if is_admin changes
     IF OLD.is_admin IS DISTINCT FROM NEW.is_admin THEN
         INSERT INTO audit.audit_logs (
             user_id,
@@ -272,7 +300,7 @@ BEGIN
         )
         VALUES (
             NEW.user_id,
-            current_user,
+            actor_user_id,
             TG_TABLE_SCHEMA || '.' || TG_TABLE_NAME, -- fully qualified table name
             NEW.id,
             'ADMIN_PRIVILEGE_CHANGE',
@@ -340,7 +368,7 @@ DECLARE
     actor_user_id UUID;
     record_id UUID;
     row_data hstore;
-    system_user CONSTANT UUID := '00000000-0000-0000-0000-000000000000'::uuid;
+    system_user CONSTANT UUID := '059fd8b9-f48b-4347-93b7-23d852b48a8a'::uuid;
 BEGIN
     -- SAFETY GUARD: never audit the audit_logs table itself
     IF TG_TABLE_SCHEMA || '.' || TG_TABLE_NAME = 'audit.audit_logs' THEN
@@ -351,12 +379,8 @@ BEGIN
     BEGIN
         actor_user_id := auth.uid();
     EXCEPTION WHEN OTHERS THEN
-        actor_user_id := NULL;
-    END;
-
-    IF actor_user_id IS NULL THEN
         actor_user_id := system_user;
-    END IF;
+    END;
 
     -- Normalize row data for dynamic access
     IF TG_OP = 'DELETE' THEN
@@ -419,17 +443,32 @@ BEGIN
     -- Resolve record_id (never NULL)
     record_id := NULL;
 
+    -- Try 'id' field
     BEGIN
-        record_id := COALESCE(
-            (row_data -> 'id')::uuid,
-            (row_data -> 'account_id')::uuid,
-            (row_data -> 'transaction_id')::uuid
-        );
+        record_id := (row_data -> 'id')::uuid;
     EXCEPTION WHEN OTHERS THEN
         record_id := NULL;
     END;
 
-    -- Absolute fallback: deterministic UUID derived from table + time
+    -- Try 'account_id' field
+    IF record_id IS NULL AND row_data ? 'account_id' THEN
+        BEGIN
+            record_id := (row_data -> 'account_id')::uuid;
+        EXCEPTION WHEN OTHERS THEN
+            record_id := NULL;
+        END;
+    END IF;
+
+    -- Try 'transaction_id' field
+    IF record_id IS NULL AND row_data ? 'transaction_id' THEN
+        BEGIN
+            record_id := (row_data -> 'transaction_id')::uuid;
+        EXCEPTION WHEN OTHERS THEN
+            record_id := NULL;
+        END;
+    END IF;
+
+    -- Absolute fallback: deterministic UUID
     IF record_id IS NULL THEN
         record_id := gen_random_uuid();
     END IF;
