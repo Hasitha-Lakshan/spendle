@@ -229,105 +229,7 @@ END;
 $$;
 
 -- =========================================
--- 03. Function: log_admin_changes
--- =========================================
--- Purpose:
---   Logs changes to the `is_admin` flag in the `profiles` table for audit and
---   traceability purposes, capturing when a user's administrative privileges
---   are granted or revoked.
---
--- Behavior:
---   - Trigger fires AFTER UPDATE on the `profiles` table.
---   - Compares OLD and NEW row values; logs only if the `is_admin` flag has changed.
---   - Inserts a record into `audit_logs` containing:
---       * user_id of the affected user
---       * action_by (the current database user executing the change)
---       * table name and record ID
---       * action type ('ADMIN_PRIVILEGE_CHANGE')
---       * old and new values of `is_admin` as JSONB
---
--- Parameters:
---   OLD - Previous row version (before update).
---   NEW - New row version (after update).
---   TG_TABLE_NAME - Name of the table that fired the trigger.
---
--- Returns:
---   NEW - The updated row is returned to complete the update operation.
---
--- Notes:
---   - SECURITY DEFINER allows execution even under restrictive row-level security policies.
---   - Trigger is specifically created for the `profiles` table.
---   - Ensures that changes to administrative privileges are consistently recorded
---     for compliance and audit purposes.
---   - Duplicate trigger creation is safely ignored.
--- =========================================
-CREATE OR REPLACE FUNCTION audit.log_admin_changes()
-RETURNS TRIGGER
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = pg_catalog, audit
-VOLATILE
-AS $$
-DECLARE
-    actor_user_id UUID;
-    system_user_text CONSTANT TEXT := '059fd8b9-f48b-4347-93b7-23d852b48a8a';
-    session_setting TEXT;
-    final_id_text TEXT;
-BEGIN
-    -- 1. Get the session setting as text
-    session_setting := current_setting('request.jwt.claim.sub', true);
-
-    -- 2. Determine which string to use (Regex check)
-    IF session_setting IS NOT NULL AND session_setting ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN
-        final_id_text := session_setting;
-    ELSE
-        final_id_text := system_user_text;
-    END IF;
-
-    -- 3. Perform a single cast to the UUID variable
-    actor_user_id := final_id_text::uuid;
-
-    -- 4. Only log if is_admin changes
-    IF OLD.is_admin IS DISTINCT FROM NEW.is_admin THEN
-        INSERT INTO audit.audit_logs (
-            user_id,
-            action_by,
-            table_name,
-            record_id,
-            action,
-            old_data,
-            new_data
-        )
-        VALUES (
-            NEW.user_id,
-            actor_user_id,
-            TG_TABLE_SCHEMA || '.' || TG_TABLE_NAME, -- fully qualified table name
-            NEW.id,
-            'ADMIN_PRIVILEGE_CHANGE',
-            jsonb_build_object('is_admin', OLD.is_admin),
-            jsonb_build_object('is_admin', NEW.is_admin)
-        );
-    END IF;
-
-    RETURN NEW;
-END;
-$$;
-
--- Apply Trigger
-DO $$
-BEGIN
-    CREATE TRIGGER trg_log_admin_changes
-        AFTER UPDATE ON core.profiles
-        FOR EACH ROW
-        EXECUTE FUNCTION audit.log_admin_changes();
-EXCEPTION
-    WHEN duplicate_object THEN
-        NULL;
-END;
-$$;
-
--- =========================================
--- 04. Function: log_audit
+-- 03. Function: log_audit
 -- =========================================
 -- Purpose:
 --   Logs all changes (INSERT, UPDATE, DELETE) to specified tables into the
@@ -364,43 +266,75 @@ SET search_path = pg_catalog, extensions, audit, finance
 VOLATILE
 AS $$
 DECLARE
+    internal_actor_id CONSTANT UUID := '059fd8b9-f48b-4347-93b7-23d852b48a8a'::uuid;
     affected_user_id UUID;
     actor_user_id UUID;
     record_id UUID;
     row_data hstore;
-    system_user CONSTANT UUID := '059fd8b9-f48b-4347-93b7-23d852b48a8a'::uuid;
+    session_setting TEXT;
+    action_label TEXT;
+    extracted_uuid UUID;
 BEGIN
-    -- SAFETY GUARD: never audit the audit_logs table itself
+    -- 1. SAFETY GUARD: never audit the audit_logs table itself
     IF TG_TABLE_SCHEMA || '.' || TG_TABLE_NAME = 'audit.audit_logs' THEN
         RETURN NULL;
     END IF;
 
-    -- Determine actor (who performed the action)
-    BEGIN
-        actor_user_id := auth.uid();
-    EXCEPTION WHEN OTHERS THEN
-        actor_user_id := system_user;
-    END;
+    -- 2. DETERMINE ACTOR (Who performed the action)
+    session_setting := current_setting('request.jwt.claim.sub', true);
+    
+    -- Handle the case where session_setting is non-UUID
+    IF session_setting IS NOT NULL THEN
+        BEGIN
+            -- Try to convert to UUID
+            extracted_uuid := session_setting::uuid;
+        EXCEPTION WHEN OTHERS THEN
+            -- If conversion fails, set to NULL
+            extracted_uuid := NULL;
+        END;
+    ELSE
+        extracted_uuid := NULL;
+    END IF;
+    
+    -- Assign actor_user_id
+    IF extracted_uuid IS NOT NULL THEN
+        actor_user_id := extracted_uuid;
+    ELSE
+        -- Fallback to internal_actor_id for invalid UUIDs
+        actor_user_id := internal_actor_id;
+    END IF;
 
-    -- Normalize row data for dynamic access
+    -- 3. DETERMINE ACTION LABEL
+    action_label := TG_OP; -- Default: 'INSERT', 'UPDATE', 'DELETE'
+    
+    -- Special case for profiles table admin changes
+    IF TG_OP = 'UPDATE' AND TG_TABLE_NAME = 'profiles' THEN
+        IF (OLD.is_admin IS DISTINCT FROM NEW.is_admin) THEN
+            action_label := 'ADMIN_PRIVILEGE_CHANGE';
+        END IF;
+    END IF;
+
+    -- 4. NORMALIZE DATA FOR DYNAMIC ACCESS
     IF TG_OP = 'DELETE' THEN
         row_data := hstore(OLD);
     ELSE
         row_data := hstore(NEW);
     END IF;
 
-    -- Resolve affected user
+    -- 5. RESOLVE AFFECTED USER (The "Owner" of the data)
     affected_user_id := NULL;
 
-    -- 1. Direct user_id
-    BEGIN
-        affected_user_id := (row_data -> 'user_id')::uuid;
-    EXCEPTION WHEN OTHERS THEN
-        affected_user_id := NULL;
-    END;
+    -- a. Direct user_id - use safe casting
+    IF row_data ? 'user_id' AND row_data -> 'user_id' IS NOT NULL THEN
+        BEGIN
+            affected_user_id := (row_data -> 'user_id')::uuid;
+        EXCEPTION WHEN OTHERS THEN
+            affected_user_id := NULL;
+        END;
+    END IF;
 
-    -- 2. Via account_id
-    IF affected_user_id IS NULL AND row_data ? 'account_id' THEN
+    -- b. Via account_id
+    IF affected_user_id IS NULL AND row_data ? 'account_id' AND row_data -> 'account_id' IS NOT NULL THEN
         BEGIN
             SELECT a.user_id
             INTO affected_user_id
@@ -411,8 +345,8 @@ BEGIN
         END;
     END IF;
 
-    -- 3. Via transaction_id
-    IF affected_user_id IS NULL AND row_data ? 'transaction_id' THEN
+    -- c. Via transaction_id
+    IF affected_user_id IS NULL AND row_data ? 'transaction_id' AND row_data -> 'transaction_id' IS NOT NULL THEN
         BEGIN
             SELECT t.user_id
             INTO affected_user_id
@@ -423,8 +357,9 @@ BEGIN
         END;
     END IF;
 
-    -- 4. Expense subcategories → categories
-    IF affected_user_id IS NULL AND TG_TABLE_NAME = 'expense_subcategories' THEN
+    -- d. Expense subcategories → categories
+    IF affected_user_id IS NULL AND TG_TABLE_NAME = 'expense_subcategories' 
+       AND row_data ? 'category_id' AND row_data -> 'category_id' IS NOT NULL THEN
         BEGIN
             SELECT ec.user_id
             INTO affected_user_id
@@ -440,18 +375,20 @@ BEGIN
         affected_user_id := actor_user_id;
     END IF;
 
-    -- Resolve record_id (never NULL)
+    -- 6. RESOLVE RECORD_ID
     record_id := NULL;
 
-    -- Try 'id' field
-    BEGIN
-        record_id := (row_data -> 'id')::uuid;
-    EXCEPTION WHEN OTHERS THEN
-        record_id := NULL;
-    END;
+    -- Try 'id' field with safe casting
+    IF row_data ? 'id' AND row_data -> 'id' IS NOT NULL THEN
+        BEGIN
+            record_id := (row_data -> 'id')::uuid;
+        EXCEPTION WHEN OTHERS THEN
+            record_id := NULL;
+        END;
+    END IF;
 
     -- Try 'account_id' field
-    IF record_id IS NULL AND row_data ? 'account_id' THEN
+    IF record_id IS NULL AND row_data ? 'account_id' AND row_data -> 'account_id' IS NOT NULL THEN
         BEGIN
             record_id := (row_data -> 'account_id')::uuid;
         EXCEPTION WHEN OTHERS THEN
@@ -460,7 +397,7 @@ BEGIN
     END IF;
 
     -- Try 'transaction_id' field
-    IF record_id IS NULL AND row_data ? 'transaction_id' THEN
+    IF record_id IS NULL AND row_data ? 'transaction_id' AND row_data -> 'transaction_id' IS NOT NULL THEN
         BEGIN
             record_id := (row_data -> 'transaction_id')::uuid;
         EXCEPTION WHEN OTHERS THEN
@@ -473,67 +410,33 @@ BEGIN
         record_id := gen_random_uuid();
     END IF;
 
-    -- Insert audit log (never fails outward)
+    -- 7. Insert audit log
     BEGIN
-        IF TG_OP = 'INSERT' THEN
-            INSERT INTO audit.audit_logs (
-                user_id,
-                action_by,
-                table_name,
-                record_id,
-                action,
-                new_data
-            ) VALUES (
-                affected_user_id,
-                actor_user_id,
-                TG_TABLE_SCHEMA || '.' || TG_TABLE_NAME,
-                record_id,
-                'INSERT',
-                row_to_json(NEW)
-            );
-
-        ELSIF TG_OP = 'UPDATE' THEN
-            INSERT INTO audit.audit_logs (
-                user_id,
-                action_by,
-                table_name,
-                record_id,
-                action,
-                old_data,
-                new_data
-            ) VALUES (
-                affected_user_id,
-                actor_user_id,
-                TG_TABLE_SCHEMA || '.' || TG_TABLE_NAME,
-                record_id,
-                'UPDATE',
-                row_to_json(OLD),
-                row_to_json(NEW)
-            );
-
-        ELSIF TG_OP = 'DELETE' THEN
-            INSERT INTO audit.audit_logs (
-                user_id,
-                action_by,
-                table_name,
-                record_id,
-                action,
-                old_data
-            ) VALUES (
-                affected_user_id,
-                actor_user_id,
-                TG_TABLE_SCHEMA || '.' || TG_TABLE_NAME,
-                record_id,
-                'DELETE',
-                row_to_json(OLD)
-            );
-        END IF;
+        INSERT INTO audit.audit_logs (
+            user_id,
+            action_by,
+            table_name,
+            record_id,
+            action,
+            old_data,
+            new_data
+        ) VALUES (
+            affected_user_id,
+            actor_user_id,
+            TG_TABLE_SCHEMA || '.' || TG_TABLE_NAME,
+            record_id,
+            action_label,
+            CASE WHEN TG_OP IN ('UPDATE', 'DELETE') THEN row_to_json(OLD) ELSE NULL END,
+            CASE WHEN TG_OP IN ('INSERT', 'UPDATE') THEN row_to_json(NEW) ELSE NULL END
+        );
     EXCEPTION WHEN OTHERS THEN
-        -- swallow all errors: auditing must never block writes
+        -- Auditing must never block the main database operation
+        RAISE NOTICE 'Audit log insertion failed: %', SQLERRM;
         NULL;
     END;
 
-    RETURN NULL;
+    -- Standard for AFTER triggers
+    RETURN NULL; 
 END;
 $$;
 
