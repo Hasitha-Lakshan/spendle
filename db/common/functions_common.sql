@@ -31,69 +31,67 @@ AS $$
 DECLARE
     default_category_id UUID;
 BEGIN
-    -- Wrap default insertion in a block to catch errors
-    BEGIN
-        -- Create Cash account
-        PERFORM finance.create_account_internal(
-            p_user_id := p_user_id,
-            p_account_name := 'Cash Wallet',
-            p_type := 'cash'::finance.account_type,
-            p_currency := 'USD',
-            p_details := '{}'::jsonb
-        );
+    -- Create Cash account
+    PERFORM finance.create_account_internal(
+        p_user_id := p_user_id,
+        p_account_name := 'Cash Wallet',
+        p_type := 'cash'::finance.account_type,
+        p_currency := 'USD',
+        p_details := '{}'::jsonb
+    );
 
-        -- Create Bank account
-        PERFORM finance.create_account_internal(
-            p_user_id := p_user_id,
-            p_account_name := 'Default Bank',
-            p_type := 'bank'::finance.account_type,
-            p_currency := 'USD',
-            p_details := '{
-                "bank_name": "Default Bank",
-                "account_no": "0000",
-                "branch": "Main",
-                "account_holder_name": "User",
-                "balance": 0
-            }'::jsonb
-        );
+    -- Create Bank account
+    PERFORM finance.create_account_internal(
+        p_user_id := p_user_id,
+        p_account_name := 'Default Bank',
+        p_type := 'bank'::finance.account_type,
+        p_currency := 'USD',
+        p_details := '{
+            "bank_name": "Default Bank",
+            "account_no": "0000",
+            "branch": "Main",
+            "account_holder_name": "User",
+            "balance": 0
+        }'::jsonb
+    );
 
-        -- Insert default expense category
-        INSERT INTO finance.expense_categories(user_id, name)
-        VALUES (p_user_id, 'General')
-        ON CONFLICT (user_id, lower(name)) 
+    -- Insert default expense category
+    INSERT INTO finance.expense_categories(user_id, name)
+    VALUES (p_user_id, 'General')
+    ON CONFLICT (user_id, lower(name)) 
+    WHERE deleted_at IS NULL
+    DO NOTHING;
+
+    -- Get the inserted category id
+    SELECT id INTO default_category_id
+    FROM finance.expense_categories
+    WHERE user_id = p_user_id AND name = 'General';
+
+    -- Insert default expense subcategory
+    IF default_category_id IS NOT NULL THEN
+        INSERT INTO finance.expense_subcategories(category_id, name)
+        VALUES (default_category_id, 'Miscellaneous')
+        ON CONFLICT (category_id, lower(name))
         WHERE deleted_at IS NULL
         DO NOTHING;
+    END IF;
 
-        -- Get the inserted category id
-        SELECT id INTO default_category_id
-        FROM finance.expense_categories
-        WHERE user_id = p_user_id AND name = 'General';
+    -- Insert default income source
+    INSERT INTO finance.income_sources(user_id, name)
+    VALUES (p_user_id, 'Salary')
+    ON CONFLICT (user_id, lower(name))
+    WHERE deleted_at IS NULL
+    DO NOTHING;
 
-        -- Insert default expense subcategory
-        IF default_category_id IS NOT NULL THEN
-            INSERT INTO finance.expense_subcategories(category_id, name)
-            VALUES (default_category_id, 'Miscellaneous')
-            ON CONFLICT (category_id, lower(name))
-            WHERE deleted_at IS NULL
-            DO NOTHING;
-        END IF;
-
-        -- Insert default income source
-        INSERT INTO finance.income_sources(user_id, name)
-        VALUES (p_user_id, 'Salary')
-        ON CONFLICT (user_id, lower(name))
-        WHERE deleted_at IS NULL
-        DO NOTHING;
-
-        -- Insert default exchange rates
-        INSERT INTO finance.exchange_rates(
-            user_id, from_currency, to_currency, rate, source, created_at, updated_at
-        )
-        VALUES
-            -- Fiat currencies
-            (p_user_id, 'USD', 'EUR', 0.92, 'ECB', NOW(), NOW()),
-            (p_user_id, 'EUR', 'USD', 1.09, 'ECB', NOW(), NOW()),
-            (p_user_id, 'USD', 'GBP', 0.80, 'ECB', NOW(), NOW()),
+    -- Insert default exchange rates
+    INSERT INTO finance.exchange_rates(
+        user_id, from_currency, to_currency, rate, source, created_at, updated_at
+    )
+    VALUES
+        -- Fiat currencies
+        (p_user_id, 'USD', 'EUR', 0.92, 'ECB', NOW(), NOW()),
+        (p_user_id, 'EUR', 'USD', 1.09, 'ECB', NOW(), NOW()),
+        (p_user_id, 'USD', 'GBP', 0.80, 'ECB', NOW(), NOW()),
             (p_user_id, 'GBP', 'USD', 1.25, 'ECB', NOW(), NOW()),
             (p_user_id, 'USD', 'JPY', 145.23, 'ECB', NOW(), NOW()),
             (p_user_id, 'JPY', 'USD', 0.0069, 'ECB', NOW(), NOW()),
@@ -120,20 +118,16 @@ BEGIN
             (p_user_id, 'BTC', 'LKR', 9995000.00, 'CoinGecko', NOW(), NOW()),
             (p_user_id, 'LKR', 'BTC', 0.00000010005, 'CoinGecko', NOW(), NOW()),
             (p_user_id, 'ETH', 'LKR', 655000.00, 'CoinGecko', NOW(), NOW()),
-            (p_user_id, 'LKR', 'ETH', 0.000001526, 'CoinGecko', NOW(), NOW())
-        ON CONFLICT (user_id, from_currency, to_currency)
-        WHERE deleted_at IS NULL
-        DO NOTHING;
+        (p_user_id, 'LKR', 'ETH', 0.000001526, 'CoinGecko', NOW(), NOW())
+    ON CONFLICT (user_id, from_currency, to_currency)
+    WHERE deleted_at IS NULL
+    DO NOTHING;
 
-        -- Mark defaults as inserted
-        UPDATE core.profiles
-        SET defaults_inserted = TRUE, updated_at = NOW()
-        WHERE user_id = p_user_id;
+    -- Mark defaults as inserted
+    UPDATE core.profiles
+    SET defaults_inserted = TRUE, updated_at = NOW()
+    WHERE user_id = p_user_id;
 
-    EXCEPTION WHEN OTHERS THEN
-        -- Any error triggers a raised exception
-        RAISE EXCEPTION 'Failed to initialize defaults for user %: %', p_user_id, SQLERRM;
-    END;
 END;
 $$;
 
@@ -167,7 +161,7 @@ $$;
 --   - Intended to be called internally or via a SECURITY INVOKER wrapper function for end users
 -- =========================================
 CREATE OR REPLACE FUNCTION finance.initialize_my_defaults_internal()
-RETURNS JSONB
+RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, finance, core
@@ -176,58 +170,46 @@ AS $$
 DECLARE
     v_user_id UUID := auth.uid();
     defaults_flag BOOLEAN;
-    did_insert BOOLEAN := FALSE;
     is_soft_deleted BOOLEAN := FALSE;
-    result_message TEXT;
 BEGIN
-    -- Enable RLS for this function
+    -- Enable RLS
     PERFORM set_config('row_security', 'on', true);
 
-    -- Authenticate the caller
+    -- Authenticate
     IF v_user_id IS NULL THEN
-        RAISE EXCEPTION 'Unauthenticated call';
+        RAISE EXCEPTION
+            'Not authenticated'
+            USING ERRCODE = '28000'; -- invalid_authorization_specification
     END IF;
 
-    -- Check if profile exists and lock it
+    -- Lock profile
     SELECT defaults_inserted, deleted_at IS NOT NULL
     INTO defaults_flag, is_soft_deleted
     FROM core.profiles
     WHERE user_id = v_user_id
     FOR UPDATE;
 
-    -- Handle soft-deleted profile
+    -- Soft-deleted profile is a semantic failure
     IF FOUND AND is_soft_deleted THEN
-        result_message := 'Profile is soft-deleted; defaults not initialized';
-        RETURN jsonb_build_object(
-            'user_id', v_user_id,
-            'defaults_inserted', FALSE,
-            'message', result_message
-        );
+        RAISE EXCEPTION
+            'Profile is soft-deleted'
+            USING ERRCODE = '23514'; -- check_violation (semantic constraint)
     END IF;
 
-    -- If profile does not exist, create it
+    -- Create profile if missing
     IF NOT FOUND THEN
         INSERT INTO core.profiles(user_id, defaults_inserted)
         VALUES (v_user_id, FALSE);
         defaults_flag := FALSE;
     END IF;
 
-    -- If defaults not inserted, insert them
+    -- Insert defaults if needed
     IF NOT defaults_flag THEN
         PERFORM finance.initialize_defaults_for_user_internal(v_user_id);
-        -- Mark that we inserted defaults in this call
-        did_insert := TRUE;
-        result_message := 'Defaults inserted successfully';
-    ELSE
-        result_message := 'Defaults were already inserted';
+        RETURN TRUE;  -- inserted now
     END IF;
 
-    -- Return JSON to Supabase
-    RETURN jsonb_build_object(
-        'user_id', v_user_id,
-        'defaults_inserted', did_insert,
-        'message', result_message
-    );
+    RETURN FALSE; -- already existed
 END;
 $$;
 
@@ -266,38 +248,41 @@ SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
 DECLARE
-    v_user_id UUID := auth.uid();
-    v_result JSONB;
+    v_result BOOLEAN;
 BEGIN
-    IF v_user_id IS NULL THEN
-        RETURN jsonb_build_object(
-            'success', false,
-            'message', 'Not authenticated',
-            'data', NULL
-        );
-    END IF;
-
-    -- Execute the internal function
+    -- Call internal function
     v_result := finance.initialize_my_defaults_internal();
 
-    -- Always return a consistent success structure
+    -- Build success response
     RETURN jsonb_build_object(
-        'success', true,
+        'success', TRUE,
+        'code', 'OK',
         'message', 'Defaults initialized successfully',
-        'data', v_result
+        'data', jsonb_build_object('defaults_inserted', v_result)
     );
 
 EXCEPTION
-    WHEN unique_violation THEN
+    WHEN check_violation THEN  -- soft-deleted profile
         RETURN jsonb_build_object(
-            'success', false,
-            'message', 'Defaults already initialized',
+            'success', FALSE,
+            'code', 'PROFILE_SOFT_DELETED',
+            'message', 'Cannot initialize defaults: profile is soft-deleted',
+            'data', NULL
+        );
+
+    WHEN invalid_authorization_specification THEN  -- unauthenticated
+        RETURN jsonb_build_object(
+            'success', FALSE,
+            'code', 'NOT_AUTHENTICATED',
+            'message', 'You must be logged in to initialize defaults',
             'data', NULL
         );
 
     WHEN OTHERS THEN
+        -- Catch-all for unexpected errors
         RETURN jsonb_build_object(
-            'success', false,
+            'success', FALSE,
+            'code', 'INTERNAL_ERROR',
             'message', 'Failed to initialize defaults',
             'data', NULL
         );
@@ -335,7 +320,7 @@ STABLE
 AS $$
 DECLARE
     v_user_id UUID := auth.uid();
-    v_is_admin BOOLEAN;
+    v_is_admin BOOLEAN := FALSE;
 BEGIN
     -- Return false if user is unauthenticated
     IF v_user_id IS NULL THEN
@@ -347,9 +332,14 @@ BEGIN
     INTO v_is_admin
     FROM core.profiles p
     WHERE p.user_id = v_user_id
-      AND p.deleted_at IS NULL;
+      AND p.deleted_at IS NULL
+    LIMIT 1;
 
     RETURN COALESCE(v_is_admin, FALSE);
+EXCEPTION
+    WHEN OTHERS THEN
+        -- Log or propagate unexpected errors
+        RAISE EXCEPTION 'Failed to check admin permissions for user %: %', v_user_id, SQLERRM;
 END;
 $$;
 
@@ -377,8 +367,10 @@ $$;
 --   - Delegates all default data creation to initialize_defaults_for_user_internal
 --   - Safe for repeated calls; defaults are only inserted once per user
 -- =========================================
-CREATE OR REPLACE FUNCTION finance.admin_initialize_user_defaults_internal(p_user_id UUID)
-RETURNS JSONB
+CREATE OR REPLACE FUNCTION finance.admin_initialize_user_defaults_internal(
+    p_user_id UUID
+)
+RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, finance, core, util
@@ -387,62 +379,54 @@ AS $$
 DECLARE
     v_admin_id UUID := auth.uid();
     defaults_flag BOOLEAN;
-    did_insert BOOLEAN := FALSE;
     is_soft_deleted BOOLEAN := FALSE;
-    result_message TEXT;
 BEGIN
     -- Enable RLS for this function
     PERFORM set_config('row_security', 'on', true);
 
-    -- Authenticate the caller
+    -- Authenticate caller
     IF v_admin_id IS NULL THEN
-        RAISE EXCEPTION 'Unauthenticated call';
+        RAISE EXCEPTION
+            'Not authenticated'
+            USING ERRCODE = '28000'; -- invalid_authorization_specification
     END IF;
 
-    -- Only admins may initialize other users
+    -- Authorize admin privileges
     IF NOT util.check_admin_permissions_internal() THEN
-        RAISE EXCEPTION 'Not authorized to initialize defaults';
+        RAISE EXCEPTION
+            'Not authorized'
+            USING ERRCODE = '42501'; -- insufficient_privilege
     END IF;
 
-    -- Fetch profile row atomically and lock it
+    -- Lock profile row
     SELECT defaults_inserted, deleted_at IS NOT NULL
     INTO defaults_flag, is_soft_deleted
     FROM core.profiles
     WHERE user_id = p_user_id
     FOR UPDATE;
 
-    -- Handle soft-deleted profile
+    -- Soft-deleted profile is a semantic failure
     IF FOUND AND is_soft_deleted THEN
-        result_message := 'Profile is soft-deleted; defaults not initialized';
-        RETURN jsonb_build_object(
-            'user_id', p_user_id,
-            'defaults_inserted', FALSE,
-            'message', result_message
-        );
+        RAISE EXCEPTION
+            'Profile is soft-deleted'
+            USING ERRCODE = '23514'; -- check_violation
     END IF;
 
-    -- If profile does not exist, create it
+    -- Create profile if missing
     IF NOT FOUND THEN
         INSERT INTO core.profiles(user_id, defaults_inserted)
         VALUES (p_user_id, FALSE);
         defaults_flag := FALSE;
     END IF;
 
-    -- If defaults not inserted, insert them
+    -- Insert defaults if needed
     IF NOT defaults_flag THEN
         PERFORM finance.initialize_defaults_for_user_internal(p_user_id);
-        did_insert := TRUE;
-        result_message := 'Defaults inserted successfully';
-    ELSE
-        result_message := 'Defaults were already inserted';
+        RETURN TRUE;  -- inserted now
     END IF;
 
-    -- Return JSON to Supabase
-    RETURN jsonb_build_object(
-        'user_id', p_user_id,
-        'defaults_inserted', did_insert,
-        'message', result_message
-    );
+    -- Defaults already existed
+    RETURN FALSE;
 END;
 $$;
 
@@ -487,41 +471,58 @@ SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
 DECLARE
-    v_result JSONB;
+    v_inserted BOOLEAN;
 BEGIN
+    -- Validate input
     IF p_user_id IS NULL THEN
         RETURN jsonb_build_object(
-            'success', false,
-            'user_id', NULL,
+            'success', FALSE,
+            'code', 'MISSING_USER_ID',
             'message', 'User id is required',
             'data', NULL
         );
     END IF;
 
-    -- Execute internal function and capture result
-    v_result := finance.admin_initialize_user_defaults_internal(p_user_id);
+    -- Call internal function
+    v_inserted := finance.admin_initialize_user_defaults_internal(p_user_id);
 
     -- Return consistent success JSON
     RETURN jsonb_build_object(
-        'success', true,
-        'user_id', p_user_id,
+        'success', TRUE,
+        'code', 'OK',
         'message', 'Defaults initialized successfully',
-        'data', v_result
+        'data', jsonb_build_object('defaults_inserted', v_inserted)
     );
 
 EXCEPTION
-    WHEN unique_violation THEN
+    WHEN invalid_authorization_specification THEN
         RETURN jsonb_build_object(
-            'success', false,
-            'user_id', p_user_id,
-            'message', 'Defaults already initialized for this user',
+            'success', FALSE,
+            'code', 'NOT_AUTHENTICATED',
+            'message', 'You must be logged in to perform this action',
+            'data', NULL
+        );
+
+    WHEN insufficient_privilege THEN
+        RETURN jsonb_build_object(
+            'success', FALSE,
+            'code', 'NOT_AUTHORIZED',
+            'message', 'You do not have permission to initialize defaults for this user',
+            'data', NULL
+        );
+
+    WHEN check_violation THEN
+        RETURN jsonb_build_object(
+            'success', FALSE,
+            'code', 'PROFILE_SOFT_DELETED',
+            'message', 'Cannot initialize defaults: profile is soft-deleted',
             'data', NULL
         );
 
     WHEN OTHERS THEN
         RETURN jsonb_build_object(
-            'success', false,
-            'user_id', p_user_id,
+            'success', FALSE,
+            'code', 'INTERNAL_ERROR',
             'message', 'Failed to initialize defaults for user',
             'data', NULL
         );
@@ -646,8 +647,8 @@ $$;
 --   - Protects against invalid table names and non-existent records
 -- =========================================
 CREATE OR REPLACE FUNCTION finance.hard_delete_record_internal(
-    table_name TEXT,
-    record_id UUID
+    p_table_name TEXT,
+    p_record_id UUID
 )
 RETURNS BOOLEAN
 LANGUAGE plpgsql
@@ -656,12 +657,20 @@ SET search_path = pg_catalog, finance, core
 VOLATILE
 AS $$
 DECLARE
-    sql_query TEXT;
-    record_exists INTEGER;
-    acc_type finance.account_type;
+    v_user_id UUID := auth.uid();
+    v_rows_deleted INTEGER;
+    v_acc_type finance.account_type;
+    v_sql_query TEXT;
 BEGIN
-    -- Validate table name to prevent SQL injection
-    IF table_name NOT IN (
+    -- Require authentication
+    IF v_user_id IS NULL THEN
+        RAISE EXCEPTION
+            'Not authenticated'
+            USING ERRCODE = '28000'; -- invalid_authorization_specification
+    END IF;
+
+    -- Validate table name (allow-list)
+    IF p_table_name NOT IN (
         'core.profiles',
         'finance.accounts', 'finance.transactions', 'finance.expense_categories', 'finance.expense_subcategories',
         'finance.income_sources', 'finance.counterparties', 'finance.transactions_recurring',
@@ -671,121 +680,136 @@ BEGIN
         'finance.transactions_borrow', 'finance.transactions_lend', 'finance.transactions_transfer', 'finance.transactions_adjustment',
         'finance.exchange_rates'
     ) THEN
-        RAISE EXCEPTION 'Invalid table name: %', table_name;
+        RAISE EXCEPTION
+            'Invalid table name'
+            USING ERRCODE = '42601'; -- syntax_error (semantic misuse)
     END IF;
 
-    -- Handle dependencies and specialized tables
-
+    -- Account-specific cascading deletes
     -- If deleting an account, first delete specialized account table + transaction details
-    IF table_name = 'finance.accounts' THEN
-        SELECT type INTO acc_type FROM finance.accounts WHERE id = record_id;
+    IF p_table_name = 'finance.accounts' THEN
+        SELECT type
+        INTO v_acc_type
+        FROM finance.accounts
+        WHERE id = p_record_id;
+
         IF NOT FOUND THEN
-            RAISE EXCEPTION 'Account with id % does not exist', record_id;
+            RAISE EXCEPTION
+                'Account does not exist'
+                USING ERRCODE = '02000'; -- no_data_found
         END IF;
 
-        CASE acc_type
-            WHEN 'cash'        THEN DELETE FROM finance.cash_accounts        WHERE account_id = record_id;
-            WHEN 'bank'        THEN DELETE FROM finance.bank_accounts        WHERE account_id = record_id;
-            WHEN 'credit_card' THEN DELETE FROM finance.credit_card_accounts WHERE account_id = record_id;
-            WHEN 'loan'        THEN DELETE FROM finance.loan_accounts        WHERE account_id = record_id;
-            WHEN 'investment'  THEN DELETE FROM finance.investment_accounts  WHERE account_id = record_id;
-            WHEN 'crypto'      THEN DELETE FROM finance.crypto_accounts      WHERE account_id = record_id;
-            WHEN 'wallet'      THEN DELETE FROM finance.wallet_accounts      WHERE account_id = record_id;
-            WHEN 'receivable'  THEN DELETE FROM finance.receivable_accounts  WHERE account_id = record_id;
+        CASE v_acc_type
+            WHEN 'cash'        THEN DELETE FROM finance.cash_accounts        WHERE account_id = p_record_id;
+            WHEN 'bank'        THEN DELETE FROM finance.bank_accounts        WHERE account_id = p_record_id;
+            WHEN 'credit_card' THEN DELETE FROM finance.credit_card_accounts WHERE account_id = p_record_id;
+            WHEN 'loan'        THEN DELETE FROM finance.loan_accounts        WHERE account_id = p_record_id;
+            WHEN 'investment'  THEN DELETE FROM finance.investment_accounts  WHERE account_id = p_record_id;
+            WHEN 'crypto'      THEN DELETE FROM finance.crypto_accounts      WHERE account_id = p_record_id;
+            WHEN 'wallet'      THEN DELETE FROM finance.wallet_accounts      WHERE account_id = p_record_id;
+            WHEN 'receivable'  THEN DELETE FROM finance.receivable_accounts  WHERE account_id = p_record_id;
         END CASE;
 
         -- Delete recurring transactions linked to these transactions
         DELETE FROM finance.transactions_recurring
         WHERE transaction_template_id IN (
-            SELECT id FROM finance.transactions WHERE 
-                id IN (
-                    SELECT transaction_id FROM finance.transactions_income      WHERE account_id = record_id
-                    UNION
-                    SELECT transaction_id FROM finance.transactions_expense     WHERE account_id = record_id
-                    UNION
-                    SELECT transaction_id FROM finance.transactions_investment  WHERE account_id = record_id
-                    UNION
-                    SELECT transaction_id FROM finance.transactions_borrow      WHERE account_id = record_id
-                    UNION
-                    SELECT transaction_id FROM finance.transactions_lend        WHERE account_id = record_id
-                    UNION
-                    SELECT transaction_id FROM finance.transactions_transfer    WHERE from_account = record_id OR to_account = record_id
-                    UNION
-                    SELECT transaction_id FROM finance.transactions_adjustment  WHERE account_id = record_id
-                )
+            SELECT id FROM finance.transactions WHERE id IN (
+                SELECT transaction_id FROM finance.transactions_income     WHERE account_id = p_record_id
+                UNION
+                SELECT transaction_id FROM finance.transactions_expense    WHERE account_id = p_record_id
+                UNION
+                SELECT transaction_id FROM finance.transactions_investment WHERE account_id = p_record_id
+                UNION
+                SELECT transaction_id FROM finance.transactions_borrow     WHERE account_id = p_record_id
+                UNION
+                SELECT transaction_id FROM finance.transactions_lend       WHERE account_id = p_record_id
+                UNION
+                SELECT transaction_id FROM finance.transactions_transfer   WHERE from_account = p_record_id OR to_account = p_record_id
+                UNION
+                SELECT transaction_id FROM finance.transactions_adjustment WHERE account_id = p_record_id
+            )
         );
 
         -- Delete transaction details referencing this account
-        DELETE FROM finance.transactions_income      WHERE account_id = record_id;
-        DELETE FROM finance.transactions_expense     WHERE account_id = record_id;
-        DELETE FROM finance.transactions_investment  WHERE account_id = record_id;
-        DELETE FROM finance.transactions_borrow      WHERE account_id = record_id;
-        DELETE FROM finance.transactions_lend        WHERE account_id = record_id;
-        DELETE FROM finance.transactions_adjustment  WHERE account_id = record_id;
-        DELETE FROM finance.transactions_transfer    WHERE from_account = record_id OR to_account = record_id;
+        DELETE FROM finance.transactions_income      WHERE account_id = p_record_id;
+        DELETE FROM finance.transactions_expense     WHERE account_id = p_record_id;
+        DELETE FROM finance.transactions_investment  WHERE account_id = p_record_id;
+        DELETE FROM finance.transactions_borrow      WHERE account_id = p_record_id;
+        DELETE FROM finance.transactions_lend        WHERE account_id = p_record_id;
+        DELETE FROM finance.transactions_adjustment  WHERE account_id = p_record_id;
+        DELETE FROM finance.transactions_transfer    WHERE from_account = p_record_id OR to_account = p_record_id;
     END IF;
 
-    -- If deleting transactions, delete dependent transaction detail tables first
-    IF table_name = 'finance.transactions' THEN
+    -- Transaction-specific cascading deletes
+    IF p_table_name = 'finance.transactions' THEN
         -- Raise error if transaction does not exist
-        PERFORM 1 FROM finance.transactions WHERE id = record_id;
+        PERFORM 1 FROM finance.transactions WHERE id = p_record_id;
         IF NOT FOUND THEN
-            RAISE EXCEPTION 'Transaction with id % does not exist', record_id;
+            RAISE EXCEPTION
+                'Transaction does not exist'
+                USING ERRCODE = '02000';
         END IF;
 
         -- Delete recurring transactions linked to this transaction
         DELETE FROM finance.transactions_recurring
-        WHERE transaction_template_id = record_id;
+        WHERE transaction_template_id = p_record_id;
 
-        DELETE FROM finance.transactions_income      WHERE transaction_id = record_id;
-        DELETE FROM finance.transactions_expense     WHERE transaction_id = record_id;
-        DELETE FROM finance.transactions_investment  WHERE transaction_id = record_id;
-        DELETE FROM finance.transactions_borrow      WHERE transaction_id = record_id;
-        DELETE FROM finance.transactions_lend        WHERE transaction_id = record_id;
-        DELETE FROM finance.transactions_transfer    WHERE transaction_id = record_id;
-        DELETE FROM finance.transactions_adjustment  WHERE transaction_id = record_id;
+        DELETE FROM finance.transactions_income      WHERE transaction_id = p_record_id;
+        DELETE FROM finance.transactions_expense     WHERE transaction_id = p_record_id;
+        DELETE FROM finance.transactions_investment  WHERE transaction_id = p_record_id;
+        DELETE FROM finance.transactions_borrow      WHERE transaction_id = p_record_id;
+        DELETE FROM finance.transactions_lend        WHERE transaction_id = p_record_id;
+        DELETE FROM finance.transactions_transfer    WHERE transaction_id = p_record_id;
+        DELETE FROM finance.transactions_adjustment  WHERE transaction_id = p_record_id;
     END IF;
 
-    -- If deleting expense category, delete subcategories first
-    IF table_name = 'finance.expense_categories' THEN
-        PERFORM 1 FROM finance.expense_categories WHERE id = record_id;
+    -- Expense category cascade
+    IF p_table_name = 'finance.expense_categories' THEN
+        PERFORM 1 FROM finance.expense_categories WHERE id = p_record_id;
         IF NOT FOUND THEN
-            RAISE EXCEPTION 'Expense category with id % does not exist', record_id;
+            RAISE EXCEPTION
+                'Expense category does not exist'
+                USING ERRCODE = '02000';
         END IF;
 
-        DELETE FROM finance.expense_subcategories WHERE category_id = record_id;
+        DELETE FROM finance.expense_subcategories WHERE category_id = p_record_id;
     END IF;
 
-    -- If deleting a counterparty
-    IF table_name = 'finance.counterparties' THEN
-        PERFORM 1 FROM finance.counterparties WHERE id = record_id;
+    -- Counterparty cascade
+    IF p_table_name = 'finance.counterparties' THEN
+        PERFORM 1 FROM finance.counterparties WHERE id = p_record_id;
         IF NOT FOUND THEN
-            RAISE EXCEPTION 'Counterparty with id % does not exist', record_id;
+            RAISE EXCEPTION
+                'Counterparty does not exist'
+                USING ERRCODE = '02000';
         END IF;
 
-        DELETE FROM finance.loan_accounts WHERE counterparty_id = record_id;
-        DELETE FROM finance.receivable_accounts WHERE counterparty_id = record_id;
-
-    -- If deleting an income source
-    ELSIF table_name = 'finance.income_sources' THEN
-        PERFORM 1 FROM finance.income_sources WHERE id = record_id;
-        IF NOT FOUND THEN
-            RAISE EXCEPTION 'Income source with id % does not exist', record_id;
-        END IF;
-
-        DELETE FROM finance.transactions_income WHERE source_id = record_id;
+        DELETE FROM finance.loan_accounts        WHERE counterparty_id = p_record_id;
+        DELETE FROM finance.receivable_accounts  WHERE counterparty_id = p_record_id;
     END IF;
 
-    -- Delete only soft-deleted records
-    sql_query := format(
+    -- Income source cascade
+    IF p_table_name = 'finance.income_sources' THEN
+        PERFORM 1 FROM finance.income_sources WHERE id = p_record_id;
+        IF NOT FOUND THEN
+            RAISE EXCEPTION
+                'Income source does not exist'
+                USING ERRCODE = '02000';
+        END IF;
+
+        DELETE FROM finance.transactions_income WHERE source_id = p_record_id;
+    END IF;
+
+    -- Hard delete only soft-deleted rows
+    v_sql_query := format(
         'DELETE FROM %I WHERE id = $1 AND deleted_at IS NOT NULL',
-        table_name
+        p_table_name
     );
 
-    EXECUTE sql_query USING record_id;
+    EXECUTE v_sql_query USING p_record_id;
 
     -- Check if any rows were affected
-    GET DIAGNOSTICS record_exists = ROW_COUNT;
+    GET DIAGNOSTICS v_rows_deleted = ROW_COUNT;
 
     -- Return result
     RETURN record_exists > 0;
@@ -821,8 +845,8 @@ $$;
 --   - Enforces strict authentication and authorization checks
 -- =========================================
 CREATE OR REPLACE FUNCTION finance.admin_hard_delete_record_internal(
-    table_name TEXT,
-    record_id UUID
+    p_table_name TEXT,
+    p_record_id UUID
 )
 RETURNS BOOLEAN
 LANGUAGE plpgsql
@@ -831,29 +855,27 @@ SET search_path = pg_catalog, finance, util
 VOLATILE
 AS $$
 DECLARE
-    current_user_id UUID;
-    is_admin BOOLEAN;
+    v_admin_id UUID := auth.uid();
 BEGIN
-    -- Enable RLS for this function
-    PERFORM set_config('row_security', 'on', true);
-
-    -- Authenticate and authorize user
-    current_user_id := auth.uid();
-    IF current_user_id IS NULL THEN
-        RAISE EXCEPTION 'Not authenticated';
+    -- Require authentication
+    IF v_admin_id IS NULL THEN
+        RAISE EXCEPTION
+            'Not authenticated'
+            USING ERRCODE = '28000'; -- invalid_authorization_specification
     END IF;
 
-    -- Check if current user is admin
-    is_admin := util.check_admin_permissions_internal();
-    IF NOT is_admin THEN
-        RAISE EXCEPTION 'Permission denied: only admins can hard delete';
+    -- Require admin privileges
+    IF NOT util.check_admin_permissions_internal() THEN
+        RAISE EXCEPTION
+            'Not authorized'
+            USING ERRCODE = '42501'; -- insufficient_privilege
     END IF;
 
-    -- Enable hard delete bypass for this session
+    -- Enable hard-delete bypass for this session
     PERFORM set_config('app.hard_delete', 'on', true);
 
-    -- Delegate deletion logic to the helper
-    RETURN finance.hard_delete_record_internal(table_name, record_id);
+    -- Delegate deletion logic
+    RETURN finance.hard_delete_record_internal(p_table_name, p_record_id);
 END;
 $$;
 
@@ -902,14 +924,13 @@ SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
 DECLARE
-    v_result BOOLEAN;
+    v_deleted BOOLEAN;
 BEGIN
     -- Input validation
     IF table_name IS NULL OR table_name = '' THEN
         RETURN jsonb_build_object(
-            'success', false,
-            'table', NULL,
-            'record_id', NULL,
+            'success', FALSE,
+            'code', 'MISSING_TABLE_NAME',
             'message', 'Table name is required',
             'data', NULL
         );
@@ -917,50 +938,45 @@ BEGIN
 
     IF record_id IS NULL THEN
         RETURN jsonb_build_object(
-            'success', false,
-            'table', table_name,
-            'record_id', NULL,
+            'success', FALSE,
+            'code', 'MISSING_RECORD_ID',
             'message', 'Record id is required',
             'data', NULL
         );
     END IF;
 
-    -- Execute the internal function and capture result
-    v_result := finance.admin_hard_delete_record_internal(table_name, record_id);
+    -- Call internal function
+    v_deleted := finance.admin_hard_delete_record_internal(table_name, record_id);
 
-    -- Always return consistent JSON
+    -- Success response
     RETURN jsonb_build_object(
-        'success', true,
-        'table', table_name,
-        'record_id', record_id,
+        'success', TRUE,
+        'code', 'OK',
         'message', 'Record permanently deleted',
-        'data', v_result
+        'data', jsonb_build_object('deleted', v_deleted)
     );
 
 EXCEPTION
     WHEN foreign_key_violation THEN
         RETURN jsonb_build_object(
-            'success', false,
-            'table', table_name,
-            'record_id', record_id,
+            'success', FALSE,
+            'code', 'FOREIGN_KEY_VIOLATION',
             'message', 'Record cannot be deleted due to existing references',
             'data', NULL
         );
 
     WHEN undefined_table THEN
         RETURN jsonb_build_object(
-            'success', false,
-            'table', table_name,
-            'record_id', record_id,
+            'success', FALSE,
+            'code', 'TABLE_NOT_FOUND',
             'message', 'Target table does not exist',
             'data', NULL
         );
 
     WHEN OTHERS THEN
         RETURN jsonb_build_object(
-            'success', false,
-            'table', table_name,
-            'record_id', record_id,
+            'success', FALSE,
+            'code', 'INTERNAL_ERROR',
             'message', 'Failed to delete record',
             'data', NULL
         );
@@ -968,43 +984,7 @@ END;
 $$;
 
 -- =========================================
--- 11. Function: require_system_role_internal
--- =========================================
--- Purpose:
---   Enforces that the current database session is executed under a system-level role.
---
--- Behavior:
---   - Checks the PostgreSQL `current_user` for an allowed system role
---   - Raises an exception if the session user is not authorized
---   - Execution stops immediately on failure
---
--- Parameters:
---   None - The function relies on the PostgreSQL `current_user`
---
--- Returns:
---   VOID - Throws an exception if the role requirement is not met
---
--- Notes:
---   - Intended for internal/system-only operations
---   - Commonly used as a guard clause at the beginning of privileged functions
---   - SECURITY DEFINER does not grant access unless the role check passes
--- =========================================
-CREATE OR REPLACE FUNCTION util.require_system_role_internal()
-RETURNS VOID
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = pg_catalog
-VOLATILE
-AS $$
-BEGIN
-    IF current_user NOT IN ('postgres') THEN
-        RAISE EXCEPTION 'System role required';
-    END IF;
-END;
-$$;
-
--- =========================================
--- 12. Function: cleanup_soft_deleted_records_internal
+-- 11. Function: cleanup_soft_deleted_records_internal
 -- =========================================
 -- Purpose:
 --   Permanently deletes soft-deleted records from key tables that are older than a specified number of days.
@@ -1062,14 +1042,20 @@ DECLARE
         'finance.income_sources', 'finance.counterparties',
         'finance.exchange_rates'
     ];
+
     tbl TEXT;
     rec RECORD;
     deleted_counter BIGINT;
     failed_counter BIGINT;
-    v_internal_actor_id UUID = '059fd8b9-f48b-4347-93b7-23d852b48a8a'::UUID;
+
+    -- Fixed internal actor for scheduled jobs
+    v_internal_actor_id UUID := '059fd8b9-f48b-4347-93b7-23d852b48a8a'::UUID;
 BEGIN
-    -- Must be run only by cron_admin
-    PERFORM util.require_system_role_internal();
+    -- Establish system identity for downstream auth.uid() checks
+    PERFORM set_config('request.jwt.claim.sub', v_internal_actor_id::TEXT, true);
+
+    -- Enable hard-delete bypass for entire session
+    PERFORM set_config('app.hard_delete', 'on', true);
 
     cutoff_date := NOW() - (older_than_days || ' days')::INTERVAL;
 
@@ -1087,38 +1073,43 @@ BEGIN
                 IF finance.hard_delete_record_internal(tbl, rec.id) THEN
                     deleted_counter := deleted_counter + 1;
                 END IF;
-            EXCEPTION WHEN OTHERS THEN
-                failed_counter := failed_counter + 1;
+            EXCEPTION
+                WHEN OTHERS THEN
+                    failed_counter := failed_counter + 1;
 
-                -- Persistent error logging to audit_logs
-                INSERT INTO audit.audit_logs(
-                    user_id,
-                    action_by,
-                    table_name,
-                    record_id,
-                    action,
-                    old_data,
-                    new_data
-                )
-                VALUES (
-                    v_internal_actor_id,   -- affected user (cron job context)
-                    v_internal_actor_id,   -- performed by cron user
-                    tbl,
-                    rec.id,
-                    'DELETE',
-                    NULL,
-                    jsonb_build_object(
-                        'error', SQLERRM
+                    -- Persistent error logging to audit_logs
+                    INSERT INTO audit.audit_logs(
+                        user_id,
+                        action_by,
+                        table_name,
+                        record_id,
+                        action,
+                        old_data,
+                        new_data
                     )
-                );
+                    VALUES (
+                        v_internal_actor_id,   -- affected user (cron job context)
+                        v_internal_actor_id,   -- performed by cron user
+                        tbl,
+                        rec.id,
+                        'DELETE',
+                        NULL,
+                        jsonb_build_object(
+                            'error', SQLERRM,
+                            'sqlstate', SQLSTATE
+                        )
+                    );
 
-                -- Also raise notice for session visibility
-                RAISE NOTICE 'Failed to hard delete record % from table %: %', rec.id, tbl, SQLERRM;
+                    -- Also raise notice for session visibility
+                    RAISE NOTICE
+                        'Failed to hard delete record % from table % (SQLSTATE %): %',
+                        rec.id, tbl, SQLSTATE, SQLERRM;
             END;
         END LOOP;
 
         -- Return the results for this table, including failed deletions
-        RETURN QUERY SELECT tbl, deleted_counter, failed_counter;
+        RETURN QUERY
+        SELECT tbl, deleted_counter, failed_counter;
     END LOOP;
 END;
 $$;
@@ -1131,7 +1122,7 @@ SELECT cron.schedule(
 );
 
 -- =========================================
--- 13. Function: cleanup_old_audit_logs_internal
+-- 12. Function: cleanup_old_audit_logs_internal
 -- =========================================
 -- Purpose:
 --   Deletes audit log entries older than a specified number of days to manage table size.
@@ -1162,16 +1153,24 @@ VOLATILE
 AS $$
 DECLARE
     v_deleted_count INTEGER;
+    cutoff_date TIMESTAMPTZ;
+    v_internal_actor_id UUID := '059fd8b9-f48b-4347-93b7-23d852b48a8a'::UUID;
 BEGIN
-    -- Must be run only by cron_admin
-    PERFORM util.require_system_role_internal();
+    -- Set internal actor for session (prevents auth.uid() errors)
+    PERFORM set_config('request.jwt.claim.sub', v_internal_actor_id::TEXT, true);
 
-    -- Delete audit logs older than the specified number of days
+    -- Calculate cutoff date
+    cutoff_date := CURRENT_DATE - (p_days_to_keep || ' days')::INTERVAL;
+
+    -- Delete old audit logs
     DELETE FROM audit.audit_logs
-    WHERE created_at < (CURRENT_DATE - (p_days_to_keep || ' days')::INTERVAL);
+    WHERE created_at < cutoff_date;
 
-    -- Return number of deleted rows
     GET DIAGNOSTICS v_deleted_count = ROW_COUNT;
+
+    -- Optional notice for job logs
+    RAISE NOTICE 'Deleted % audit logs older than % days', v_deleted_count, p_days_to_keep;
+
     RETURN v_deleted_count;
 END;
 $$;
@@ -1184,7 +1183,7 @@ SELECT cron.schedule(
 );
 
 -- =========================================
--- 14. Function: cleanup_old_rate_limits_internal
+-- 13. Function: cleanup_old_rate_limits_internal
 -- =========================================
 -- Purpose:
 --   Deletes API rate limit records older than 24 hours to keep the table current.
@@ -1215,16 +1214,25 @@ VOLATILE
 AS $$
 DECLARE
     v_deleted_count INTEGER;
+    cutoff_timestamp TIMESTAMPTZ;
+    v_internal_actor_id UUID := '059fd8b9-f48b-4347-93b7-23d852b48a8a'::UUID;
 BEGIN
-    -- Must be run only by cron_admin
-    PERFORM util.require_system_role_internal();
+    -- Set system actor for session (prevents auth.uid() errors)
+    PERFORM set_config('request.jwt.claim.sub', v_internal_actor_id::TEXT, true);
 
-    -- Delete API rate limits older than the specified number of hours
+    -- Calculate cutoff timestamp
+    cutoff_timestamp := NOW() - (p_hours_to_keep || ' hours')::INTERVAL;
+
+    -- Delete old API rate limit entries
     DELETE FROM api.api_rate_limits
-    WHERE created_at < (NOW() - (p_hours_to_keep || ' hours')::INTERVAL);
+    WHERE created_at < cutoff_timestamp;
 
     -- Return number of deleted rows
     GET DIAGNOSTICS v_deleted_count = ROW_COUNT;
+
+    -- Optional notice for job logs
+    RAISE NOTICE 'Deleted % API rate limit records older than % hours', v_deleted_count, p_hours_to_keep;
+
     RETURN v_deleted_count;
 END;
 $$;
