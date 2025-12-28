@@ -31,7 +31,7 @@ CREATE OR REPLACE FUNCTION util.get_json_numeric_internal(
     p_json JSONB,
     p_field TEXT,
     p_type TEXT,        -- 'DECIMAL' or 'INT'
-    p_default NUMERIC   -- default value if missing or invalid
+    p_default NUMERIC
 )
 RETURNS NUMERIC
 LANGUAGE plpgsql
@@ -43,36 +43,48 @@ DECLARE
     v_val TEXT;
     v_result NUMERIC;
 BEGIN
-    -- Check if the JSON contains the requested field
-    IF p_json ? p_field THEN
-        v_val := TRIM(p_json->>p_field);  -- Trim whitespace
+    -- Validate p_type early (programmer error)
+    IF p_type NOT IN ('DECIMAL', 'INT') THEN
+        RAISE EXCEPTION
+            'Invalid p_type: %, expected DECIMAL or INT',
+            p_type
+            USING ERRCODE = '22023'; -- invalid_parameter_value
+    END IF;
 
-        -- Return default if value is null or empty string
-        IF v_val IS NULL OR v_val = '' THEN
-            RETURN p_default;
-        END IF;
-
-        -- Pre-validate numeric value using regex
-        IF (p_type = 'DECIMAL' AND v_val ~ '^[-+]?\d*\.?\d+$') OR
-           (p_type = 'INT' AND v_val ~ '^[-+]?\d+$') THEN
-
-            -- Cast to appropriate numeric type
-            IF p_type = 'DECIMAL' THEN
-                v_result := v_val::DECIMAL(36,18);
-            ELSE  -- INT
-                v_result := v_val::INT;
-            END IF;
-
-            RETURN v_result;
-
-        ELSE
-            -- Invalid numeric format, return default
-            RETURN p_default;
-        END IF;
-    ELSE
-        -- Field not present, return default
+    -- Field missing
+    IF p_json IS NULL OR NOT (p_json ? p_field) THEN
         RETURN p_default;
     END IF;
+
+    v_val := TRIM(p_json->>p_field);
+
+    -- Null or empty
+    IF v_val IS NULL OR v_val = '' THEN
+        RETURN p_default;
+    END IF;
+
+    BEGIN
+        IF p_type = 'DECIMAL' THEN
+            -- Strict decimal validation
+            IF v_val ~ '^[-+]?\d+(\.\d+)?$' THEN
+                v_result := v_val::NUMERIC;
+                RETURN v_result;
+            END IF;
+        ELSE
+            -- INT path (use BIGINT for safety)
+            IF v_val ~ '^[-+]?\d+$' THEN
+                v_result := v_val::BIGINT;
+                RETURN v_result;
+            END IF;
+        END IF;
+    EXCEPTION
+        WHEN OTHERS THEN
+            -- Any casting error returns default
+            RETURN p_default;
+    END;
+
+    -- Invalid format
+    RETURN p_default;
 END;
 $$;
 
@@ -105,7 +117,9 @@ $$;
 --   - Designed as a helper function for access control, validation, and
 --     permission checks within account-related operations.
 -- =========================================
-CREATE OR REPLACE FUNCTION finance.validate_account_ownership_internal(p_account_id UUID)
+CREATE OR REPLACE FUNCTION finance.validate_account_ownership_internal(
+    p_account_id UUID
+)
 RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -114,18 +128,22 @@ STABLE
 AS $$
 DECLARE
     v_user_id UUID := auth.uid();  -- current authenticated user
-    v_exists BOOLEAN;
 BEGIN
-    -- Check if the account exists, belongs to the current user, and is not soft-deleted
-    SELECT EXISTS(
-        SELECT 1 
-        FROM finance.accounts 
-        WHERE id = p_account_id 
-          AND user_id = v_user_id 
+    -- Authentication is mandatory
+    IF v_user_id IS NULL THEN
+        RAISE EXCEPTION
+            'Not authenticated'
+            USING ERRCODE = '28000'; -- invalid_authorization_specification
+    END IF;
+
+    -- Validate ownership and soft-delete status
+    RETURN EXISTS (
+        SELECT 1
+        FROM finance.accounts
+        WHERE id = p_account_id
+          AND user_id = v_user_id
           AND deleted_at IS NULL
-    ) INTO v_exists;
-    
-    RETURN v_exists;
+    );
 END;
 $$;
 
@@ -189,51 +207,46 @@ DECLARE
     v_counterparty_id UUID;
 
     -- Numeric fields
-    v_balance DECIMAL(36,18);
-    v_interest_rate DECIMAL(36,18);
-    v_credit_limit DECIMAL(36,18);
-    v_current_balance DECIMAL(36,18);
-    v_principal_amount DECIMAL(36,18);
-    v_outstanding_amount DECIMAL(36,18);
+    v_balance NUMERIC;
+    v_interest_rate NUMERIC;
+    v_credit_limit NUMERIC;
+    v_current_balance NUMERIC;
+    v_principal_amount NUMERIC;
+    v_outstanding_amount NUMERIC;
     v_term_months INT;
-    v_portfolio_value DECIMAL(36,18);
-    v_amount_due DECIMAL(36,18);
-
-    v_type_text TEXT := p_type::TEXT;
+    v_portfolio_value NUMERIC;
+    v_amount_due NUMERIC;
 BEGIN
-    -- Enable Row-Level Security
+    -- Enable RLS
     PERFORM set_config('row_security', 'on', true);
 
-    -- Ensure authenticated user
+    -- Authentication required
     IF v_user_id IS NULL THEN
-        RAISE EXCEPTION 'Not authenticated';
+        RAISE EXCEPTION
+            'Not authenticated'
+            USING ERRCODE = '28000';
     END IF;
 
-    -- Ensure caller is creating account only for themselves
+    -- Caller can only create for self
     IF p_user_id IS DISTINCT FROM v_user_id THEN
-        RAISE EXCEPTION 'Permission denied: cannot create account for another user'
+        RAISE EXCEPTION
+            'Permission denied'
             USING ERRCODE = '42501';
     END IF;
 
-    -- Enum-safe validation for account type
-    IF NOT EXISTS (
-        SELECT 1
-        FROM unnest(enum_range(NULL::finance.account_type)) AS t(val)
-        WHERE t.val::TEXT = v_type_text
-    ) THEN
-        RAISE EXCEPTION 'Invalid account type: %', v_type_text;
-    END IF;
-    
-    -- Safely cast counterparty_id to UUID if present
+    -- Parse counterparty_id if present
     IF p_details ? 'counterparty_id' THEN
         BEGIN
             v_counterparty_id := (p_details->>'counterparty_id')::UUID;
-        EXCEPTION WHEN invalid_text_representation THEN
-            RAISE EXCEPTION 'Invalid counterparty_id: % is not a valid UUID', p_details->>'counterparty_id';
+        EXCEPTION
+            WHEN invalid_text_representation THEN
+                RAISE EXCEPTION
+                    'Invalid counterparty_id'
+                    USING ERRCODE = '22P02';
         END;
     END IF;
 
-    -- Parse numeric fields using helper function
+    -- Parse numeric fields
     v_balance := util.get_json_numeric_internal(p_details, 'balance', 'DECIMAL', 0);
     v_interest_rate := util.get_json_numeric_internal(p_details, 'interest_rate', 'DECIMAL', 0);
     v_credit_limit := util.get_json_numeric_internal(p_details, 'credit_limit', 'DECIMAL', 0);
@@ -244,12 +257,12 @@ BEGIN
     v_portfolio_value := util.get_json_numeric_internal(p_details, 'portfolio_value', 'DECIMAL', 0);
     v_amount_due := util.get_json_numeric_internal(p_details, 'amount_due', 'DECIMAL', 0);
 
-    -- Insert into base accounts table
+    -- Insert base account
     INSERT INTO finance.accounts(user_id, account_name, type, currency)
     VALUES (p_user_id, p_account_name, p_type, p_currency)
     RETURNING id INTO v_account_id;
 
-    -- Insert into specialized account table based on type
+    -- Insert specialized account
     CASE p_type
         WHEN 'cash' THEN
             INSERT INTO finance.cash_accounts(account_id, location, balance, status, notes)
@@ -259,8 +272,7 @@ BEGIN
                 v_balance,
                 COALESCE(p_details->>'status', 'active'),
                 COALESCE(p_details->>'notes', 'Default cash account')
-            )
-            ON CONFLICT (account_id) DO NOTHING;
+            );
 
         WHEN 'bank' THEN
             INSERT INTO finance.bank_accounts(account_id, bank_name, account_no, branch, account_holder_name, balance, interest_rate, status, notes)
@@ -274,8 +286,7 @@ BEGIN
                 v_interest_rate,
                 COALESCE(p_details->>'status', 'active'),
                 COALESCE(p_details->>'notes', 'Default bank account')
-            )
-            ON CONFLICT (account_id) DO NOTHING;
+            );
 
         WHEN 'credit_card' THEN
             INSERT INTO finance.credit_card_accounts(account_id, card_number, card_type, credit_limit, current_balance, billing_cycle, interest_rate, status, notes)
@@ -289,23 +300,33 @@ BEGIN
                 v_interest_rate,
                 COALESCE(p_details->>'status', 'active'),
                 COALESCE(p_details->>'notes', 'Default credit card')
-            )
-            ON CONFLICT (account_id) DO NOTHING;
+            );
 
         WHEN 'loan' THEN
             -- Ensure counterparty_id is mandatory
             IF v_counterparty_id IS NULL THEN
-                RAISE EXCEPTION 'counterparty_id is required and must be valid UUID for loan accounts';
+                RAISE EXCEPTION
+                    'counterparty_id is required'
+                    USING ERRCODE = '23502';
             END IF;
 
             -- Validate counterparty_id ownership
             IF NOT EXISTS (
-                SELECT 1 FROM finance.counterparties WHERE id = v_counterparty_id AND user_id = v_user_id
+                SELECT 1
+                FROM finance.counterparties
+                WHERE id = v_counterparty_id
+                  AND user_id = v_user_id
             ) THEN
-                RAISE EXCEPTION 'Invalid counterparty_id: % or does not belong to current user', v_counterparty_id;
+                RAISE EXCEPTION
+                    'Invalid counterparty ownership'
+                    USING ERRCODE = '42501';
             END IF;
 
-            INSERT INTO finance.loan_accounts(account_id, loan_type, principal_amount, outstanding_amount, interest_rate, term_months, start_date, end_date, status, notes, counterparty_id, collateral)
+            INSERT INTO finance.loan_accounts(
+                account_id, loan_type, principal_amount, outstanding_amount,
+                interest_rate, term_months, start_date, end_date,
+                status, notes, counterparty_id, collateral
+            )
             VALUES (
                 v_account_id,
                 COALESCE(p_details->>'loan_type', 'Personal'),
@@ -319,8 +340,7 @@ BEGIN
                 COALESCE(p_details->>'notes', 'Default loan account'),
                 v_counterparty_id,
                 p_details->>'collateral'
-            )
-            ON CONFLICT (account_id) DO NOTHING;
+            );
 
         WHEN 'investment' THEN
             INSERT INTO finance.investment_accounts(account_id, investment_type, institution_name, account_no, portfolio_value, status, notes)
@@ -332,8 +352,7 @@ BEGIN
                 v_portfolio_value,
                 COALESCE(p_details->>'status', 'active'),
                 COALESCE(p_details->>'notes', 'Default investment account')
-            )
-            ON CONFLICT (account_id) DO NOTHING;
+            );
 
         WHEN 'crypto' THEN
             INSERT INTO finance.crypto_accounts(account_id, crypto_wallet_address, exchange_name, balance, status, notes)
@@ -344,8 +363,7 @@ BEGIN
                 v_balance,
                 COALESCE(p_details->>'status', 'active'),
                 COALESCE(p_details->>'notes', 'Default crypto account')
-            )
-            ON CONFLICT (account_id) DO NOTHING;
+            );
 
         WHEN 'wallet' THEN
             INSERT INTO finance.wallet_accounts(account_id, wallet_name, provider, balance, status, notes)
@@ -356,23 +374,33 @@ BEGIN
                 v_balance,
                 COALESCE(p_details->>'status', 'active'),
                 COALESCE(p_details->>'notes', 'Default wallet account')
-            )
-            ON CONFLICT (account_id) DO NOTHING;
+            );
 
         WHEN 'receivable' THEN
             -- Ensure counterparty_id is mandatory
             IF v_counterparty_id IS NULL THEN
-                RAISE EXCEPTION 'counterparty_id is required and must be valid UUID for receivable accounts';
+                RAISE EXCEPTION
+                    'counterparty_id is required'
+                    USING ERRCODE = '23502';
             END IF;
 
             -- Validate counterparty_id ownership
             IF NOT EXISTS (
-                SELECT 1 FROM finance.counterparties WHERE id = v_counterparty_id AND user_id = v_user_id
+                SELECT 1
+                FROM finance.counterparties
+                WHERE id = v_counterparty_id
+                  AND user_id = v_user_id
             ) THEN
-                RAISE EXCEPTION 'Invalid counterparty_id: % or does not belong to current user', v_counterparty_id;
+                RAISE EXCEPTION
+                    'Invalid counterparty ownership'
+                    USING ERRCODE = '42501';
             END IF;
 
-            INSERT INTO finance.receivable_accounts(account_id, counterparty_id, invoice_no, principal_amount, amount_due, due_date, status, notes)
+            INSERT INTO finance.receivable_accounts(
+                account_id, counterparty_id, invoice_no,
+                principal_amount, amount_due, due_date,
+                status, notes
+            )
             VALUES (
                 v_account_id,
                 v_counterparty_id,
@@ -382,11 +410,7 @@ BEGIN
                 COALESCE((p_details->>'due_date')::DATE, CURRENT_DATE),
                 COALESCE(p_details->>'status', 'pending'),
                 COALESCE(p_details->>'notes', 'Default receivable account')
-            )
-            ON CONFLICT (account_id) DO NOTHING;
-
-        ELSE
-            RAISE EXCEPTION 'Unknown account type: %', p_type;
+            );
     END CASE;
 
     RETURN v_account_id;
@@ -440,7 +464,7 @@ CREATE OR REPLACE FUNCTION finance.update_account_internal(
     p_account_id UUID,
     p_update_data JSONB
 )
-RETURNS JSONB
+RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, finance, api
@@ -451,8 +475,6 @@ DECLARE
     v_max_requests INTEGER := 100;
     v_window_minutes INTEGER := 60;
     v_account_type finance.account_type;
-    v_base JSONB;
-    v_details JSONB;
     v_counterparty_id UUID;
 
     -- Numeric fields
@@ -471,63 +493,45 @@ BEGIN
 
     -- Ensure authenticated user
     IF v_user_id IS NULL THEN
-        RAISE EXCEPTION 'Not authenticated';
+        RAISE EXCEPTION 'Not authenticated'
+            USING ERRCODE = '28000';
     END IF;
 
     -- Validate ownership
     IF NOT finance.validate_account_ownership_internal(p_account_id) THEN
-        RAISE EXCEPTION 'Permission denied: cannot update this account'
+        RAISE EXCEPTION 'Permission denied'
             USING ERRCODE = '42501';
     END IF;
 
     -- Enforce rate limit
     IF NOT api.check_rate_limit_internal('update_account', v_max_requests, v_window_minutes) THEN
-        RAISE EXCEPTION 'Rate limit exceeded: max % requests per % minutes',
-            v_max_requests, v_window_minutes;
+        RAISE EXCEPTION 'Rate limit exceeded'
+            USING ERRCODE = '55000';
     END IF;
 
-    -- Fetch base account info
-    SELECT jsonb_build_object(
-        'id', a.id,
-        'user_id', a.user_id,
-        'account_name', a.account_name,
-        'type', a.type,
-        'currency', a.currency,
-        'created_at', a.created_at,
-        'updated_at', a.updated_at
-    )
-    INTO v_base
-    FROM finance.accounts a
-    WHERE a.id = p_account_id
-      AND a.user_id = v_user_id
-      AND a.deleted_at IS NULL;
+    -- Fetch account type
+    SELECT type::finance.account_type
+    INTO v_account_type
+    FROM finance.accounts
+    WHERE id = p_account_id
+      AND deleted_at IS NULL;
 
-    IF v_base IS NULL THEN
-        RAISE EXCEPTION 'Account not found or access denied';
+    IF v_account_type IS NULL THEN
+        RAISE EXCEPTION 'Account not found or deleted'
+            USING ERRCODE = 'P0002';
     END IF;
-
-    -- Validate and cast account type safely
-    IF NOT EXISTS (
-        SELECT 1
-        FROM unnest(enum_range(NULL::finance.account_type)) AS t(val)
-        WHERE t.val::TEXT = v_base->>'type'
-    ) THEN
-        RAISE EXCEPTION 'Invalid account type in database: %', v_base->>'type';
-    END IF;
-
-    v_account_type := (v_base->>'type')::finance.account_type;
 
     -- Safely cast counterparty_id if present
     IF p_update_data ? 'counterparty_id' THEN
         BEGIN
             v_counterparty_id := (p_update_data->>'counterparty_id')::UUID;
         EXCEPTION WHEN invalid_text_representation THEN
-            RAISE EXCEPTION 'Invalid counterparty_id: % is not a valid UUID',
-                p_update_data->>'counterparty_id';
+            RAISE EXCEPTION 'Invalid counterparty_id'
+                USING ERRCODE = '22023';
         END;
     END IF;
 
-    -- Parse numeric fields using helper function
+    -- Parse numeric fields
     v_balance := util.get_json_numeric_internal(p_update_data, 'balance', 'DECIMAL', NULL);
     v_interest_rate := util.get_json_numeric_internal(p_update_data, 'interest_rate', 'DECIMAL', NULL);
     v_credit_limit := util.get_json_numeric_internal(p_update_data, 'credit_limit', 'DECIMAL', NULL);
@@ -545,9 +549,9 @@ BEGIN
         currency = COALESCE(p_update_data->>'currency', currency),
         updated_at = NOW()
     WHERE id = p_account_id
-        AND deleted_at IS NULL;
+      AND deleted_at IS NULL;
 
-    -- Update specialized tables
+    -- Update specialized tables based on account type
     CASE v_account_type
         WHEN 'cash' THEN
             UPDATE finance.cash_accounts
@@ -556,8 +560,7 @@ BEGIN
                 balance = COALESCE(v_balance, balance),
                 status = COALESCE(p_update_data->>'status', status),
                 notes = COALESCE(p_update_data->>'notes', notes)
-            WHERE account_id = p_account_id AND deleted_at IS NULL
-            RETURNING to_jsonb(finance.cash_accounts) - 'account_id' INTO v_details;
+            WHERE account_id = p_account_id AND deleted_at IS NULL;
 
         WHEN 'bank' THEN
             UPDATE finance.bank_accounts
@@ -570,8 +573,7 @@ BEGIN
                 interest_rate = COALESCE(v_interest_rate, interest_rate),
                 status = COALESCE(p_update_data->>'status', status),
                 notes = COALESCE(p_update_data->>'notes', notes)
-            WHERE account_id = p_account_id AND deleted_at IS NULL
-            RETURNING to_jsonb(finance.bank_accounts) - 'account_id' INTO v_details;
+            WHERE account_id = p_account_id AND deleted_at IS NULL;
 
         WHEN 'credit_card' THEN
             UPDATE finance.credit_card_accounts
@@ -584,8 +586,7 @@ BEGIN
                 interest_rate = COALESCE(v_interest_rate, interest_rate),
                 status = COALESCE(p_update_data->>'status', status),
                 notes = COALESCE(p_update_data->>'notes', notes)
-            WHERE account_id = p_account_id AND deleted_at IS NULL
-            RETURNING to_jsonb(finance.credit_card_accounts) - 'account_id' INTO v_details;
+            WHERE account_id = p_account_id AND deleted_at IS NULL;
 
         WHEN 'investment' THEN
             UPDATE finance.investment_accounts
@@ -596,8 +597,7 @@ BEGIN
                 portfolio_value = COALESCE(v_portfolio_value, portfolio_value),
                 status = COALESCE(p_update_data->>'status', status),
                 notes = COALESCE(p_update_data->>'notes', notes)
-            WHERE account_id = p_account_id AND deleted_at IS NULL
-            RETURNING to_jsonb(finance.investment_accounts) - 'account_id' INTO v_details;
+            WHERE account_id = p_account_id AND deleted_at IS NULL;
 
         WHEN 'crypto' THEN
             UPDATE finance.crypto_accounts
@@ -607,8 +607,7 @@ BEGIN
                 balance = COALESCE(v_balance, balance),
                 status = COALESCE(p_update_data->>'status', status),
                 notes = COALESCE(p_update_data->>'notes', notes)
-            WHERE account_id = p_account_id AND deleted_at IS NULL
-            RETURNING to_jsonb(finance.crypto_accounts) - 'account_id' INTO v_details;
+            WHERE account_id = p_account_id AND deleted_at IS NULL;
 
         WHEN 'wallet' THEN
             UPDATE finance.wallet_accounts
@@ -618,22 +617,17 @@ BEGIN
                 balance = COALESCE(v_balance, balance),
                 status = COALESCE(p_update_data->>'status', status),
                 notes = COALESCE(p_update_data->>'notes', notes)
-            WHERE account_id = p_account_id AND deleted_at IS NULL
-            RETURNING to_jsonb(finance.wallet_accounts) - 'account_id' INTO v_details;
+            WHERE account_id = p_account_id AND deleted_at IS NULL;
 
         WHEN 'loan' THEN
-            -- Validate counterparty_id
-            IF v_counterparty_id IS NOT NULL THEN
-                IF NOT EXISTS (
-                    SELECT 1
-                    FROM finance.counterparties
-                    WHERE id = v_counterparty_id
-                      AND user_id = v_user_id
-                ) THEN
-                    RAISE EXCEPTION
-                        'Invalid counterparty_id: % or does not belong to current user',
-                        v_counterparty_id;
-                END IF;
+            -- Validate counterparty
+            IF v_counterparty_id IS NOT NULL AND NOT EXISTS (
+                SELECT 1
+                FROM finance.counterparties
+                WHERE id = v_counterparty_id AND user_id = v_user_id
+            ) THEN
+                RAISE EXCEPTION 'Invalid counterparty_id'
+                    USING ERRCODE = 'P0002';
             END IF;
 
             UPDATE finance.loan_accounts
@@ -648,22 +642,17 @@ BEGIN
                 notes = COALESCE(p_update_data->>'notes', notes),
                 counterparty_id = COALESCE(v_counterparty_id, counterparty_id),
                 collateral = COALESCE(p_update_data->>'collateral', collateral)
-            WHERE account_id = p_account_id AND deleted_at IS NULL
-            RETURNING to_jsonb(finance.loan_accounts) - 'account_id' INTO v_details;
+            WHERE account_id = p_account_id AND deleted_at IS NULL;
 
         WHEN 'receivable' THEN
             -- Validate counterparty_id
-            IF v_counterparty_id IS NOT NULL THEN
-                IF NOT EXISTS (
-                    SELECT 1
-                    FROM finance.counterparties
-                    WHERE id = v_counterparty_id
-                      AND user_id = v_user_id
-                ) THEN
-                    RAISE EXCEPTION
-                        'Invalid counterparty_id: % or does not belong to current user',
-                        v_counterparty_id;
-                END IF;
+            IF v_counterparty_id IS NOT NULL AND NOT EXISTS (
+                SELECT 1
+                FROM finance.counterparties
+                WHERE id = v_counterparty_id AND user_id = v_user_id
+            ) THEN
+                RAISE EXCEPTION 'Invalid counterparty_id'
+                    USING ERRCODE = 'P0002';
             END IF;
 
             UPDATE finance.receivable_accounts
@@ -674,14 +663,14 @@ BEGIN
                 amount_due = COALESCE(v_amount_due, amount_due),
                 due_date = COALESCE((p_update_data->>'due_date')::DATE, due_date),
                 notes = COALESCE(p_update_data->>'notes', notes)
-            WHERE account_id = p_account_id AND deleted_at IS NULL
-            RETURNING to_jsonb(finance.receivable_accounts) - 'account_id' INTO v_details;
+            WHERE account_id = p_account_id AND deleted_at IS NULL;
 
         ELSE
-            RAISE EXCEPTION 'Unknown account type: %', v_account_type;
+            RAISE EXCEPTION 'Unknown account type'
+                USING ERRCODE = 'P0002';
     END CASE;
 
-    RETURN v_base || COALESCE(v_details, '{}'::jsonb);
+    RETURN TRUE;  -- indicate successful update
 END;
 $$;
 
@@ -722,7 +711,9 @@ $$;
 --   - Does not physically remove records to preserve historical data and
 --     maintain referential integrity.
 -- =========================================
-CREATE OR REPLACE FUNCTION finance.soft_delete_account_internal(p_account_id UUID)
+CREATE OR REPLACE FUNCTION finance.soft_delete_account_internal(
+    p_account_id UUID
+)
 RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -738,18 +729,17 @@ BEGIN
 
     -- Ensure authenticated user
     IF v_user_id IS NULL THEN
-        RAISE EXCEPTION 'Not authenticated';
+        RAISE EXCEPTION 'Not authenticated'
+            USING ERRCODE = '28000';
     END IF;
 
-    -- Validate ownership (users can delete only their own accounts)
+    -- Validate ownership
     IF NOT finance.validate_account_ownership_internal(p_account_id) THEN
-        RAISE EXCEPTION
-            'Permission denied: user is not authorized to delete account (%s).',
-            p_account_id
+        RAISE EXCEPTION 'Permission denied to delete account'
             USING ERRCODE = '42501';
     END IF;
 
-    -- Perform soft delete (self-owned accounts only)
+    -- Perform soft delete
     UPDATE finance.accounts
     SET deleted_at = NOW(),
         updated_at = NOW()
@@ -758,27 +748,13 @@ BEGIN
       AND deleted_at IS NULL
     RETURNING id INTO v_exists;
 
-    -- If nothing was updated, either already deleted or nonexistent
+    -- Return TRUE if account was deleted, FALSE if already deleted or not found
     IF v_exists IS NULL THEN
         RETURN FALSE;
     END IF;
 
-    -- Trigger cleanup_specialized_account will handle linked accounts
+    -- Linked specialized accounts should be handled by trigger / separate function
     RETURN TRUE;
-
-EXCEPTION
-    WHEN unique_violation THEN
-        RAISE EXCEPTION
-            'Duplicate account ID (%s) detected during soft delete.',
-            p_account_id;
-    WHEN data_exception THEN
-        RAISE EXCEPTION
-            'Invalid data encountered while soft deleting account (%s): %s',
-            p_account_id, SQLERRM;
-    WHEN OTHERS THEN
-        RAISE EXCEPTION
-            'Unexpected error during soft delete of account (%s): %s',
-            p_account_id, SQLERRM;
 END;
 $$;
 
@@ -819,7 +795,9 @@ $$;
 --   - Does not physically remove records to preserve historical data and
 --     maintain referential integrity.
 -- =========================================
-CREATE OR REPLACE FUNCTION finance.admin_soft_delete_account_internal(p_account_id UUID)
+CREATE OR REPLACE FUNCTION finance.admin_soft_delete_account_internal(
+    p_account_id UUID
+)
 RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -835,11 +813,11 @@ BEGIN
 
     -- Ensure caller is an admin
     IF NOT v_is_admin THEN
-        RAISE EXCEPTION 'Permission denied: only admins can soft delete accounts.'
+        RAISE EXCEPTION 'Permission denied: only admins can soft delete accounts'
             USING ERRCODE = '42501';
     END IF;
 
-    -- Perform soft delete (any user’s account)
+    -- Perform soft delete on any user's account
     UPDATE finance.accounts
     SET deleted_at = NOW(),
         updated_at = NOW()
@@ -847,21 +825,13 @@ BEGIN
       AND deleted_at IS NULL
     RETURNING id INTO v_exists;
 
-    -- If nothing was updated, either already deleted or nonexistent
+    -- Return TRUE if deleted, FALSE if already deleted or nonexistent
     IF v_exists IS NULL THEN
         RETURN FALSE;
     END IF;
 
-    -- Trigger cleanup_specialized_account will handle linked accounts
+    -- Linked specialized accounts handled by triggers
     RETURN TRUE;
-
-EXCEPTION
-    WHEN unique_violation THEN
-        RAISE EXCEPTION 'Duplicate account ID (%s) detected during soft delete.', p_account_id;
-    WHEN data_exception THEN
-        RAISE EXCEPTION 'Invalid data encountered while soft deleting account (%s): %s', p_account_id, SQLERRM;
-    WHEN OTHERS THEN
-        RAISE EXCEPTION 'Unexpected error during soft delete of account (%s): %s', p_account_id, SQLERRM;
 END;
 $$;
 
@@ -902,7 +872,9 @@ $$;
 --     integrity and avoid orphaned records.
 --   - Intended for administrative or maintenance workflows only.
 -- =========================================
-CREATE OR REPLACE FUNCTION finance.admin_hard_delete_account_internal(p_account_id UUID)
+CREATE OR REPLACE FUNCTION finance.admin_hard_delete_account_internal(
+    p_account_id UUID
+)
 RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -913,73 +885,78 @@ DECLARE
     current_user_id UUID;
     account_owner UUID;
     account_type finance.account_type;
-    is_admin BOOLEAN;
     v_deleted_at timestamptz;
+    is_admin BOOLEAN;
 BEGIN
-    -- Enable Row-Level Security for this session
+    -- Enable Row-Level Security
     PERFORM set_config('row_security', 'on', true);
 
+    -- Authentication
     current_user_id := auth.uid();
 
     IF current_user_id IS NULL THEN
-        RAISE EXCEPTION 'Not authenticated';
+        RAISE EXCEPTION 'Not authenticated'
+            USING ERRCODE = '28000';
     END IF;
 
-    -- Check admin permissions
+    -- Admin check
     is_admin := util.check_admin_permissions_internal();
     IF NOT is_admin THEN
-        RAISE EXCEPTION 'Permission denied: only admins can hard delete';
+        RAISE EXCEPTION 'Permission denied: only admins can hard delete accounts'
+            USING ERRCODE = '42501';
     END IF;
 
-    -- Enable hard delete bypass for this session
+    -- Enable hard-delete bypass
     PERFORM set_config('app.hard_delete', 'on', true);
 
-    -- Get account info
+    -- Fetch account info
     SELECT user_id, type, deleted_at
     INTO account_owner, account_type, v_deleted_at
     FROM finance.accounts
     WHERE id = p_account_id;
 
     IF account_owner IS NULL THEN
-        RAISE EXCEPTION 'Account not found';
+        RAISE EXCEPTION 'Account not found'
+            USING ERRCODE = 'P0002';
     END IF;
 
     IF v_deleted_at IS NULL THEN
-        RAISE EXCEPTION 'Account must be soft-deleted before hard delete';
+        RAISE EXCEPTION 'Account must be soft-deleted before hard delete'
+            USING ERRCODE = 'P0002';
     END IF;
 
-    -- Delete all transactions referencing this account using EXISTS for performance
+    -- Delete all transactions referencing this account
     DELETE FROM finance.transactions t
     WHERE EXISTS (
         SELECT 1 FROM finance.transactions_income ti
         WHERE ti.transaction_id = t.id AND ti.account_id = p_account_id
-    )
-    OR EXISTS (
+        )
+       OR EXISTS (
         SELECT 1 FROM finance.transactions_expense te
         WHERE te.transaction_id = t.id AND te.account_id = p_account_id
-    )
-    OR EXISTS (
+        )
+       OR EXISTS (
         SELECT 1 FROM finance.transactions_investment ti
         WHERE ti.transaction_id = t.id AND (ti.funding_account_id = p_account_id OR ti.investment_account_id = p_account_id)
-    )
-    OR EXISTS (
+        )
+       OR EXISTS (
         SELECT 1 FROM finance.transactions_borrow tb
         WHERE tb.transaction_id = t.id AND (tb.loan_account_id = p_account_id OR tb.disbursement_account_id = p_account_id)
-    )
-    OR EXISTS (
+        )
+       OR EXISTS (
         SELECT 1 FROM finance.transactions_lend tl
         WHERE tl.transaction_id = t.id AND (tl.funding_account_id = p_account_id OR tl.receivable_account_id = p_account_id)
-    )
-    OR EXISTS (
+        )
+       OR EXISTS (
         SELECT 1 FROM finance.transactions_transfer tt
         WHERE tt.transaction_id = t.id AND (tt.from_account = p_account_id OR tt.to_account = p_account_id)
-    )
-    OR EXISTS (
+        )
+       OR EXISTS (
         SELECT 1 FROM finance.transactions_adjustment ta
         WHERE ta.transaction_id = t.id AND ta.account_id = p_account_id
-    );
+        );
 
-    -- Delete the specialized account row
+    -- Delete specialized account row
     CASE account_type
         WHEN 'cash'       THEN DELETE FROM finance.cash_accounts        WHERE account_id = p_account_id;
         WHEN 'bank'       THEN DELETE FROM finance.bank_accounts        WHERE account_id = p_account_id;
@@ -990,11 +967,13 @@ BEGIN
         WHEN 'wallet'     THEN DELETE FROM finance.wallet_accounts      WHERE account_id = p_account_id;
         WHEN 'receivable' THEN DELETE FROM finance.receivable_accounts  WHERE account_id = p_account_id;
         ELSE
-            RAISE EXCEPTION 'Unknown account type during hard delete: %', account_type;
+            RAISE EXCEPTION 'Unknown account type during hard delete: %', account_type
+                USING ERRCODE = 'P0002';
     END CASE;
 
     -- Delete the account itself
-    DELETE FROM finance.accounts WHERE id = p_account_id;
+    DELETE FROM finance.accounts
+    WHERE id = p_account_id;
 
     RETURN TRUE;
 END;
@@ -1049,17 +1028,32 @@ AS $$
 DECLARE
     v_account_id UUID;
 BEGIN
-    -- Basic input validation
+    -- Input validation
     IF p_user_id IS NULL THEN
-        RAISE EXCEPTION 'User id is required';
+        RETURN jsonb_build_object(
+            'success', false,
+            'code', 'MISSING_USER_ID',
+            'message', 'User ID is required',
+            'data', NULL
+        );
     END IF;
 
     IF p_account_name IS NULL OR trim(p_account_name) = '' THEN
-        RAISE EXCEPTION 'Account name is required';
+        RETURN jsonb_build_object(
+            'success', false,
+            'code', 'MISSING_ACCOUNT_NAME',
+            'message', 'Account name is required',
+            'data', NULL
+        );
     END IF;
 
     IF p_currency IS NULL OR trim(p_currency) = '' THEN
-        RAISE EXCEPTION 'Currency is required';
+        RETURN jsonb_build_object(
+            'success', false,
+            'code', 'MISSING_CURRENCY',
+            'message', 'Currency is required',
+            'data', NULL
+        );
     END IF;
 
     -- Call internal function
@@ -1073,30 +1067,34 @@ BEGIN
 
     RETURN jsonb_build_object(
         'success', true,
-        'account_id', v_account_id,
-        'message', 'Account created successfully'
+        'code', 'OK',
+        'message', 'Account created successfully',
+        'data', jsonb_build_object('account_id', v_account_id)
     );
 
 EXCEPTION
     WHEN unique_violation THEN
         RETURN jsonb_build_object(
             'success', false,
-            'account_id', NULL,
-            'message', 'An account with the same name and type already exists'
+            'code', 'ALREADY_EXISTS',
+            'message', 'An account with the same name and type already exists',
+            'data', NULL
         );
 
     WHEN check_violation OR foreign_key_violation THEN
         RETURN jsonb_build_object(
             'success', false,
-            'account_id', NULL,
-            'message', 'Invalid account data'
+            'code', 'INVALID_DATA',
+            'message', 'Invalid account data',
+            'data', NULL
         );
 
     WHEN OTHERS THEN
         RETURN jsonb_build_object(
             'success', false,
-            'account_id', NULL,
-            'message', 'Failed to create account'
+            'code', 'FAILED',
+            'message', 'Failed to create account',
+            'data', NULL
         );
 END;
 $$;
@@ -1142,55 +1140,69 @@ SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
 DECLARE
-    v_result JSONB;
+    v_success BOOLEAN;
 BEGIN
-    -- Basic input validation
+    -- Input validation
     IF p_account_id IS NULL THEN
         RETURN jsonb_build_object(
             'success', false,
-            'account_id', NULL,
-            'message', 'Account ID is required'
+            'code', 'MISSING_ACCOUNT_ID',
+            'message', 'Account ID is required',
+            'data', NULL
         );
     END IF;
 
     IF p_update_data IS NULL OR jsonb_typeof(p_update_data) <> 'object' THEN
         RETURN jsonb_build_object(
             'success', false,
-            'account_id', p_account_id,
-            'message', 'Update data must be a valid JSON object'
+            'code', 'INVALID_JSON',
+            'message', 'Update data must be a valid JSON object',
+            'data', NULL
         );
     END IF;
 
     -- Call internal function
-    v_result := finance.update_account_internal(p_account_id, p_update_data);
+    v_success := finance.update_account_internal(p_account_id, p_update_data);
 
-    RETURN jsonb_build_object(
-        'success', true,
-        'account_id', p_account_id,
-        'updated_data', v_result,
-        'message', 'Account updated successfully'
-    );
+    IF v_success THEN
+        RETURN jsonb_build_object(
+            'success', true,
+            'code', 'OK',
+            'message', 'Account updated successfully',
+            'data', jsonb_build_object('account_id', p_account_id)
+        );
+    ELSE
+        RETURN jsonb_build_object(
+            'success', false,
+            'code', 'FAILED',
+            'message', 'Account update did not occur (possibly already deleted)',
+            'data', jsonb_build_object('account_id', p_account_id)
+        );
+    END IF;
 
 EXCEPTION
     WHEN unique_violation THEN
         RETURN jsonb_build_object(
             'success', false,
-            'account_id', p_account_id,
-            'message', 'Account with the same name already exists'
+            'code', 'ALREADY_EXISTS',
+            'message', 'Account with the same name already exists',
+            'data', jsonb_build_object('account_id', p_account_id)
         );
 
-    WHEN check_violation OR foreign_key_violation THEN
+    WHEN foreign_key_violation OR check_violation THEN
         RETURN jsonb_build_object(
             'success', false,
-            'account_id', p_account_id,
-            'message', 'Invalid update data'
+            'code', 'INVALID_DATA',
+            'message', 'Invalid update data',
+            'data', jsonb_build_object('account_id', p_account_id)
         );
 
     WHEN OTHERS THEN
         RETURN jsonb_build_object(
             'success', false,
-            'account_id', p_account_id,
-            'message', 'Failed to update account'
+            'code', 'FAILED',
+            'message', 'Failed to update account',
+            'data', jsonb_build_object('account_id', p_account_id)
         );
 END;
 $$;
@@ -1232,11 +1244,13 @@ AS $$
 DECLARE
     v_success BOOLEAN;
 BEGIN
+    -- Input validation
     IF p_account_id IS NULL THEN
         RETURN jsonb_build_object(
             'success', false,
-            'account_id', NULL,
-            'message', 'Account ID is required'
+            'code', 'MISSING_ACCOUNT_ID',
+            'message', 'Account ID is required',
+            'data', NULL
         );
     END IF;
 
@@ -1246,14 +1260,16 @@ BEGIN
     IF v_success THEN
         RETURN jsonb_build_object(
             'success', true,
-            'account_id', p_account_id,
-            'message', 'Account soft-deleted successfully'
+            'code', 'OK',
+            'message', 'Account soft-deleted successfully',
+            'data', jsonb_build_object('account_id', p_account_id)
         );
     ELSE
         RETURN jsonb_build_object(
             'success', false,
-            'account_id', p_account_id,
-            'message', 'Account could not be soft-deleted'
+            'code', 'FAILED',
+            'message', 'Account could not be soft-deleted (possibly already deleted or not found)',
+            'data', jsonb_build_object('account_id', p_account_id)
         );
     END IF;
 
@@ -1261,8 +1277,9 @@ EXCEPTION
     WHEN OTHERS THEN
         RETURN jsonb_build_object(
             'success', false,
-            'account_id', p_account_id,
-            'message', 'Failed to soft-delete account'
+            'code', 'FAILED',
+            'message', 'Failed to soft-delete account',
+            'data', jsonb_build_object('account_id', p_account_id)
         );
 END;
 $$;
@@ -1305,11 +1322,13 @@ AS $$
 DECLARE
     v_success BOOLEAN;
 BEGIN
+    -- Input validation
     IF p_account_id IS NULL THEN
         RETURN jsonb_build_object(
             'success', false,
-            'account_id', NULL,
-            'message', 'Account ID is required'
+            'code', 'MISSING_ACCOUNT_ID',
+            'message', 'Account ID is required',
+            'data', NULL
         );
     END IF;
 
@@ -1319,14 +1338,16 @@ BEGIN
     IF v_success THEN
         RETURN jsonb_build_object(
             'success', true,
-            'account_id', p_account_id,
-            'message', 'Account soft-deleted successfully by admin'
+            'code', 'OK',
+            'message', 'Account soft-deleted successfully by admin',
+            'data', jsonb_build_object('account_id', p_account_id)
         );
     ELSE
         RETURN jsonb_build_object(
             'success', false,
-            'account_id', p_account_id,
-            'message', 'Account could not be soft-deleted by admin'
+            'code', 'FAILED',
+            'message', 'Account could not be soft-deleted by admin (possibly already deleted or not found)',
+            'data', jsonb_build_object('account_id', p_account_id)
         );
     END IF;
 
@@ -1334,8 +1355,9 @@ EXCEPTION
     WHEN OTHERS THEN
         RETURN jsonb_build_object(
             'success', false,
-            'account_id', p_account_id,
-            'message', 'Failed to soft-delete account'
+            'code', 'FAILED',
+            'message', 'Failed to soft-delete account by admin',
+            'data', jsonb_build_object('account_id', p_account_id)
         );
 END;
 $$;
@@ -1380,11 +1402,13 @@ AS $$
 DECLARE
     v_success BOOLEAN;
 BEGIN
+    -- Input validation
     IF p_account_id IS NULL THEN
         RETURN jsonb_build_object(
             'success', false,
-            'account_id', NULL,
-            'message', 'Account ID is required'
+            'code', 'MISSING_ACCOUNT_ID',
+            'message', 'Account ID is required',
+            'data', NULL
         );
     END IF;
 
@@ -1394,14 +1418,16 @@ BEGIN
     IF v_success THEN
         RETURN jsonb_build_object(
             'success', true,
-            'account_id', p_account_id,
-            'message', 'Account hard-deleted successfully by admin'
+            'code', 'OK',
+            'message', 'Account hard-deleted successfully by admin',
+            'data', jsonb_build_object('account_id', p_account_id)
         );
     ELSE
         RETURN jsonb_build_object(
             'success', false,
-            'account_id', p_account_id,
-            'message', 'Account could not be hard-deleted by admin'
+            'code', 'FAILED',
+            'message', 'Account could not be hard-deleted by admin (possibly not soft-deleted or not found)',
+            'data', jsonb_build_object('account_id', p_account_id)
         );
     END IF;
 
@@ -1409,8 +1435,9 @@ EXCEPTION
     WHEN OTHERS THEN
         RETURN jsonb_build_object(
             'success', false,
-            'account_id', p_account_id,
-            'message', 'Failed to hard-delete account'
+            'code', 'FAILED',
+            'message', 'Failed to hard-delete account by admin',
+            'data', jsonb_build_object('account_id', p_account_id)
         );
 END;
 $$;
@@ -1458,7 +1485,7 @@ RETURNS TABLE(
     account_name VARCHAR,
     account_type finance.account_type,
     currency VARCHAR,
-    balance DECIMAL,
+    balance NUMERIC,
     status VARCHAR
 )
 LANGUAGE plpgsql
@@ -1472,10 +1499,13 @@ BEGIN
     -- Enable Row-Level Security
     PERFORM set_config('row_security', 'on', true);
     
+    -- Authentication guard
     IF v_user_id IS NULL THEN
-        RAISE EXCEPTION 'Not authenticated';
+        RAISE EXCEPTION 'Not authenticated'
+            USING ERRCODE = '28000'; -- invalid_authorization_specification
     END IF;
 
+    -- Return accounts with balances and statuses per type
     RETURN QUERY
     SELECT 
         a.id as account_id,
@@ -1556,7 +1586,9 @@ $$;
 --   - Marked STABLE as it performs read-only operations and does not
 --     modify database state.
 -- =========================================
-CREATE OR REPLACE FUNCTION finance.get_account_details_internal(p_account_id UUID)
+CREATE OR REPLACE FUNCTION finance.get_account_details_internal(
+    p_account_id UUID
+)
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -1573,12 +1605,13 @@ BEGIN
     -- Enable Row-Level Security
     PERFORM set_config('row_security', 'on', true);
 
-    -- Validate ownership
+    -- Authentication guard
     IF v_user_id IS NULL THEN
-        RAISE EXCEPTION 'Not authenticated';
+        RAISE EXCEPTION 'Not authenticated'
+            USING ERRCODE = '28000'; -- invalid_authorization_specification
     END IF;
 
-    -- Get base account info (ownership enforced here)
+    -- Get base account info and enforce ownership
     SELECT jsonb_build_object(
         'id', a.id,
         'user_id', a.user_id,
@@ -1592,23 +1625,22 @@ BEGIN
     FROM finance.accounts a
     WHERE a.id = p_account_id
       AND a.deleted_at IS NULL
-      AND a.user_id = v_user_id;  -- enforce ownership
+      AND a.user_id = v_user_id;
 
     IF v_base IS NULL THEN
-        RAISE EXCEPTION 'Account not found or access denied';
+        RAISE EXCEPTION 'Account not found or access denied'
+            USING ERRCODE = '42501'; -- insufficient_privilege
     END IF;
 
-    -- Validate and cast account type safely
+    -- Cast and validate account type
     v_type_text := v_base->>'type';
-    IF NOT EXISTS (
-        SELECT 1
-        FROM unnest(enum_range(NULL::finance.account_type)) AS t(val)
-        WHERE t.val::TEXT = v_type_text
-    ) THEN
-        RAISE EXCEPTION 'Invalid account type: %', v_type_text;
-    END IF;
-
-    v_account_type := v_type_text::finance.account_type;
+    BEGIN
+        v_account_type := v_type_text::finance.account_type;
+    EXCEPTION
+        WHEN OTHERS THEN
+            RAISE EXCEPTION 'Invalid account type: %', v_type_text
+                USING ERRCODE = '22023'; -- invalid_parameter_value
+    END;
 
     -- Fetch specialized fields based on type
     CASE v_account_type
@@ -1661,9 +1693,11 @@ BEGIN
             WHERE ra.account_id = p_account_id AND ra.deleted_at IS NULL;
 
         ELSE
-            RAISE EXCEPTION 'Unknown account type: %', v_account_type;
+            RAISE EXCEPTION 'Unknown account type: %', v_account_type
+                USING ERRCODE = '22023'; -- invalid_parameter_value
     END CASE;
 
+    -- Combine base + details
     RETURN v_base || COALESCE(v_details, '{}'::jsonb);
 END;
 $$;
@@ -1704,7 +1738,9 @@ $$;
 --   - Marked STABLE as it performs read-only queries without
 --     modifying database state.
 -- =========================================
-CREATE OR REPLACE FUNCTION finance.get_accounts_by_type_internal(p_account_type finance.account_type)
+CREATE OR REPLACE FUNCTION finance.get_accounts_by_type_internal(
+    p_account_type finance.account_type
+)
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -1718,16 +1754,19 @@ BEGIN
     -- Enable Row-Level Security
     PERFORM set_config('row_security', 'on', true);
 
+    -- Authentication guard
     IF v_user_id IS NULL THEN
-        RAISE EXCEPTION 'Not authenticated';
+        RAISE EXCEPTION 'Not authenticated'
+            USING ERRCODE = '28000'; -- invalid_authorization_specification
     END IF;
-    
+
     -- Cash accounts
     IF p_account_type = 'cash' THEN
         SELECT jsonb_agg(to_jsonb(a_base) || COALESCE(to_jsonb(ca) - 'account_id', '{}'::jsonb))
         INTO v_result
         FROM finance.accounts a_base
-        LEFT JOIN finance.cash_accounts ca ON a_base.id = ca.account_id AND ca.deleted_at IS NULL
+        LEFT JOIN finance.cash_accounts ca 
+          ON a_base.id = ca.account_id AND ca.deleted_at IS NULL
         WHERE a_base.type = 'cash'
           AND a_base.deleted_at IS NULL
           AND a_base.user_id = v_user_id;
@@ -1737,7 +1776,8 @@ BEGIN
         SELECT jsonb_agg(to_jsonb(a_base) || COALESCE(to_jsonb(ba) - 'account_id', '{}'::jsonb))
         INTO v_result
         FROM finance.accounts a_base
-        LEFT JOIN finance.bank_accounts ba ON a_base.id = ba.account_id AND ba.deleted_at IS NULL
+        LEFT JOIN finance.bank_accounts ba 
+          ON a_base.id = ba.account_id AND ba.deleted_at IS NULL
         WHERE a_base.type = 'bank'
           AND a_base.deleted_at IS NULL
           AND a_base.user_id = v_user_id;
@@ -1747,7 +1787,8 @@ BEGIN
         SELECT jsonb_agg(to_jsonb(a_base) || COALESCE(to_jsonb(cc) - 'account_id', '{}'::jsonb))
         INTO v_result
         FROM finance.accounts a_base
-        LEFT JOIN finance.credit_card_accounts cc ON a_base.id = cc.account_id AND cc.deleted_at IS NULL
+        LEFT JOIN finance.credit_card_accounts cc 
+          ON a_base.id = cc.account_id AND cc.deleted_at IS NULL
         WHERE a_base.type = 'credit_card'
           AND a_base.deleted_at IS NULL
           AND a_base.user_id = v_user_id;
@@ -1757,7 +1798,8 @@ BEGIN
         SELECT jsonb_agg(to_jsonb(a_base) || COALESCE(to_jsonb(la) - 'account_id', '{}'::jsonb))
         INTO v_result
         FROM finance.accounts a_base
-        LEFT JOIN finance.loan_accounts la ON a_base.id = la.account_id AND la.deleted_at IS NULL
+        LEFT JOIN finance.loan_accounts la 
+          ON a_base.id = la.account_id AND la.deleted_at IS NULL
         WHERE a_base.type = 'loan'
           AND a_base.deleted_at IS NULL
           AND a_base.user_id = v_user_id;
@@ -1767,7 +1809,8 @@ BEGIN
         SELECT jsonb_agg(to_jsonb(a_base) || COALESCE(to_jsonb(ia) - 'account_id', '{}'::jsonb))
         INTO v_result
         FROM finance.accounts a_base
-        LEFT JOIN finance.investment_accounts ia ON a_base.id = ia.account_id AND ia.deleted_at IS NULL
+        LEFT JOIN finance.investment_accounts ia 
+          ON a_base.id = ia.account_id AND ia.deleted_at IS NULL
         WHERE a_base.type = 'investment'
           AND a_base.deleted_at IS NULL
           AND a_base.user_id = v_user_id;
@@ -1777,7 +1820,8 @@ BEGIN
         SELECT jsonb_agg(to_jsonb(a_base) || COALESCE(to_jsonb(cra) - 'account_id', '{}'::jsonb))
         INTO v_result
         FROM finance.accounts a_base
-        LEFT JOIN finance.crypto_accounts cra ON a_base.id = cra.account_id AND cra.deleted_at IS NULL
+        LEFT JOIN finance.crypto_accounts cra 
+          ON a_base.id = cra.account_id AND cra.deleted_at IS NULL
         WHERE a_base.type = 'crypto'
           AND a_base.deleted_at IS NULL
           AND a_base.user_id = v_user_id;
@@ -1787,7 +1831,8 @@ BEGIN
         SELECT jsonb_agg(to_jsonb(a_base) || COALESCE(to_jsonb(wa) - 'account_id', '{}'::jsonb))
         INTO v_result
         FROM finance.accounts a_base
-        LEFT JOIN finance.wallet_accounts wa ON a_base.id = wa.account_id AND wa.deleted_at IS NULL
+        LEFT JOIN finance.wallet_accounts wa 
+          ON a_base.id = wa.account_id AND wa.deleted_at IS NULL
         WHERE a_base.type = 'wallet'
           AND a_base.deleted_at IS NULL
           AND a_base.user_id = v_user_id;
@@ -1797,13 +1842,15 @@ BEGIN
         SELECT jsonb_agg(to_jsonb(a_base) || COALESCE(to_jsonb(ra) - 'account_id', '{}'::jsonb))
         INTO v_result
         FROM finance.accounts a_base
-        LEFT JOIN finance.receivable_accounts ra ON a_base.id = ra.account_id AND ra.deleted_at IS NULL
+        LEFT JOIN finance.receivable_accounts ra 
+          ON a_base.id = ra.account_id AND ra.deleted_at IS NULL
         WHERE a_base.type = 'receivable'
           AND a_base.deleted_at IS NULL
           AND a_base.user_id = v_user_id;
 
     ELSE
-        RAISE EXCEPTION 'Unknown account type: %', p_account_type;
+        RAISE EXCEPTION 'Unknown account type: %', p_account_type
+            USING ERRCODE = '22023'; -- invalid_parameter_value
     END IF;
 
     RETURN COALESCE(v_result, '[]'::jsonb);
@@ -1852,20 +1899,34 @@ AS $$
 DECLARE
     v_accounts JSONB;
 BEGIN
-    -- Fetch all accounts via internal function
     BEGIN
-        v_accounts := to_jsonb(finance.get_all_accounts_internal());
+        -- Call internal function
+        v_accounts := finance.get_all_accounts_internal();
+
         RETURN jsonb_build_object(
             'success', true,
-            'accounts', v_accounts,
-            'message', 'Fetched all accounts successfully'
+            'code', 'OK',
+            'message', 'Fetched all accounts successfully',
+            'data', v_accounts
         );
+
     EXCEPTION
-        WHEN OTHERS THEN
+        WHEN SQLSTATE '28000' THEN
+            -- Not authenticated
             RETURN jsonb_build_object(
                 'success', false,
-                'accounts', '[]'::jsonb,
-                'message', 'Failed to fetch accounts'
+                'code', 'NOT_AUTHENTICATED',
+                'message', 'User is not authenticated',
+                'data', '[]'::jsonb
+            );
+
+        WHEN OTHERS THEN
+            -- Catch all other errors
+            RETURN jsonb_build_object(
+                'success', false,
+                'code', 'ERROR',
+                'message', 'Failed to fetch accounts',
+                'data', '[]'::jsonb
             );
     END;
 END;
@@ -1899,7 +1960,9 @@ $$;
 --   - All permission checks and error handling are implemented in the
 --     internal function.
 -- =========================================
-CREATE OR REPLACE FUNCTION public.get_account_details(p_account_id UUID)
+CREATE OR REPLACE FUNCTION public.get_account_details(
+    p_account_id UUID
+)
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY INVOKER
@@ -1910,18 +1973,42 @@ DECLARE
     v_account JSONB;
 BEGIN
     BEGIN
+        -- Call internal function
         v_account := finance.get_account_details_internal(p_account_id);
+
         RETURN jsonb_build_object(
             'success', true,
-            'account', v_account,
-            'message', 'Fetched account details successfully'
+            'code', 'OK',
+            'message', 'Fetched account details successfully',
+            'data', v_account
         );
+
     EXCEPTION
-        WHEN OTHERS THEN
+        WHEN SQLSTATE '28000' THEN
+            -- Not authenticated
             RETURN jsonb_build_object(
                 'success', false,
-                'account', '{}'::jsonb,
-                'message', 'Failed to fetch account details'
+                'code', 'NOT_AUTHENTICATED',
+                'message', 'User is not authenticated',
+                'data', '{}'::jsonb
+            );
+
+        WHEN SQLSTATE '42501' THEN
+            -- Insufficient privilege / ownership failure
+            RETURN jsonb_build_object(
+                'success', false,
+                'code', 'ACCESS_DENIED',
+                'message', 'Account not found or access denied',
+                'data', '{}'::jsonb
+            );
+
+        WHEN OTHERS THEN
+            -- Catch all other errors
+            RETURN jsonb_build_object(
+                'success', false,
+                'code', 'ERROR',
+                'message', 'Failed to fetch account details',
+                'data', '{}'::jsonb
             );
     END;
 END;
@@ -1954,7 +2041,9 @@ $$;
 --   - Business rules and RLS logic are fully encapsulated within the
 --     internal function.
 -- =========================================
-CREATE OR REPLACE FUNCTION public.get_accounts_by_type(p_account_type finance.account_type)
+CREATE OR REPLACE FUNCTION public.get_accounts_by_type(
+    p_account_type finance.account_type
+)
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY INVOKER
@@ -1965,18 +2054,42 @@ DECLARE
     v_accounts JSONB;
 BEGIN
     BEGIN
+        -- Call internal function
         v_accounts := finance.get_accounts_by_type_internal(p_account_type);
+
         RETURN jsonb_build_object(
             'success', true,
-            'accounts', v_accounts,
-            'message', 'Fetched accounts successfully'
+            'code', 'OK',
+            'message', 'Fetched accounts successfully',
+            'data', v_accounts
         );
+
     EXCEPTION
-        WHEN OTHERS THEN
+        WHEN SQLSTATE '28000' THEN
+            -- Not authenticated
             RETURN jsonb_build_object(
                 'success', false,
-                'accounts', '[]'::jsonb,
-                'message', 'Failed to fetch accounts by type'
+                'code', 'NOT_AUTHENTICATED',
+                'message', 'User is not authenticated',
+                'data', '[]'::jsonb
+            );
+
+        WHEN SQLSTATE '22023' THEN
+            -- Invalid account type
+            RETURN jsonb_build_object(
+                'success', false,
+                'code', 'INVALID_TYPE',
+                'message', 'Invalid account type provided',
+                'data', '[]'::jsonb
+            );
+
+        WHEN OTHERS THEN
+            -- Catch-all for other errors
+            RETURN jsonb_build_object(
+                'success', false,
+                'code', 'ERROR',
+                'message', 'Failed to fetch accounts by type',
+                'data', '[]'::jsonb
             );
     END;
 END;
