@@ -35,65 +35,77 @@ SET search_path = pg_catalog, finance
 STABLE
 AS $$
 BEGIN
-    -- Check if the account has any active (non-deleted) transactions
+    -- Validate inputs
+    IF p_account_id IS NULL THEN
+        RAISE EXCEPTION 'p_account_id cannot be null'
+            USING ERRCODE = '22004'; -- null_value_not_allowed
+    END IF;
+
+    IF p_user_id IS NULL THEN
+        RAISE EXCEPTION 'p_user_id cannot be null'
+            USING ERRCODE = '28000'; -- invalid_authorization_specification
+    END IF;
+
+    -- Check for any active transactions (short-circuit with EXISTS)
     RETURN EXISTS (
         SELECT 1
         FROM finance.transactions t
         WHERE t.user_id = p_user_id
           AND t.deleted_at IS NULL
-          AND t.id IN (
-
-              -- Income
-              SELECT transaction_id
-              FROM finance.transactions_income
-              WHERE account_id = p_account_id
-                AND deleted_at IS NULL
-
-              UNION ALL
-              -- Expense
-              SELECT transaction_id
-              FROM finance.transactions_expense
-              WHERE account_id = p_account_id
-                AND deleted_at IS NULL
-
-              UNION ALL
-              -- Investment
-              SELECT transaction_id
-              FROM finance.transactions_investment
-              WHERE (funding_account_id = p_account_id
-                     OR investment_account_id = p_account_id)
-                AND deleted_at IS NULL
-
-              UNION ALL
-              -- Borrow
-              SELECT transaction_id
-              FROM finance.transactions_borrow
-              WHERE (loan_account_id = p_account_id
-                     OR disbursement_account_id = p_account_id)
-                AND deleted_at IS NULL
-
-              UNION ALL
-              -- Lend
-              SELECT transaction_id
-              FROM finance.transactions_lend
-              WHERE (funding_account_id = p_account_id
-                     OR receivable_account_id = p_account_id)
-                AND deleted_at IS NULL
-
-              UNION ALL
-              -- Transfer
-              SELECT transaction_id
-              FROM finance.transactions_transfer
-              WHERE (from_account = p_account_id
-                     OR to_account = p_account_id)
-                AND deleted_at IS NULL
-
-              UNION ALL
-              -- Adjustment
-              SELECT transaction_id
-              FROM finance.transactions_adjustment
-              WHERE account_id = p_account_id
-                AND deleted_at IS NULL
+          AND (
+              EXISTS (
+                  SELECT 1
+                  FROM finance.transactions_income ti
+                  WHERE ti.transaction_id = t.id
+                    AND ti.account_id = p_account_id
+                    AND ti.deleted_at IS NULL
+              )
+              OR EXISTS (
+                  SELECT 1
+                  FROM finance.transactions_expense te
+                  WHERE te.transaction_id = t.id
+                    AND te.account_id = p_account_id
+                    AND te.deleted_at IS NULL
+              )
+              OR EXISTS (
+                  SELECT 1
+                  FROM finance.transactions_investment ti
+                  WHERE ti.transaction_id = t.id
+                    AND (ti.funding_account_id = p_account_id
+                         OR ti.investment_account_id = p_account_id)
+                    AND ti.deleted_at IS NULL
+              )
+              OR EXISTS (
+                  SELECT 1
+                  FROM finance.transactions_borrow tb
+                  WHERE tb.transaction_id = t.id
+                    AND (tb.loan_account_id = p_account_id
+                         OR tb.disbursement_account_id = p_account_id)
+                    AND tb.deleted_at IS NULL
+              )
+              OR EXISTS (
+                  SELECT 1
+                  FROM finance.transactions_lend tl
+                  WHERE tl.transaction_id = t.id
+                    AND (tl.funding_account_id = p_account_id
+                         OR tl.receivable_account_id = p_account_id)
+                    AND tl.deleted_at IS NULL
+              )
+              OR EXISTS (
+                  SELECT 1
+                  FROM finance.transactions_transfer tt
+                  WHERE tt.transaction_id = t.id
+                    AND (tt.from_account = p_account_id
+                         OR tt.to_account = p_account_id)
+                    AND tt.deleted_at IS NULL
+              )
+              OR EXISTS (
+                  SELECT 1
+                  FROM finance.transactions_adjustment ta
+                  WHERE ta.transaction_id = t.id
+                    AND ta.account_id = p_account_id
+                    AND ta.deleted_at IS NULL
+              )
           )
     );
 END;
@@ -130,6 +142,12 @@ SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
 BEGIN
+    -- Ensure amount_due is not null
+    IF NEW.amount_due IS NULL THEN
+        RAISE EXCEPTION 'amount_due cannot be NULL in receivable_accounts'
+            USING ERRCODE = '23502'; -- not_null_violation
+    END IF;
+
     -- Update receivable status based on amount_due and due_date
     IF NEW.amount_due <= 0 THEN
         NEW.status := 'paid';
@@ -179,6 +197,12 @@ SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
 BEGIN
+    -- Ensure outstanding_amount is not NULL
+    IF NEW.outstanding_amount IS NULL THEN
+        RAISE EXCEPTION 'outstanding_amount cannot be NULL in loan_accounts'
+            USING ERRCODE = '23502'; -- not_null_violation
+    END IF;
+
     -- Update loan status based on outstanding_amount and end_date
     IF NEW.outstanding_amount <= 0 THEN
         NEW.status := 'closed';
@@ -230,51 +254,62 @@ BEGIN
     -- Validate account balances according to account type
     CASE TG_TABLE_NAME
         WHEN 'cash_accounts' THEN
-            IF NEW.balance < 0 THEN
-                RAISE EXCEPTION 'Cash account % cannot have negative balance: %', NEW.account_id, NEW.balance;
+            IF NEW.balance IS NULL OR NEW.balance < 0 THEN
+                RAISE EXCEPTION 'Cash account balance cannot be negative or empty.'
+                    USING ERRCODE = '22023';
             END IF;
 
         WHEN 'bank_accounts' THEN
-            IF NEW.balance < 0 THEN
-                RAISE EXCEPTION 'Bank account % cannot have negative balance: %', NEW.account_id, NEW.balance;
+            IF NEW.balance IS NULL OR NEW.balance < 0 THEN
+                RAISE EXCEPTION 'Bank account balance cannot be negative or empty.'
+                    USING ERRCODE = '22023';
             END IF;
 
         WHEN 'wallet_accounts' THEN
-            IF NEW.balance < 0 THEN
-                RAISE EXCEPTION 'Wallet account % cannot have negative balance: %', NEW.account_id, NEW.balance;
+            IF NEW.balance IS NULL OR NEW.balance < 0 THEN
+                RAISE EXCEPTION 'Wallet account balance cannot be negative or empty.'
+                    USING ERRCODE = '22023';
             END IF;
 
         WHEN 'crypto_accounts' THEN
-            IF NEW.balance < 0 THEN
-                RAISE EXCEPTION 'Crypto account % cannot have negative balance: %', NEW.account_id, NEW.balance;
+            IF NEW.balance IS NULL OR NEW.balance < 0 THEN
+                RAISE EXCEPTION 'Crypto account balance cannot be negative or empty.'
+                    USING ERRCODE = '22023';
             END IF;
 
         WHEN 'credit_card_accounts' THEN
-            -- Allow negative current_balance, just warn
-            IF NEW.current_balance < 0 THEN
-                RAISE WARNING 'Credit card account % has negative current balance: %', NEW.account_id, NEW.current_balance;
+            -- Notice if negative current balance
+            IF NEW.current_balance IS NOT NULL AND NEW.current_balance < 0 THEN
+                RAISE NOTICE 'Your credit card balance is negative. Please review your payments.';
             END IF;
+
+            -- Error if exceeding credit limit
             IF NEW.credit_limit IS NOT NULL AND NEW.current_balance > NEW.credit_limit THEN
-                RAISE EXCEPTION 'Credit card account % exceeds credit limit (%): current balance %', NEW.account_id, NEW.credit_limit, NEW.current_balance;
+                RAISE EXCEPTION 'Your credit card balance exceeds the allowed limit.'
+                    USING ERRCODE = '22023';
             END IF;
 
         WHEN 'loan_accounts' THEN
-            IF NEW.outstanding_amount < 0 THEN
-                RAISE EXCEPTION 'Loan account % cannot have negative outstanding amount: %', NEW.account_id, NEW.outstanding_amount;
+            IF NEW.outstanding_amount IS NULL OR NEW.outstanding_amount < 0 THEN
+                RAISE EXCEPTION 'Loan balance cannot be negative or empty.'
+                    USING ERRCODE = '22023';
             END IF;
 
         WHEN 'investment_accounts' THEN
-            IF NEW.portfolio_value < 0 THEN
-                RAISE EXCEPTION 'Investment account % cannot have negative portfolio value: %', NEW.account_id, NEW.portfolio_value;
+            IF NEW.portfolio_value IS NULL OR NEW.portfolio_value < 0 THEN
+                RAISE EXCEPTION 'Investment account value cannot be negative or empty.'
+                    USING ERRCODE = '22023';
             END IF;
 
         WHEN 'receivable_accounts' THEN
-            IF NEW.amount_due < 0 THEN
-                RAISE EXCEPTION 'Receivable account % cannot have negative amount due: %', NEW.account_id, NEW.amount_due;
+            IF NEW.amount_due IS NULL OR NEW.amount_due < 0 THEN
+                RAISE EXCEPTION 'Receivable amount cannot be negative or empty.'
+                    USING ERRCODE = '22023';
             END IF;
 
         ELSE
-            RAISE EXCEPTION 'Unknown account table: %', TG_TABLE_NAME;
+            RAISE EXCEPTION 'Account type is not recognized.'
+                USING ERRCODE = 'P0002';
     END CASE;
 
     RETURN NEW;
@@ -356,29 +391,41 @@ SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
 BEGIN
-    -- Only check if there are active transactions
+    -- Only enforce rules if account has active transactions
     IF finance.account_has_active_transactions_internal(OLD.account_id, OLD.user_id) THEN
 
-        -- Prevent modification of currency
-        IF TG_OP = 'UPDATE' AND OLD.currency IS DISTINCT FROM NEW.currency THEN
-            RAISE EXCEPTION 'Cannot modify account currency when transactions exist';
+        -- Handle UPDATE operations
+        IF TG_OP = 'UPDATE' THEN
+            -- Prevent modification of currency
+            IF OLD.currency IS DISTINCT FROM NEW.currency THEN
+                RAISE EXCEPTION 'Cannot modify account currency when transactions exist for account %',
+                    OLD.account_id
+                    USING ERRCODE = '45000'; -- user-defined exception
+            END IF;
+
+            -- Prevent soft delete
+            IF OLD.deleted_at IS NULL
+            AND NEW.deleted_at IS NOT NULL THEN
+                RAISE EXCEPTION 'Cannot soft-delete account with existing transactions for account %',
+                    OLD.account_id
+                    USING ERRCODE = '45000';
+            END IF;
         END IF;
 
-        -- Prevent soft delete
-        IF TG_OP = 'UPDATE'
-           AND OLD.deleted_at IS NULL
-           AND NEW.deleted_at IS NOT NULL THEN
-            RAISE EXCEPTION 'Cannot soft-delete account with existing transactions';
-        END IF;
-
-        -- Prevent deletion
+        -- Handle DELETE operations
         IF TG_OP = 'DELETE' THEN
-            RAISE EXCEPTION 'Cannot hard-delete account with existing transactions.';
+            RAISE EXCEPTION 'Cannot hard-delete account with existing transactions for account %',
+                OLD.account_id
+                USING ERRCODE = '45000';
         END IF;
     END IF;
 
     -- Return the appropriate row
-    RETURN COALESCE(NEW, OLD);
+    IF TG_OP = 'DELETE' THEN
+        RETURN OLD;
+    ELSE
+        RETURN NEW;
+    END IF;
 END;
 $$;
 
@@ -428,10 +475,10 @@ AS $$
 DECLARE
     v_balance_changed BOOLEAN := FALSE;
 BEGIN
-    -- Only check if there are active transactions
+    -- Only enforce if account has active transactions
     IF finance.account_has_active_transactions_internal(OLD.account_id, OLD.user_id) THEN
 
-        -- Detect balance changes per account type
+        -- Detect balance or related changes per account type
         CASE TG_TABLE_NAME
             WHEN 'cash_accounts' THEN
                 IF OLD.balance IS DISTINCT FROM NEW.balance THEN
@@ -480,27 +527,36 @@ BEGIN
 
             ELSE
                 -- Unhandled table
-                RAISE EXCEPTION 'prevent_balance_change_if_transactions: unhandled table %', TG_TABLE_NAME;
+                RAISE EXCEPTION 'prevent_balance_change_if_transactions: unhandled table %', TG_TABLE_NAME
+                    USING ERRCODE = 'P0002'; -- user-defined exception
         END CASE;
 
-        -- Raise exception if balance modifications detected
+        -- Raise exception for balance modifications
         IF v_balance_changed THEN
-            RAISE EXCEPTION 'Cannot modify account balances when transactions exist';
-        END IF;
-
-        -- Prevent deletion
-        IF TG_OP = 'DELETE' THEN
-            RAISE EXCEPTION 'Cannot delete account with existing transactions.';
+            RAISE EXCEPTION 'Cannot modify account balances when transactions exist for account %', OLD.account_id
+                USING ERRCODE = '45000';
         END IF;
 
         -- Prevent soft delete
         IF TG_OP = 'UPDATE' AND OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL THEN
-            RAISE EXCEPTION 'Cannot soft-delete account with existing transactions';
+            RAISE EXCEPTION 'Cannot soft-delete account with existing transactions for account %', OLD.account_id
+                USING ERRCODE = '45000';
+        END IF;
+
+        -- Prevent hard delete
+        IF TG_OP = 'DELETE' THEN
+            RAISE EXCEPTION 'Cannot delete account with existing transactions for account %', OLD.account_id
+                USING ERRCODE = '45000';
         END IF;
 
     END IF;
 
-    RETURN COALESCE(NEW, OLD);
+    -- Return the appropriate row
+    IF TG_OP = 'DELETE' THEN
+        RETURN OLD;
+    ELSE
+        RETURN NEW;
+    END IF;
 END;
 $$;
 
@@ -582,9 +638,9 @@ BEGIN
     -- Prevent changing account type after creation
     IF NEW.type IS DISTINCT FROM OLD.type THEN
         RAISE EXCEPTION
-            'Account type cannot be changed once created (from % to %)',
-            OLD.type, NEW.type
-            USING ERRCODE = '23514';
+            'Account type cannot be changed for account % (from % to %)',
+            OLD.account_id, OLD.type, NEW.type
+            USING ERRCODE = '45000'; -- user-defined exception for business rule violation
     END IF;
 
     RETURN NEW;
@@ -620,60 +676,67 @@ EXECUTE FUNCTION finance.prevent_account_type_change();
 --   - SECURITY DEFINER allows this trigger to bypass RLS when updating specialized accounts
 --   - Only applies if the parent account was not previously deleted
 -- =========================================
-CREATE OR REPLACE FUNCTION finance.soft_delete_specialized_account() 
-RETURNS TRIGGER 
+CREATE OR REPLACE FUNCTION finance.soft_delete_specialized_account()
+RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
 BEGIN
-    -- Allow soft-delete operation on specialized accounts
+    -- Set allow_specialized_soft_delete flag
     PERFORM set_config('app.allow_specialized_soft_delete', 'true', true);
 
-    -- When an account is soft deleted, also soft delete the specialized account
+    -- Soft-delete propagation
     IF OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL THEN
         CASE OLD.type
             WHEN 'cash' THEN
-                UPDATE finance.cash_accounts 
-                SET deleted_at = NEW.deleted_at, updated_at = NOW() 
+                UPDATE finance.cash_accounts
+                SET deleted_at = NEW.deleted_at, updated_at = NOW()
                 WHERE account_id = OLD.id AND deleted_at IS NULL;
+
             WHEN 'bank' THEN
-                UPDATE finance.bank_accounts 
-                SET deleted_at = NEW.deleted_at, updated_at = NOW() 
+                UPDATE finance.bank_accounts
+                SET deleted_at = NEW.deleted_at, updated_at = NOW()
                 WHERE account_id = OLD.id AND deleted_at IS NULL;
+
             WHEN 'credit_card' THEN
-                UPDATE finance.credit_card_accounts 
-                SET deleted_at = NEW.deleted_at, updated_at = NOW() 
+                UPDATE finance.credit_card_accounts
+                SET deleted_at = NEW.deleted_at, updated_at = NOW()
                 WHERE account_id = OLD.id AND deleted_at IS NULL;
+
             WHEN 'loan' THEN
-                UPDATE finance.loan_accounts 
-                SET deleted_at = NEW.deleted_at, updated_at = NOW() 
+                UPDATE finance.loan_accounts
+                SET deleted_at = NEW.deleted_at, updated_at = NOW()
                 WHERE account_id = OLD.id AND deleted_at IS NULL;
+
             WHEN 'investment' THEN
-                UPDATE finance.investment_accounts 
-                SET deleted_at = NEW.deleted_at, updated_at = NOW() 
+                UPDATE finance.investment_accounts
+                SET deleted_at = NEW.deleted_at, updated_at = NOW()
                 WHERE account_id = OLD.id AND deleted_at IS NULL;
+
             WHEN 'crypto' THEN
-                UPDATE finance.crypto_accounts 
-                SET deleted_at = NEW.deleted_at, updated_at = NOW() 
+                UPDATE finance.crypto_accounts
+                SET deleted_at = NEW.deleted_at, updated_at = NOW()
                 WHERE account_id = OLD.id AND deleted_at IS NULL;
+
             WHEN 'wallet' THEN
-                UPDATE finance.wallet_accounts 
-                SET deleted_at = NEW.deleted_at, updated_at = NOW() 
+                UPDATE finance.wallet_accounts
+                SET deleted_at = NEW.deleted_at, updated_at = NOW()
                 WHERE account_id = OLD.id AND deleted_at IS NULL;
+
             WHEN 'receivable' THEN
-                UPDATE finance.receivable_accounts 
-                SET deleted_at = NEW.deleted_at, updated_at = NOW() 
+                UPDATE finance.receivable_accounts
+                SET deleted_at = NEW.deleted_at, updated_at = NOW()
                 WHERE account_id = OLD.id AND deleted_at IS NULL;
+
             ELSE
-                RAISE EXCEPTION 'Unknown account type % in soft_delete_specialized_account', OLD.type;
+                RAISE EXCEPTION 'Unknown account type % in soft_delete_specialized_account for account %', 
+                    OLD.type, OLD.id
+                    USING ERRCODE = '45000'; -- user-defined exception
         END CASE;
     END IF;
 
-    -- Reset the flag after operation
-    PERFORM set_config('app.allow_specialized_soft_delete', 'false', true);
-    
     RETURN NEW;
 END;
 $$;
@@ -682,9 +745,6 @@ $$;
 CREATE TRIGGER trg_cleanup_specialized_account
 AFTER UPDATE ON finance.accounts
 FOR EACH ROW EXECUTE FUNCTION finance.soft_delete_specialized_account();
-
-
-
 
 -- =========================================
 -- 09. Function: prevent_specialized_soft_delete
@@ -722,10 +782,12 @@ VOLATILE
 AS $$
 BEGIN
     -- Block direct soft-delete unless parent trigger flagged it
-    IF OLD.deleted_at IS NULL 
-       AND NEW.deleted_at IS NOT NULL 
+    IF OLD.deleted_at IS NULL
+       AND NEW.deleted_at IS NOT NULL
        AND current_setting('app.allow_specialized_soft_delete', true) IS DISTINCT FROM 'true' THEN
-        RAISE EXCEPTION 'Direct soft-delete on % (id=%) is not allowed. Use parent account operations', TG_TABLE_NAME, OLD.account_id;
+        RAISE EXCEPTION 'Direct soft-delete on table % for account id % is not allowed. Use parent account operations',
+            TG_TABLE_NAME, OLD.account_id
+            USING ERRCODE = '45000'; -- user-defined exception
     END IF;
 
     RETURN NEW;
