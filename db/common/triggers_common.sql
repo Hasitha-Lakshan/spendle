@@ -114,7 +114,7 @@ DECLARE
     pk_val text;
     target_schema text := TG_TABLE_SCHEMA;
 BEGIN
-    -- Skip soft delete if bypass flag is set
+    -- Skip soft delete if hard delete mode is on
     IF current_setting('app.hard_delete', true) = 'on' THEN
         RETURN OLD; -- allow actual delete
     END IF;
@@ -133,16 +133,19 @@ BEGIN
              END
     LIMIT 1;
 
-    IF pk_col IS NULL THEN
-        RAISE EXCEPTION 'Cannot determine primary key column for %.%', target_schema, TG_TABLE_NAME;
+   IF pk_col IS NULL THEN
+        RAISE EXCEPTION 'Cannot determine primary key column for %.%',
+            target_schema,
+            TG_TABLE_NAME
+            USING ERRCODE = 'P0002';
     END IF;
 
-    -- Get primary key value from OLD row dynamically
+    -- Get primary key value from OLD row
     EXECUTE format('SELECT ($1).%I::text', pk_col)
     INTO pk_val
     USING OLD;
 
-    -- Skip if pk_val is NULL
+    -- Skip if primary key value is NULL
     IF pk_val IS NULL THEN
         RETURN OLD;
     END IF;
@@ -155,7 +158,7 @@ BEGIN
                 target_schema, TG_TABLE_NAME, pk_col
             ) USING pk_val;
         EXCEPTION WHEN invalid_text_representation THEN
-            -- skip rows with invalid UUIDs instead of failing
+            -- Skip rows with invalid UUIDs
             RETURN OLD;
         END;
     ELSE
@@ -169,7 +172,6 @@ BEGIN
     RETURN NULL;
 END;
 $$;
-
 
 -- Apply Soft Delete Triggers to all major tables
 DO $$
@@ -280,7 +282,7 @@ BEGIN
         RETURN NULL;
     END IF;
 
-    -- 2. DETERMINE ACTOR (Who performed the action)
+    -- 2. DETERMINE ACTOR
     session_setting := current_setting('request.jwt.claim.sub', true);
     
     -- Handle the case where session_setting is non-UUID
@@ -288,47 +290,39 @@ BEGIN
         BEGIN
             -- Try to convert to UUID
             extracted_uuid := session_setting::uuid;
-        EXCEPTION WHEN OTHERS THEN
+        EXCEPTION WHEN invalid_text_representation THEN
             -- If conversion fails, set to NULL
             extracted_uuid := NULL;
+            RAISE NOTICE 'Invalid JWT claim for actor_user_id: %', session_setting;
         END;
     ELSE
         extracted_uuid := NULL;
     END IF;
     
     -- Assign actor_user_id
-    IF extracted_uuid IS NOT NULL THEN
-        actor_user_id := extracted_uuid;
-    ELSE
-        -- Fallback to internal_actor_id for invalid UUIDs
-        actor_user_id := internal_actor_id;
-    END IF;
+    actor_user_id := COALESCE(extracted_uuid, internal_actor_id);
 
     -- 3. DETERMINE ACTION LABEL
     action_label := TG_OP; -- Default: 'INSERT', 'UPDATE', 'DELETE'
-    
+
     -- Special case for profiles table admin changes
     IF TG_OP = 'UPDATE' AND TG_TABLE_NAME = 'profiles' THEN
-        IF (OLD.is_admin IS DISTINCT FROM NEW.is_admin) THEN
+        IF OLD.is_admin IS DISTINCT FROM NEW.is_admin THEN
             action_label := 'ADMIN_PRIVILEGE_CHANGE';
         END IF;
     END IF;
 
-    -- 4. NORMALIZE DATA FOR DYNAMIC ACCESS
-    IF TG_OP = 'DELETE' THEN
-        row_data := hstore(OLD);
-    ELSE
-        row_data := hstore(NEW);
-    END IF;
+    -- 4. NORMALIZE ROW DATA
+    row_data := hstore(CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END);
 
-    -- 5. RESOLVE AFFECTED USER (The "Owner" of the data)
+    -- 5. RESOLVE AFFECTED USER
     affected_user_id := NULL;
 
     -- a. Direct user_id - use safe casting
     IF row_data ? 'user_id' AND row_data -> 'user_id' IS NOT NULL THEN
         BEGIN
             affected_user_id := (row_data -> 'user_id')::uuid;
-        EXCEPTION WHEN OTHERS THEN
+        EXCEPTION WHEN invalid_text_representation THEN
             affected_user_id := NULL;
         END;
     END IF;
@@ -336,11 +330,10 @@ BEGIN
     -- b. Via account_id
     IF affected_user_id IS NULL AND row_data ? 'account_id' AND row_data -> 'account_id' IS NOT NULL THEN
         BEGIN
-            SELECT a.user_id
-            INTO affected_user_id
+            SELECT a.user_id INTO affected_user_id
             FROM finance.accounts a
             WHERE a.id = (row_data -> 'account_id')::uuid;
-        EXCEPTION WHEN OTHERS THEN
+        EXCEPTION WHEN invalid_text_representation OR OTHERS THEN
             affected_user_id := NULL;
         END;
     END IF;
@@ -348,11 +341,10 @@ BEGIN
     -- c. Via transaction_id
     IF affected_user_id IS NULL AND row_data ? 'transaction_id' AND row_data -> 'transaction_id' IS NOT NULL THEN
         BEGIN
-            SELECT t.user_id
-            INTO affected_user_id
+            SELECT t.user_id INTO affected_user_id
             FROM finance.transactions t
             WHERE t.id = (row_data -> 'transaction_id')::uuid;
-        EXCEPTION WHEN OTHERS THEN
+        EXCEPTION WHEN invalid_text_representation OR OTHERS THEN
             affected_user_id := NULL;
         END;
     END IF;
@@ -361,56 +353,33 @@ BEGIN
     IF affected_user_id IS NULL AND TG_TABLE_NAME = 'expense_subcategories' 
        AND row_data ? 'category_id' AND row_data -> 'category_id' IS NOT NULL THEN
         BEGIN
-            SELECT ec.user_id
-            INTO affected_user_id
+            SELECT ec.user_id INTO affected_user_id
             FROM finance.expense_categories ec
             WHERE ec.id = (row_data -> 'category_id')::uuid;
-        EXCEPTION WHEN OTHERS THEN
+        EXCEPTION WHEN invalid_text_representation OR OTHERS THEN
             affected_user_id := NULL;
         END;
     END IF;
 
     -- Final fallback
-    IF affected_user_id IS NULL THEN
-        affected_user_id := actor_user_id;
-    END IF;
+    affected_user_id := COALESCE(affected_user_id, actor_user_id);
 
     -- 6. RESOLVE RECORD_ID
     record_id := NULL;
 
-    -- Try 'id' field with safe casting
-    IF row_data ? 'id' AND row_data -> 'id' IS NOT NULL THEN
-        BEGIN
-            record_id := (row_data -> 'id')::uuid;
-        EXCEPTION WHEN OTHERS THEN
-            record_id := NULL;
-        END;
-    END IF;
+    FOREACH record_id_candidate IN ARRAY['id','account_id','transaction_id'] LOOP
+        IF record_id IS NULL AND row_data ? record_id_candidate AND row_data -> record_id_candidate IS NOT NULL THEN
+            BEGIN
+                record_id := (row_data -> record_id_candidate)::uuid;
+            EXCEPTION WHEN invalid_text_representation THEN
+                record_id := NULL;
+            END;
+        END IF;
+    END LOOP;
 
-    -- Try 'account_id' field
-    IF record_id IS NULL AND row_data ? 'account_id' AND row_data -> 'account_id' IS NOT NULL THEN
-        BEGIN
-            record_id := (row_data -> 'account_id')::uuid;
-        EXCEPTION WHEN OTHERS THEN
-            record_id := NULL;
-        END;
-    END IF;
+    record_id := COALESCE(record_id, gen_random_uuid());
 
-    -- Try 'transaction_id' field
-    IF record_id IS NULL AND row_data ? 'transaction_id' AND row_data -> 'transaction_id' IS NOT NULL THEN
-        BEGIN
-            record_id := (row_data -> 'transaction_id')::uuid;
-        EXCEPTION WHEN OTHERS THEN
-            record_id := NULL;
-        END;
-    END IF;
-
-    -- Absolute fallback: deterministic UUID
-    IF record_id IS NULL THEN
-        record_id := gen_random_uuid();
-    END IF;
-
-    -- 7. Insert audit log
+    -- 7. INSERT AUDIT LOG
     BEGIN
         INSERT INTO audit.audit_logs (
             user_id,
@@ -426,17 +395,17 @@ BEGIN
             TG_TABLE_SCHEMA || '.' || TG_TABLE_NAME,
             record_id,
             action_label,
-            CASE WHEN TG_OP IN ('UPDATE', 'DELETE') THEN row_to_json(OLD) ELSE NULL END,
-            CASE WHEN TG_OP IN ('INSERT', 'UPDATE') THEN row_to_json(NEW) ELSE NULL END
+            CASE WHEN TG_OP IN ('UPDATE','DELETE') THEN row_to_json(OLD) ELSE NULL END,
+            CASE WHEN TG_OP IN ('INSERT','UPDATE') THEN row_to_json(NEW) ELSE NULL END
         );
     EXCEPTION WHEN OTHERS THEN
         -- Auditing must never block the main database operation
-        RAISE NOTICE 'Audit log insertion failed: %', SQLERRM;
+        RAISE WARNING 'Audit log insertion failed for %: %', TG_TABLE_SCHEMA || '.' || TG_TABLE_NAME, SQLERRM;
         NULL;
     END;
 
     -- Standard for AFTER triggers
-    RETURN NULL; 
+    RETURN NULL;
 END;
 $$;
 
