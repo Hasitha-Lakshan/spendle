@@ -119,6 +119,20 @@ BEGIN
 END $$;
 
 -- =========================================
+-- Drop specific custom schemas
+-- =========================================
+DO $$ DECLARE
+    sch_name TEXT;
+    custom_schemas TEXT[] := ARRAY['finance','audit','api','util','core'];
+BEGIN
+    FOREACH sch_name IN ARRAY custom_schemas
+    LOOP
+        RAISE NOTICE 'Dropping schema: %', sch_name;
+        EXECUTE 'DROP SCHEMA IF EXISTS ' || quote_ident(sch_name) || ' CASCADE;';
+    END LOOP;
+END $$;
+
+-- =========================================
 -- Notes
 -- =========================================
 -- 1. Only objects owned by your current user are affected.
