@@ -2096,7 +2096,6 @@ BEGIN
 END;
 $$;
 
-
 -- ================================
 -- Grant Permissions
 -- ================================
@@ -2108,7 +2107,6 @@ GRANT EXECUTE ON FUNCTION public.admin_hard_delete_account(UUID) TO authenticate
 GRANT EXECUTE ON FUNCTION public.get_all_accounts() TO authenticated;
 GRANT EXECUTE ON FUNCTION public.get_account_details(UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.get_accounts_by_type(finance.account_type) TO authenticated;
-
 
 -- ================================
 -- Function Documentation

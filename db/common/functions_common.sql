@@ -823,7 +823,7 @@ BEGIN
     GET DIAGNOSTICS v_rows_deleted = ROW_COUNT;
 
     -- Return result
-    RETURN record_exists > 0;
+    RETURN v_rows_deleted > 0;
 END;
 $$;
 
@@ -1255,14 +1255,12 @@ SELECT cron.schedule(
   $$ SELECT util.cleanup_old_rate_limits_internal(24); $$  -- call function with fully qualified reference
 );
 
-
 -- ================================
 -- Grant Permissions
 -- ================================
 GRANT EXECUTE ON FUNCTION public.initialize_my_defaults() TO authenticated;
 GRANT EXECUTE ON FUNCTION public.admin_initialize_user_defaults(UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.admin_hard_delete_record(TEXT, UUID) TO authenticated;
-
 
 -- ================================
 -- Function Documentation
