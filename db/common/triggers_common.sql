@@ -272,6 +272,7 @@ DECLARE
     affected_user_id UUID;
     actor_user_id UUID;
     record_id UUID;
+    record_id_candidate text;
     row_data hstore;
     session_setting TEXT;
     action_label TEXT;
@@ -367,7 +368,7 @@ BEGIN
     -- 6. RESOLVE RECORD_ID
     record_id := NULL;
 
-    FOREACH record_id_candidate IN ARRAY['id','account_id','transaction_id'] LOOP
+    FOREACH record_id_candidate IN ARRAY ARRAY['id','account_id','transaction_id'] LOOP
         IF record_id IS NULL AND row_data ? record_id_candidate AND row_data -> record_id_candidate IS NOT NULL THEN
             BEGIN
                 record_id := (row_data -> record_id_candidate)::uuid;
