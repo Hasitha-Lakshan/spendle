@@ -50,7 +50,7 @@ BEGIN
         SELECT table_schema, table_name
         FROM information_schema.columns c
         WHERE c.column_name = 'updated_at'
-          AND c.table_schema IN ('finance', 'audit', 'api')  -- include all relevant schemas
+          AND c.table_schema IN ('core', 'finance', 'audit', 'api')  -- include all relevant schemas
     LOOP
         -- Deterministic, length-safe trigger name
         trigger_name := 'trg_updated_at_' || substr(md5(r.table_schema || '.' || r.table_name), 1, 10);
