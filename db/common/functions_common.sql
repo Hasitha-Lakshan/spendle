@@ -519,6 +519,14 @@ EXCEPTION
             'data', NULL
         );
 
+    WHEN invalid_text_representation THEN
+        RETURN jsonb_build_object(
+            'success', FALSE,
+            'code', 'INVALID_AUTH_CONTEXT',
+            'message', 'Invalid authentication context (expected UUID)',
+            'data', NULL
+        );
+
     WHEN OTHERS THEN
         RETURN jsonb_build_object(
             'success', FALSE,
