@@ -158,7 +158,7 @@ $$;
 --   - SECURITY DEFINER allows the function to bypass RLS restrictions when inserting defaults
 --   - VOLATILE since it may modify database state
 --   - Raises an exception if the session is unauthenticated
---   - Intended to be called internally or via a SECURITY INVOKER wrapper function for end users
+--   - Intended to be called internally or via a SECURITY DEFINER wrapper function for end users
 -- =========================================
 CREATE OR REPLACE FUNCTION finance.initialize_my_defaults_internal()
 RETURNS BOOLEAN
@@ -235,7 +235,7 @@ $$;
 --       * `defaults_inserted`: BOOLEAN indicating if defaults were inserted during this call
 --
 -- Notes:
---   - SECURITY INVOKER ensures RLS policies are applied according to the calling user
+--   - SECURITY DEFINER ensures RLS policies are applied according to the owner
 --   - Delegates privileged operations to the SECURITY DEFINER internal function
 --   - VOLATILE since the function may modify database state
 --   - Designed for safe invocation by ordinary users in Supabase or client applications
@@ -381,6 +381,9 @@ DECLARE
     defaults_flag BOOLEAN;
     is_soft_deleted BOOLEAN := FALSE;
 BEGIN
+    -- Enable default initialization override
+    PERFORM set_config('app.allow_default_initialization_override', 'true', true);
+
     -- Enable RLS for this function
     PERFORM set_config('row_security', 'on', true);
 
@@ -455,7 +458,7 @@ $$;
 --       * `defaults_inserted`: BOOLEAN indicating whether defaults were inserted during this call
 --
 -- Notes:
---   - SECURITY INVOKER ensures RLS policies are evaluated using the caller’s identity
+--   - SECURITY DEFINER ensures RLS policies are evaluated using the owner’s identity
 --   - All authentication and authorization logic is enforced in the SECURITY DEFINER
 --     internal function
 --   - VOLATILE since the function may create or modify user-scoped data
@@ -466,7 +469,7 @@ CREATE OR REPLACE FUNCTION public.admin_initialize_user_defaults(
 )
 RETURNS JSONB
 LANGUAGE plpgsql
-SECURITY INVOKER
+SECURITY DEFINER
 SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
@@ -544,7 +547,7 @@ $$;
 --   Enforces per-user API rate limits for a given endpoint within a rolling time window.
 --
 -- Behavior:
---   - SECURITY INVOKER ensures the function runs with the privileges of the calling user
+--   - SECURITY DEFINER ensures the function runs with the privileges of the owner
 --   - Checks the number of requests made by the current user for a specific endpoint
 --     within the specified time window (p_window_minutes)
 --   - Inserts a new rate limit record if none exists, or increments the request count
@@ -915,7 +918,7 @@ $$;
 --     - FALSE if the delete operation failed or no record was affected
 --
 -- Notes:
---   - SECURITY INVOKER ensures RLS policies are evaluated using the caller’s identity
+--   - SECURITY DEFINER ensures RLS policies are evaluated using the owner’s identity
 --   - All authentication, authorization, and hard delete bypass logic is enforced
 --     within the SECURITY DEFINER internal function
 --   - VOLATILE due to irreversible data mutation
@@ -927,7 +930,7 @@ CREATE OR REPLACE FUNCTION public.admin_hard_delete_record(
 )
 RETURNS JSONB
 LANGUAGE plpgsql
-SECURITY INVOKER
+SECURITY DEFINER
 SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
@@ -1264,7 +1267,7 @@ GRANT EXECUTE ON FUNCTION public.admin_hard_delete_record(TEXT, UUID) TO authent
 -- ================================
 -- Function Documentation
 -- ================================
-COMMENT ON FUNCTION public.initialize_my_defaults IS 'Invoker wrapper for initialize_my_defaults_internal() to enforce RLS';
+COMMENT ON FUNCTION public.initialize_my_defaults IS 'Definer wrapper for initialize_my_defaults_internal() to enforce RLS';
 COMMENT ON FUNCTION finance.initialize_defaults_for_user_internal(UUID) IS 
 'Triggers default account and category creation for new users via existing trigger system';
 COMMENT ON FUNCTION api.check_rate_limit_internal(VARCHAR, INTEGER, INTEGER) IS 'API rate limiting with configurable windows';

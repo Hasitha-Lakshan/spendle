@@ -216,6 +216,7 @@ DECLARE
     v_term_months INT;
     v_portfolio_value NUMERIC;
     v_amount_due NUMERIC;
+    v_default_init_override BOOLEAN := current_setting('app.allow_default_initialization_override', true)::BOOLEAN;
 BEGIN
     -- Enable RLS
     PERFORM set_config('row_security', 'on', true);
@@ -227,8 +228,8 @@ BEGIN
             USING ERRCODE = '28000';
     END IF;
 
-    -- Caller can only create for self
-    IF p_user_id IS DISTINCT FROM v_user_id THEN
+    -- Allow creating accounts for admins only when default initialization
+    IF p_user_id IS DISTINCT FROM v_user_id AND NOT v_default_init_override THEN
         RAISE EXCEPTION
             'Permission denied'
             USING ERRCODE = '42501';
@@ -987,7 +988,7 @@ $$;
 --   the actual creation logic to create_account_internal.
 --
 -- Behavior:
---   - Executes as SECURITY INVOKER, ensuring the caller’s identity and
+--   - Executes as SECURITY DEFINER, ensuring the owner’s identity and
 --     permissions are preserved.
 --   - Passes all parameters directly to create_account_internal without
 --     modifying input data.
@@ -1007,7 +1008,7 @@ $$;
 --
 -- Notes:
 --   - Designed as a thin wrapper to clearly separate privilege boundaries
---     between invoker-level and definer-level logic.
+--     between definer-level and definer-level logic.
 --   - Keeps all sensitive validation and insert operations centralized
 --     within create_account_internal.
 --   - Suitable for direct use by application code or API layers.
@@ -1021,7 +1022,7 @@ CREATE OR REPLACE FUNCTION public.create_account(
 )
 RETURNS JSONB
 LANGUAGE plpgsql
-SECURITY INVOKER
+SECURITY DEFINER
 SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
@@ -1107,7 +1108,7 @@ $$;
 --   delegating all validation and update logic to update_account_internal.
 --
 -- Behavior:
---   - Executes as SECURITY INVOKER, preserving the caller’s identity and
+--   - Executes as SECURITY DEFINER, preserving the owner’s identity and
 --     permission context.
 --   - Forwards the account ID and update payload directly to the internal
 --     update function without altering the input.
@@ -1124,7 +1125,7 @@ $$;
 --
 -- Notes:
 --   - Designed as a thin wrapper to maintain a clear separation between
---     invoker-level access and definer-level business logic.
+--     definer-level access and definer-level business logic.
 --   - Suitable for direct use by application and API layers.
 --   - Centralizes complex update behavior within update_account_internal
 --     for consistency and maintainability.
@@ -1135,7 +1136,7 @@ CREATE OR REPLACE FUNCTION public.update_account(
 )
 RETURNS JSONB
 LANGUAGE plpgsql
-SECURITY INVOKER
+SECURITY DEFINER
 SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
@@ -1211,7 +1212,7 @@ $$;
 -- 10. Function: soft_delete_account
 -- =========================================
 -- Purpose:
---   Provides a SECURITY INVOKER wrapper for performing a soft delete on a 
+--   Provides a SECURITY DEFINER wrapper for performing a soft delete on a 
 --   user-owned account by delegating to soft_delete_account_internal().
 --
 -- Behavior:
@@ -1227,7 +1228,7 @@ $$;
 --             FALSE if the account does not exist or is already soft-deleted.
 --
 -- Notes:
---   - SECURITY INVOKER ensures that the caller's privileges are used, while
+--   - SECURITY DEFINER ensures that the owner’s privileges are used, while
 --     the internal function handles SECURITY DEFINER operations.
 --   - Acts as a safe, public-facing interface to the internal function.
 --   - No direct validation or RLS handling occurs here; all logic is delegated.
@@ -1237,7 +1238,7 @@ CREATE OR REPLACE FUNCTION public.soft_delete_account(
 )
 RETURNS JSONB
 LANGUAGE plpgsql
-SECURITY INVOKER
+SECURITY DEFINER
 SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
@@ -1288,7 +1289,7 @@ $$;
 -- 11. Function: admin_soft_delete_account
 -- =========================================
 -- Purpose:
---   Provides a SECURITY INVOKER wrapper for performing a soft delete on any
+--   Provides a SECURITY DEFINER wrapper for performing a soft delete on any
 --   account by delegating to admin_soft_delete_account_internal().
 --
 -- Behavior:
@@ -1304,7 +1305,7 @@ $$;
 --             FALSE if the account does not exist or is already soft-deleted.
 --
 -- Notes:
---   - SECURITY INVOKER ensures the function runs with the caller's privileges,
+--   - SECURITY DEFINER ensures the function runs with the owner’s privileges,
 --     while the internal function handles SECURITY DEFINER operations.
 --   - Acts as a safe, public-facing interface for administrators.
 --   - All authentication, permission validation, and RLS handling are
@@ -1315,7 +1316,7 @@ CREATE OR REPLACE FUNCTION public.admin_soft_delete_account(
 )
 RETURNS JSONB
 LANGUAGE plpgsql
-SECURITY INVOKER
+SECURITY DEFINER
 SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
@@ -1370,7 +1371,7 @@ $$;
 --   delegating all authorization and deletion logic to admin_hard_delete_account_internal.
 --
 -- Behavior:
---   - Executes as SECURITY INVOKER, preserving the caller’s authentication
+--   - Executes as SECURITY DEFINER, preserving the owner’s authentication
 --     and permission context.
 --   - Forwards the account ID directly to the internal hard delete function.
 --   - Relies entirely on the internal function for administrator checks,
@@ -1383,7 +1384,7 @@ $$;
 --   BOOLEAN - TRUE if the account and all related data were successfully deleted.
 --
 -- Notes:
---   - Designed as a thin wrapper to clearly separate invoker-level access
+--   - Designed as a thin wrapper to clearly separate definer-level access
 --     from definer-level destructive operations.
 --   - Intended strictly for administrative workflows due to the irreversible
 --     nature of hard deletes.
@@ -1395,7 +1396,7 @@ CREATE OR REPLACE FUNCTION public.admin_hard_delete_account(
 )
 RETURNS JSONB
 LANGUAGE plpgsql
-SECURITY INVOKER
+SECURITY DEFINER
 SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
@@ -1861,7 +1862,7 @@ $$;
 -- 16. Function: get_all_accounts
 -- =========================================
 -- Purpose:
---   Provides a SECURITY INVOKER wrapper for retrieving all accounts
+--   Provides a SECURITY DEFINER wrapper for retrieving all accounts
 --   accessible to the calling user.
 --
 -- Behavior:
@@ -1883,7 +1884,7 @@ $$;
 --   )
 --
 -- Notes:
---   - SECURITY INVOKER ensures the query executes with the caller’s
+--   - SECURITY DEFINER ensures the query executes with the owner’s
 --     privileges and active RLS policies.
 --   - Acts as a stable, public-facing API function.
 --   - All authorization, visibility rules, and data shaping are handled
@@ -1892,7 +1893,7 @@ $$;
 CREATE OR REPLACE FUNCTION public.get_all_accounts()
 RETURNS JSONB
 LANGUAGE plpgsql
-SECURITY INVOKER
+SECURITY DEFINER
 SET search_path = pg_catalog, finance
 STABLE
 AS $$
@@ -1936,7 +1937,7 @@ $$;
 -- 17. Function: get_account_details
 -- =========================================
 -- Purpose:
---   Provides a SECURITY INVOKER wrapper for retrieving detailed
+--   Provides a SECURITY DEFINER wrapper for retrieving detailed
 --   information about a single account.
 --
 -- Behavior:
@@ -1955,7 +1956,7 @@ $$;
 --     internal function.
 --
 -- Notes:
---   - SECURITY INVOKER ensures caller context and RLS are respected.
+--   - SECURITY DEFINER ensures owner context and RLS are respected.
 --   - Designed as a safe, public-facing read API.
 --   - All permission checks and error handling are implemented in the
 --     internal function.
@@ -1965,7 +1966,7 @@ CREATE OR REPLACE FUNCTION public.get_account_details(
 )
 RETURNS JSONB
 LANGUAGE plpgsql
-SECURITY INVOKER
+SECURITY DEFINER
 SET search_path = pg_catalog, finance
 STABLE
 AS $$
@@ -2018,7 +2019,7 @@ $$;
 -- 18. Function: get_accounts_by_type
 -- =========================================
 -- Purpose:
---   Provides a SECURITY INVOKER wrapper for retrieving accounts filtered
+--   Provides a SECURITY DEFINER wrapper for retrieving accounts filtered
 --   by account type.
 --
 -- Behavior:
@@ -2036,7 +2037,7 @@ $$;
 --     as produced by the internal function.
 --
 -- Notes:
---   - SECURITY INVOKER ensures execution under the caller’s privileges.
+--   - SECURITY DEFINER ensures execution under the owner’s privileges.
 --   - Serves as a controlled, public-facing query interface.
 --   - Business rules and RLS logic are fully encapsulated within the
 --     internal function.
@@ -2046,7 +2047,7 @@ CREATE OR REPLACE FUNCTION public.get_accounts_by_type(
 )
 RETURNS JSONB
 LANGUAGE plpgsql
-SECURITY INVOKER
+SECURITY DEFINER
 SET search_path = pg_catalog, finance
 STABLE
 AS $$
