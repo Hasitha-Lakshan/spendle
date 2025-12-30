@@ -392,30 +392,33 @@ VOLATILE
 AS $$
 BEGIN
     -- Only enforce rules if account has active transactions
-    IF finance.account_has_active_transactions_internal(OLD.account_id, OLD.user_id) THEN
+    IF finance.account_has_active_transactions_internal(OLD.id, OLD.user_id) THEN
 
         -- Handle UPDATE operations
         IF TG_OP = 'UPDATE' THEN
             -- Prevent modification of currency
             IF OLD.currency IS DISTINCT FROM NEW.currency THEN
-                RAISE EXCEPTION 'Cannot modify account currency when transactions exist for account %',
-                    OLD.account_id
-                    USING ERRCODE = '45000'; -- user-defined exception
+                RAISE EXCEPTION
+                    'Cannot modify account currency when transactions exist for account %',
+                    OLD.id
+                    USING ERRCODE = '45000';
             END IF;
 
             -- Prevent soft delete
             IF OLD.deleted_at IS NULL
-            AND NEW.deleted_at IS NOT NULL THEN
-                RAISE EXCEPTION 'Cannot soft-delete account with existing transactions for account %',
-                    OLD.account_id
+               AND NEW.deleted_at IS NOT NULL THEN
+                RAISE EXCEPTION
+                    'Cannot soft-delete account with existing transactions for account %',
+                    OLD.id
                     USING ERRCODE = '45000';
             END IF;
         END IF;
 
         -- Handle DELETE operations
         IF TG_OP = 'DELETE' THEN
-            RAISE EXCEPTION 'Cannot hard-delete account with existing transactions for account %',
-                OLD.account_id
+            RAISE EXCEPTION
+                'Cannot hard-delete account with existing transactions for account %',
+                OLD.id
                 USING ERRCODE = '45000';
         END IF;
     END IF;
@@ -474,9 +477,23 @@ VOLATILE
 AS $$
 DECLARE
     v_balance_changed BOOLEAN := FALSE;
+    v_user_id UUID;
 BEGIN
+    -- Resolve user_id from parent account record
+    SELECT a.user_id
+    INTO v_user_id
+    FROM finance.accounts a
+    WHERE a.id = OLD.account_id;
+
+    IF v_user_id IS NULL THEN
+        RAISE EXCEPTION
+            'prevent_balance_change_if_transactions: account % not found in finance.accounts',
+            OLD.account_id
+            USING ERRCODE = 'P0002';
+    END IF;
+
     -- Only enforce if account has active transactions
-    IF finance.account_has_active_transactions_internal(OLD.account_id, OLD.user_id) THEN
+    IF finance.account_has_active_transactions_internal(OLD.account_id, v_user_id) THEN
 
         -- Detect balance or related changes per account type
         CASE TG_TABLE_NAME
@@ -527,31 +544,41 @@ BEGIN
 
             ELSE
                 -- Unhandled table
-                RAISE EXCEPTION 'prevent_balance_change_if_transactions: unhandled table %', TG_TABLE_NAME
-                    USING ERRCODE = 'P0002'; -- user-defined exception
+                RAISE EXCEPTION
+                    'prevent_balance_change_if_transactions: unhandled table %',
+                    TG_TABLE_NAME
+                    USING ERRCODE = 'P0002';
         END CASE;
 
-        -- Raise exception for balance modifications
+        -- Prevent balance modifications
         IF v_balance_changed THEN
-            RAISE EXCEPTION 'Cannot modify account balances when transactions exist for account %', OLD.account_id
+            RAISE EXCEPTION
+                'Cannot modify account balances when transactions exist for account %',
+                OLD.account_id
                 USING ERRCODE = '45000';
         END IF;
 
         -- Prevent soft delete
-        IF TG_OP = 'UPDATE' AND OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL THEN
-            RAISE EXCEPTION 'Cannot soft-delete account with existing transactions for account %', OLD.account_id
+        IF TG_OP = 'UPDATE'
+           AND OLD.deleted_at IS NULL
+           AND NEW.deleted_at IS NOT NULL THEN
+            RAISE EXCEPTION
+                'Cannot soft-delete account with existing transactions for account %',
+                OLD.account_id
                 USING ERRCODE = '45000';
         END IF;
 
         -- Prevent hard delete
         IF TG_OP = 'DELETE' THEN
-            RAISE EXCEPTION 'Cannot delete account with existing transactions for account %', OLD.account_id
+            RAISE EXCEPTION
+                'Cannot delete account with existing transactions for account %',
+                OLD.account_id
                 USING ERRCODE = '45000';
         END IF;
 
     END IF;
 
-    -- Return the appropriate row
+    -- Return appropriate row
     IF TG_OP = 'DELETE' THEN
         RETURN OLD;
     ELSE
@@ -639,8 +666,8 @@ BEGIN
     IF NEW.type IS DISTINCT FROM OLD.type THEN
         RAISE EXCEPTION
             'Account type cannot be changed for account % (from % to %)',
-            OLD.account_id, OLD.type, NEW.type
-            USING ERRCODE = '45000'; -- user-defined exception for business rule violation
+            OLD.id, OLD.type, NEW.type
+            USING ERRCODE = '45000';
     END IF;
 
     RETURN NEW;

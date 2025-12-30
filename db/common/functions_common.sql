@@ -729,11 +729,11 @@ BEGIN
                 UNION
                 SELECT transaction_id FROM finance.transactions_expense    WHERE account_id = p_record_id
                 UNION
-                SELECT transaction_id FROM finance.transactions_investment WHERE account_id = p_record_id
+                SELECT transaction_id FROM finance.transactions_investment WHERE funding_account_id = p_record_id OR investment_account_id = p_record_id
                 UNION
-                SELECT transaction_id FROM finance.transactions_borrow     WHERE account_id = p_record_id
+                SELECT transaction_id FROM finance.transactions_borrow     WHERE loan_account_id = p_record_id OR disbursement_account_id = p_record_id
                 UNION
-                SELECT transaction_id FROM finance.transactions_lend       WHERE account_id = p_record_id
+                SELECT transaction_id FROM finance.transactions_lend       WHERE funding_account_id = p_record_id OR receivable_account_id = p_record_id
                 UNION
                 SELECT transaction_id FROM finance.transactions_transfer   WHERE from_account = p_record_id OR to_account = p_record_id
                 UNION
@@ -744,9 +744,9 @@ BEGIN
         -- Delete transaction details referencing this account
         DELETE FROM finance.transactions_income      WHERE account_id = p_record_id;
         DELETE FROM finance.transactions_expense     WHERE account_id = p_record_id;
-        DELETE FROM finance.transactions_investment  WHERE account_id = p_record_id;
-        DELETE FROM finance.transactions_borrow      WHERE account_id = p_record_id;
-        DELETE FROM finance.transactions_lend        WHERE account_id = p_record_id;
+        DELETE FROM finance.transactions_investment  WHERE funding_account_id = p_record_id OR investment_account_id = p_record_id;
+        DELETE FROM finance.transactions_borrow      WHERE loan_account_id = p_record_id OR disbursement_account_id = p_record_id;
+        DELETE FROM finance.transactions_lend        WHERE funding_account_id = p_record_id OR receivable_account_id = p_record_id;
         DELETE FROM finance.transactions_adjustment  WHERE account_id = p_record_id;
         DELETE FROM finance.transactions_transfer    WHERE from_account = p_record_id OR to_account = p_record_id;
     END IF;
@@ -813,8 +813,9 @@ BEGIN
 
     -- Hard delete only soft-deleted rows
     v_sql_query := format(
-        'DELETE FROM %I WHERE id = $1 AND deleted_at IS NOT NULL',
-        p_table_name
+        'DELETE FROM %I.%I WHERE id = $1 AND deleted_at IS NOT NULL',
+        split_part(p_table_name, '.', 1),  -- schema
+        split_part(p_table_name, '.', 2)   -- table
     );
 
     EXECUTE v_sql_query USING p_record_id;
@@ -959,6 +960,16 @@ BEGIN
     -- Call internal function
     v_deleted := finance.admin_hard_delete_record_internal(table_name, record_id);
 
+    -- Check if deletion actually happened
+    IF NOT v_deleted THEN
+        RETURN jsonb_build_object(
+            'success', FALSE,
+            'code', 'NOT_FOUND',
+            'message', 'Record does not exist or already deleted',
+            'data', NULL
+        );
+    END IF;
+
     -- Success response
     RETURN jsonb_build_object(
         'success', TRUE,
@@ -976,6 +987,14 @@ EXCEPTION
             'data', NULL
         );
 
+    WHEN no_data_found THEN
+        RETURN jsonb_build_object(
+            'success', FALSE,
+            'code', 'NOT_FOUND',
+            'message', 'Record does not exist',
+            'data', NULL
+        );
+
     WHEN undefined_table THEN
         RETURN jsonb_build_object(
             'success', FALSE,
@@ -984,11 +1003,27 @@ EXCEPTION
             'data', NULL
         );
 
+    WHEN invalid_authorization_specification THEN
+        RETURN jsonb_build_object(
+            'success', FALSE,
+            'code', 'NOT_AUTHENTICATED',
+            'message', 'User is not authenticated',
+            'data', NULL
+        );
+
+    WHEN insufficient_privilege THEN
+        RETURN jsonb_build_object(
+            'success', FALSE,
+            'code', 'NOT_AUTHORIZED',
+            'message', 'User does not have admin privileges',
+            'data', NULL
+        );
+
     WHEN OTHERS THEN
         RETURN jsonb_build_object(
             'success', FALSE,
             'code', 'INTERNAL_ERROR',
-            'message', 'Failed to delete record',
+            'message', SQLERRM,
             'data', NULL
         );
 END;
