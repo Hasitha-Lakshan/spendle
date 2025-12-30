@@ -672,6 +672,11 @@ DECLARE
     v_rows_deleted INTEGER;
     v_acc_type finance.account_type;
     v_sql_query TEXT;
+    v_deleted_at TIMESTAMP;
+    v_primary_key_col TEXT;
+    v_schema_name TEXT;
+    v_table_name TEXT;
+    v_pk_value UUID;
 BEGIN
     -- Require authentication
     IF v_user_id IS NULL THEN
@@ -680,9 +685,12 @@ BEGIN
             USING ERRCODE = '28000'; -- invalid_authorization_specification
     END IF;
 
+    -- Split the input table name into schema and table
+    v_schema_name := split_part(p_table_name, '.', 1);
+    v_table_name := split_part(p_table_name, '.', 2);
+
     -- Validate table name (allow-list)
     IF p_table_name NOT IN (
-        'core.profiles',
         'finance.accounts', 'finance.transactions', 'finance.expense_categories', 'finance.expense_subcategories',
         'finance.income_sources', 'finance.counterparties', 'finance.transactions_recurring',
         'finance.cash_accounts', 'finance.bank_accounts', 'finance.credit_card_accounts', 'finance.loan_accounts',
@@ -696,6 +704,51 @@ BEGIN
             USING ERRCODE = '42601'; -- syntax_error (semantic misuse)
     END IF;
 
+    BEGIN
+        -- Determine PK column dynamically from whitelist
+        SELECT column_name
+        INTO v_primary_key_col
+        FROM information_schema.columns
+        WHERE table_schema = v_schema_name
+          AND table_name = v_table_name
+          AND column_name IN ('id','account_id','transaction_id')
+        ORDER BY CASE column_name
+                     WHEN 'id' THEN 1
+                     WHEN 'account_id' THEN 2
+                     WHEN 'transaction_id' THEN 3
+                 END
+        LIMIT 1;
+
+        IF v_primary_key_col IS NULL THEN
+            RAISE EXCEPTION 'No primary key column found in table %', p_table_name
+            USING ERRCODE = '55000';
+        END IF;
+    EXCEPTION WHEN OTHERS THEN
+        RAISE EXCEPTION 'Failed to determine primary key column for table %: %', p_table_name, SQLERRM;
+    END;
+
+    v_sql_query := format(
+        'SELECT %I, deleted_at FROM %I.%I WHERE %I = $1',
+        v_primary_key_col,  -- primary key column
+        v_schema_name,      -- schema
+        v_table_name,       -- table
+        v_primary_key_col   -- PK filter
+    );
+
+    EXECUTE v_sql_query INTO v_pk_value, v_deleted_at USING p_record_id;
+
+    -- Check if row exists
+    IF v_pk_value IS NULL THEN
+        RAISE EXCEPTION 'Record does not exist'
+        USING ERRCODE = '02000';
+    END IF;
+
+    -- Now v_deleted_at can be used to check if soft-deleted
+    IF v_deleted_at IS NULL THEN
+        RAISE EXCEPTION 'Cannot hard-delete a row that is not soft-deleted'
+        USING ERRCODE = '55000';
+    END IF;
+
     -- Account-specific cascading deletes
     -- If deleting an account, first delete specialized account table + transaction details
     IF p_table_name = 'finance.accounts' THEN
@@ -706,8 +759,8 @@ BEGIN
 
         IF NOT FOUND THEN
             RAISE EXCEPTION
-                'Account does not exist'
-                USING ERRCODE = '02000'; -- no_data_found
+            'Account does not exist'
+            USING ERRCODE = '02000'; -- no_data_found
         END IF;
 
         CASE v_acc_type
@@ -757,8 +810,8 @@ BEGIN
         PERFORM 1 FROM finance.transactions WHERE id = p_record_id;
         IF NOT FOUND THEN
             RAISE EXCEPTION
-                'Transaction does not exist'
-                USING ERRCODE = '02000';
+            'Transaction does not exist'
+            USING ERRCODE = '02000';
         END IF;
 
         -- Delete recurring transactions linked to this transaction
@@ -779,8 +832,8 @@ BEGIN
         PERFORM 1 FROM finance.expense_categories WHERE id = p_record_id;
         IF NOT FOUND THEN
             RAISE EXCEPTION
-                'Expense category does not exist'
-                USING ERRCODE = '02000';
+            'Expense category does not exist'
+            USING ERRCODE = '02000';
         END IF;
 
         DELETE FROM finance.expense_subcategories WHERE category_id = p_record_id;
@@ -791,8 +844,8 @@ BEGIN
         PERFORM 1 FROM finance.counterparties WHERE id = p_record_id;
         IF NOT FOUND THEN
             RAISE EXCEPTION
-                'Counterparty does not exist'
-                USING ERRCODE = '02000';
+            'Counterparty does not exist'
+            USING ERRCODE = '02000';
         END IF;
 
         DELETE FROM finance.loan_accounts        WHERE counterparty_id = p_record_id;
@@ -804,18 +857,19 @@ BEGIN
         PERFORM 1 FROM finance.income_sources WHERE id = p_record_id;
         IF NOT FOUND THEN
             RAISE EXCEPTION
-                'Income source does not exist'
-                USING ERRCODE = '02000';
+            'Income source does not exist'
+            USING ERRCODE = '02000';
         END IF;
 
         DELETE FROM finance.transactions_income WHERE source_id = p_record_id;
     END IF;
 
-    -- Hard delete only soft-deleted rows
+    -- Finally, hard-delete main row
     v_sql_query := format(
-        'DELETE FROM %I.%I WHERE id = $1 AND deleted_at IS NOT NULL',
-        split_part(p_table_name, '.', 1),  -- schema
-        split_part(p_table_name, '.', 2)   -- table
+        'DELETE FROM %I.%I WHERE %I = $1 AND deleted_at IS NOT NULL',
+        v_schema_name,  -- schema
+        v_table_name,  -- table
+        v_primary_key_col
     );
 
     EXECUTE v_sql_query USING p_record_id;
