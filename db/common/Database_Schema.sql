@@ -9,21 +9,35 @@
 -- =========================================
 
 -- =========================================
+-- Create Schemas
+-- =========================================
+-- Create finance schema for all financial tables and types
+CREATE SCHEMA IF NOT EXISTS finance;                        
+-- Create audit schema for audit tables
+CREATE SCHEMA IF NOT EXISTS audit;                          
+-- Create tables and RPCs exposed or supporting API logic
+CREATE SCHEMA IF NOT EXISTS api;                            
+-- Create purely internal helper functions not tied to a specific domain
+CREATE SCHEMA IF NOT EXISTS util;                           
+-- Create core schema for core related tables
+CREATE SCHEMA IF NOT EXISTS core;                           
+
+-- =========================================
 -- Enum Types
 -- =========================================
-CREATE TYPE account_type AS ENUM (
+CREATE TYPE finance.account_type AS ENUM (
   'cash','bank','credit_card','loan','investment','crypto','wallet','receivable'
 );
 
-CREATE TYPE transaction_type AS ENUM (
+CREATE TYPE finance.transaction_type AS ENUM (
   'income','expense','investment','borrow','lend','transfer','adjustment'
 );
 
-CREATE TYPE payment_method AS ENUM ('cash','bank','card','crypto','wallet','other');
+CREATE TYPE finance.payment_method AS ENUM ('cash','bank','card','crypto','wallet','other');
 
-CREATE TYPE risk_level AS ENUM ('low','medium','high');
+CREATE TYPE finance.risk_level AS ENUM ('low','medium','high');
 
-CREATE TYPE transfer_method AS ENUM (
+CREATE TYPE finance.transfer_method AS ENUM (
     'cash',               -- Cash to Cash
     'deposit',            -- Cash to Bank
     'payment',            -- Cash/Credit Card to Credit Card or others
@@ -44,22 +58,22 @@ CREATE TYPE transfer_method AS ENUM (
     'other'              -- Default / Unspecified transfer method
 );
 
-CREATE TYPE counterparty_type AS ENUM ('person','merchant','company','bank','government','organization','other');
+CREATE TYPE finance.counterparty_type AS ENUM ('person','merchant','company','bank','government','organization','other');
 
 -- Recurrence frequency for the recurring engine
-CREATE TYPE recurrence_frequency AS ENUM ('daily','weekly','monthly','yearly');
+CREATE TYPE finance.recurrence_frequency AS ENUM ('daily','weekly','monthly','yearly');
 
 -- =========================================
 -- Users and Profiles
 -- =========================================
 -- Profiles are linked to Supabase auth.users
-CREATE TABLE profiles (
+CREATE TABLE core.profiles (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID NOT NULL UNIQUE,               -- references auth.users(id) indirectly
-  defaults_inserted BOOLEAN DEFAULT FALSE,    -- flag to indicate if default accounts/categories are inserted
-  is_admin BOOLEAN DEFAULT FALSE,             -- flag to indicate if the user has admin privileges
-  deleted_at timestamptz NULL DEFAULT NULL,   -- soft delete timestamp
-  created_at timestamptz DEFAULT now(),        -- creation timestamp
+  user_id UUID NOT NULL UNIQUE REFERENCES auth.users(id),    -- references auth.users(id) indirectly
+  defaults_inserted BOOLEAN DEFAULT FALSE,                   -- flag to indicate if default accounts/categories are inserted
+  is_admin BOOLEAN DEFAULT FALSE,                            -- flag to indicate if the user has admin privileges
+  deleted_at timestamptz NULL DEFAULT NULL,                  -- soft delete timestamp
+  created_at timestamptz DEFAULT now(),                      -- creation timestamp
   updated_at timestamptz DEFAULT now()
 );
 
@@ -67,11 +81,11 @@ CREATE TABLE profiles (
 -- Accounts
 -- =========================================
 -- Generic accounts table containing all types of financial accounts
-CREATE TABLE accounts (
+CREATE TABLE finance.accounts (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID NOT NULL REFERENCES profiles(user_id) ON DELETE CASCADE, -- account owner
+  user_id UUID NOT NULL REFERENCES core.profiles(id), -- account owner
   account_name VARCHAR(100) NOT NULL,  -- display name for the account
-  type account_type NOT NULL,   -- type: cash, bank, credit_card, loan, investment, crypto, wallet, receivable
+  type finance.account_type NOT NULL,   -- type: cash, bank, credit_card, loan, investment, crypto, wallet, receivable
   currency VARCHAR(10) NOT NULL,       -- currency used in this account, e.g., USD, LKR, BTC
   deleted_at timestamptz NULL DEFAULT NULL,
   created_at timestamptz DEFAULT now(),
@@ -81,11 +95,11 @@ CREATE TABLE accounts (
 -- =========================================
 -- Counterparties
 -- =========================================
-CREATE TABLE counterparties (
+CREATE TABLE finance.counterparties (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID NOT NULL REFERENCES profiles(user_id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES core.profiles(id),
   name VARCHAR(255) NOT NULL,
-  type counterparty_type NOT NULL,
+  type finance.counterparty_type NOT NULL,
   created_at timestamptz DEFAULT now(),
   updated_at timestamptz DEFAULT now(),
   deleted_at timestamptz NULL DEFAULT NULL
@@ -96,8 +110,8 @@ CREATE TABLE counterparties (
 -- =========================================
 
 -- Cash Accounts
-CREATE TABLE cash_accounts (
-  account_id UUID PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+CREATE TABLE finance.cash_accounts (
+  account_id UUID PRIMARY KEY REFERENCES finance.accounts(id),
   location VARCHAR(100),                -- physical location of the cash
   balance DECIMAL(36,18) DEFAULT 0,     -- current cash balance
   status VARCHAR(20) DEFAULT 'active',  -- status: active, inactive, frozen
@@ -110,8 +124,8 @@ CREATE TABLE cash_accounts (
 );
 
 -- Bank Accounts
-CREATE TABLE bank_accounts (
-  account_id UUID PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+CREATE TABLE finance.bank_accounts (
+  account_id UUID PRIMARY KEY REFERENCES finance.accounts(id),
   bank_name VARCHAR(100) NOT NULL,
   account_no VARCHAR(50) NOT NULL,
   branch VARCHAR(50),
@@ -128,8 +142,8 @@ CREATE TABLE bank_accounts (
 );
 
 -- Credit Card Accounts
-CREATE TABLE credit_card_accounts (
-  account_id UUID PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+CREATE TABLE finance.credit_card_accounts (
+  account_id UUID PRIMARY KEY REFERENCES finance.accounts(id),
   card_number VARCHAR(20) NOT NULL,
   card_type VARCHAR(50),            -- e.g., Visa, Mastercard
   credit_limit DECIMAL(36,18),
@@ -148,8 +162,8 @@ CREATE TABLE credit_card_accounts (
 );
 
 -- Loan Accounts
-CREATE TABLE loan_accounts (
-  account_id UUID PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+CREATE TABLE finance.loan_accounts (
+  account_id UUID PRIMARY KEY REFERENCES finance.accounts(id),
   loan_type VARCHAR(50),            -- personal, home, car, etc.
   principal_amount DECIMAL(36,18),
   outstanding_amount DECIMAL(36,18),       -- remaining amount to repay
@@ -158,7 +172,7 @@ CREATE TABLE loan_accounts (
   start_date DATE,
   end_date DATE,
   status VARCHAR(20) DEFAULT 'active', -- active, closed, defaulted
-  counterparty_id UUID REFERENCES counterparties(id),  -- lender
+  counterparty_id UUID REFERENCES finance.counterparties(id),  -- lender
   collateral TEXT,                                     -- pledged collateral
   notes TEXT,
   created_at timestamptz DEFAULT now(),
@@ -169,8 +183,8 @@ CREATE TABLE loan_accounts (
 );
 
 -- Investment Accounts
-CREATE TABLE investment_accounts (
-  account_id UUID PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+CREATE TABLE finance.investment_accounts (
+  account_id UUID PRIMARY KEY REFERENCES finance.accounts(id),
   investment_type VARCHAR(50),      -- stocks, bonds, mutual funds, etc.
   institution_name VARCHAR(100),
   account_no VARCHAR(50),
@@ -185,8 +199,8 @@ CREATE TABLE investment_accounts (
 );
 
 -- Crypto Accounts
-CREATE TABLE crypto_accounts (
-  account_id UUID PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+CREATE TABLE finance.crypto_accounts (
+  account_id UUID PRIMARY KEY REFERENCES finance.accounts(id),
   crypto_wallet_address VARCHAR(100) NOT NULL,
   exchange_name VARCHAR(100),
   balance DECIMAL(36,18) DEFAULT 0,
@@ -200,8 +214,8 @@ CREATE TABLE crypto_accounts (
 );
 
 -- Wallet Accounts
-CREATE TABLE wallet_accounts (
-  account_id UUID PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+CREATE TABLE finance.wallet_accounts (
+  account_id UUID PRIMARY KEY REFERENCES finance.accounts(id),
   wallet_name VARCHAR(50) NOT NULL,
   provider VARCHAR(50),
   balance DECIMAL(36,18) DEFAULT 0,
@@ -215,14 +229,14 @@ CREATE TABLE wallet_accounts (
 );
 
 -- Receivable Accounts
-CREATE TABLE receivable_accounts (
-  account_id UUID PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
-  customer_name VARCHAR(100),
+CREATE TABLE finance.receivable_accounts (
+  account_id UUID PRIMARY KEY REFERENCES finance.accounts(id),
   invoice_no VARCHAR(50),
   principal_amount DECIMAL(36,18),
   amount_due DECIMAL(36,18),
   due_date DATE,
   status VARCHAR(20) DEFAULT 'pending',
+  counterparty_id UUID REFERENCES finance.counterparties(id),  -- who owes the receivable
   notes TEXT,
   created_at timestamptz DEFAULT now(),
   updated_at timestamptz DEFAULT now(),
@@ -234,18 +248,18 @@ CREATE TABLE receivable_accounts (
 -- =========================================
 -- Expense Categories and Subcategories
 -- =========================================
-CREATE TABLE expense_categories (
+CREATE TABLE finance.expense_categories (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID NOT NULL REFERENCES profiles(user_id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES core.profiles(id),
   name VARCHAR(100) NOT NULL,
   deleted_at timestamptz NULL DEFAULT NULL,
   created_at timestamptz DEFAULT now(),
   updated_at timestamptz DEFAULT now()
 );
 
-CREATE TABLE expense_subcategories (
+CREATE TABLE finance.expense_subcategories (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  category_id UUID NOT NULL REFERENCES expense_categories(id) ON DELETE CASCADE,
+  category_id UUID NOT NULL REFERENCES finance.expense_categories(id),
   name VARCHAR(100) NOT NULL,
   deleted_at timestamptz NULL DEFAULT NULL,
   created_at timestamptz DEFAULT now(),
@@ -255,9 +269,9 @@ CREATE TABLE expense_subcategories (
 -- =========================================
 -- Income Sources
 -- =========================================
-CREATE TABLE income_sources (
+CREATE TABLE finance.income_sources (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID NOT NULL REFERENCES profiles(user_id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES core.profiles(id),
   name VARCHAR(100) NOT NULL,
   deleted_at timestamptz NULL DEFAULT NULL,
   created_at timestamptz DEFAULT now(),
@@ -268,11 +282,11 @@ CREATE TABLE income_sources (
 -- Transactions
 -- =========================================
 -- Base Transactions Table
-CREATE TABLE transactions (
+CREATE TABLE finance.transactions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID NOT NULL REFERENCES profiles(user_id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES core.profiles(id),
   transaction_date DATE NOT NULL,    -- BUSINESS DATE (when money actually moved)
-  type transaction_type NOT NULL,
+  type finance.transaction_type NOT NULL,
   original_amount DECIMAL(36,18) NOT NULL,
   original_currency VARCHAR(10) NOT NULL,
   exchange_rate DECIMAL(36,18),
@@ -307,40 +321,40 @@ CREATE TABLE transactions (
 -- =========================================
 
 -- Income Transactions
-CREATE TABLE transactions_income (
+CREATE TABLE finance.transactions_income (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  transaction_id UUID NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
-  account_id UUID NOT NULL REFERENCES accounts(id),
-  source_id UUID REFERENCES income_sources(id), -- link to source of income
+  transaction_id UUID NOT NULL REFERENCES finance.transactions(id),
+  account_id UUID NOT NULL REFERENCES finance.accounts(id),
+  source_id UUID REFERENCES finance.income_sources(id), -- link to source of income
   created_at timestamptz DEFAULT now(),
   updated_at timestamptz DEFAULT now(),
   deleted_at timestamptz NULL DEFAULT NULL
 );
 
 -- Expense Transactions
-CREATE TABLE transactions_expense (
+CREATE TABLE finance.transactions_expense (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  transaction_id UUID NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
-  account_id UUID NOT NULL REFERENCES accounts(id),
-  category_id UUID REFERENCES expense_subcategories(id),
-  payment_method payment_method DEFAULT 'other',
+  transaction_id UUID NOT NULL REFERENCES finance.transactions(id),
+  account_id UUID NOT NULL REFERENCES finance.accounts(id),
+  category_id UUID REFERENCES finance.expense_subcategories(id),
+  payment_method finance.payment_method DEFAULT 'other',
   created_at timestamptz DEFAULT now(),
   updated_at timestamptz DEFAULT now(),
   deleted_at timestamptz NULL DEFAULT NULL
 );
 
 -- Investment Transactions
-CREATE TABLE transactions_investment (
+CREATE TABLE finance.transactions_investment (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  transaction_id UUID NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+  transaction_id UUID NOT NULL REFERENCES finance.transactions(id),
   -- The account used to fund the investment (cash, bank, wallet)
-  funding_account_id UUID NOT NULL REFERENCES accounts(id),
+  funding_account_id UUID NOT NULL REFERENCES finance.accounts(id),
   -- The destination investment account (stocks, bonds, crypto, etc.)
-  investment_account_id UUID NOT NULL REFERENCES accounts(id),
+  investment_account_id UUID NOT NULL REFERENCES finance.accounts(id),
   asset_type VARCHAR(50),         -- stock, bond, crypto, etc.
   asset_symbol VARCHAR(50),
   platform VARCHAR(100),
-  risk_level risk_level DEFAULT 'medium',
+  risk_level finance.risk_level DEFAULT 'medium',
 
   created_at timestamptz DEFAULT now(),
   updated_at timestamptz DEFAULT now(),
@@ -348,13 +362,13 @@ CREATE TABLE transactions_investment (
 );
 
 -- Borrow Transactions
-CREATE TABLE transactions_borrow (
+CREATE TABLE finance.transactions_borrow (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  transaction_id UUID NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+  transaction_id UUID NOT NULL REFERENCES finance.transactions(id),
   -- The loan liability account (what you owe)
-  loan_account_id UUID NOT NULL REFERENCES accounts(id),
+  loan_account_id UUID NOT NULL REFERENCES finance.accounts(id),
   -- Where the borrowed funds are deposited (cash, bank, wallet)
-  disbursement_account_id UUID NOT NULL REFERENCES accounts(id),
+  disbursement_account_id UUID NOT NULL REFERENCES finance.accounts(id),
 
   created_at timestamptz DEFAULT now(),
   updated_at timestamptz DEFAULT now(),
@@ -362,14 +376,13 @@ CREATE TABLE transactions_borrow (
 );
 
 -- Lend Transactions
-CREATE TABLE transactions_lend (
+CREATE TABLE finance.transactions_lend (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  transaction_id UUID NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+  transaction_id UUID NOT NULL REFERENCES finance.transactions(id),
   -- The account you use to lend out money (cash, bank, wallet)
-  funding_account_id UUID NOT NULL REFERENCES accounts(id),
+  funding_account_id UUID NOT NULL REFERENCES finance.accounts(id),
   -- The receivable account representing what’s owed to you
-  receivable_account_id UUID NOT NULL REFERENCES accounts(id),
-  counterparty_id UUID REFERENCES counterparties(id),
+  receivable_account_id UUID NOT NULL REFERENCES finance.accounts(id),
   interest_rate DECIMAL(5,2),
   due_date DATE,
   collateral TEXT,
@@ -380,12 +393,12 @@ CREATE TABLE transactions_lend (
 );
 
 -- Transfer Transactions
-CREATE TABLE transactions_transfer (
+CREATE TABLE finance.transactions_transfer (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  transaction_id UUID NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
-  from_account UUID NOT NULL REFERENCES accounts(id),
-  to_account UUID NOT NULL REFERENCES accounts(id),
-  transfer_method transfer_method DEFAULT 'other',
+  transaction_id UUID NOT NULL REFERENCES finance.transactions(id),
+  from_account UUID NOT NULL REFERENCES finance.accounts(id),
+  to_account UUID NOT NULL REFERENCES finance.accounts(id),
+  transfer_method finance.transfer_method DEFAULT 'other',
   created_at timestamptz DEFAULT now(),
   updated_at timestamptz DEFAULT now(),
   deleted_at timestamptz NULL DEFAULT NULL,
@@ -393,19 +406,19 @@ CREATE TABLE transactions_transfer (
 );
 
 -- Adjustment Transactions
-CREATE TABLE transactions_adjustment (
+CREATE TABLE finance.transactions_adjustment (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  transaction_id UUID NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
-  account_id UUID NOT NULL REFERENCES accounts(id),
+  transaction_id UUID NOT NULL REFERENCES finance.transactions(id),
+  account_id UUID NOT NULL REFERENCES finance.accounts(id),
   created_at timestamptz DEFAULT now(),
   updated_at timestamptz DEFAULT now(),
   deleted_at timestamptz NULL DEFAULT NULL
 );
 
 -- 1. Exchange Rates
-CREATE TABLE exchange_rates (
+CREATE TABLE finance.exchange_rates (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID NOT NULL REFERENCES profiles(user_id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES core.profiles(id),
   from_currency VARCHAR(10) NOT NULL,
   to_currency VARCHAR(10) NOT NULL,
   rate NUMERIC NOT NULL CHECK (rate > 0),
@@ -420,22 +433,22 @@ CREATE TABLE exchange_rates (
 -- ============================================
 
 -- Table to store recurrence definitions
-CREATE TABLE transactions_recurring (
+CREATE TABLE finance.transactions_recurring (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
     -- Links to base transaction definition
-    transaction_template_id UUID NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+    transaction_template_id UUID NOT NULL REFERENCES finance.transactions(id),
 
     -- Recurrence metadata
-    frequency recurrence_frequency NOT NULL,   -- daily, weekly, monthly, yearly
+    frequency finance.recurrence_frequency NOT NULL,   -- daily, weekly, monthly, yearly
     interval INT NOT NULL DEFAULT 1,           -- every N days/weeks/months
     start_date DATE NOT NULL,
     end_date DATE,                             -- optional, NULL = no end
     next_occurrence DATE NOT NULL,      -- next due date
 
     -- Ownership & actor semantics
-    user_id UUID NOT NULL REFERENCES profiles(user_id) ON DELETE CASCADE, -- affected user
-    action_by UUID NOT NULL REFERENCES auth.users(id),                    -- actor (creator)
+    user_id UUID NOT NULL REFERENCES core.profiles(id), -- affected user
+    action_by UUID DEFAULT NULL,                    -- actor (creator)
 
     -- Auditing
     created_at timestamptz DEFAULT now(),
@@ -446,77 +459,115 @@ CREATE TABLE transactions_recurring (
 -- =========================================
 -- Audit Logs
 -- =========================================
-CREATE TABLE audit_logs (
+CREATE TABLE audit.audit_logs (
   id BIGSERIAL PRIMARY KEY,
-  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,   -- affected user (context)
-  action_by UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE, -- who performed the action
+  user_id UUID NOT NULL REFERENCES core.profiles(id),   -- affected user (context)
+  action_by UUID DEFAULT NULL, -- who performed the action
   table_name TEXT NOT NULL,
   record_id UUID NOT NULL,
   action TEXT NOT NULL CHECK (action IN ('INSERT','UPDATE','DELETE','SOFT_DELETE', 'ADMIN_PRIVILEGE_CHANGE')),
   old_data JSONB,
   new_data JSONB,
-  created_at timestamptz DEFAULT now()
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now()
+);
+
+-- =========================================
+-- Audit Table Registry
+-- =========================================
+CREATE TABLE IF NOT EXISTS audit.audit_table_registry (
+    id BIGSERIAL PRIMARY KEY,
+    table_schema TEXT NOT NULL,
+    table_name TEXT NOT NULL,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at timestamptz DEFAULT now(),
+    updated_at timestamptz DEFAULT now(),
+
+    CONSTRAINT uq_table_schema_name UNIQUE (table_schema, table_name)
 );
 
 -- =========================================
 -- API Rate Limits
 -- =========================================
-CREATE TABLE IF NOT EXISTS api_rate_limits (
+CREATE TABLE IF NOT EXISTS api.api_rate_limits (
     id BIGSERIAL PRIMARY KEY,
-    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES core.profiles(id),
     endpoint VARCHAR(100) NOT NULL,
     request_count INTEGER DEFAULT 1,
-    window_start TIMESTAMPTZ DEFAULT NOW(),
-    created_at TIMESTAMPTZ DEFAULT NOW()
+    last_request_at TIMESTAMPTZ DEFAULT NOW(),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at timestamptz DEFAULT now(),
+
+    CONSTRAINT api_rate_limits_user_endpoint_unique UNIQUE (user_id, endpoint)
 );
 
-
--- =========================================
--- CONSTRAINTS
--- =========================================
-
--- Enforce uniqueness of API endpoint usage per user
-ALTER TABLE public.api_rate_limits
-ADD CONSTRAINT api_rate_limits_user_endpoint_unique UNIQUE (user_id, endpoint);
-
+-- Auto-populate audit_table_registry with existing tables
+INSERT INTO audit.audit_table_registry (table_schema, table_name) VALUES
+  ('core','profiles'),
+  ('finance','accounts'),
+  ('finance','cash_accounts'),
+  ('finance','bank_accounts'),
+  ('finance','credit_card_accounts'),
+  ('finance','loan_accounts'),
+  ('finance','investment_accounts'),
+  ('finance','crypto_accounts'),
+  ('finance','wallet_accounts'),
+  ('finance','receivable_accounts'),
+  ('finance','counterparties'),
+  ('finance','expense_categories'),
+  ('finance','expense_subcategories'),
+  ('finance','income_sources'),
+  ('finance','transactions'),
+  ('finance','transactions_income'),
+  ('finance','transactions_expense'),
+  ('finance','transactions_investment'),
+  ('finance','transactions_borrow'),
+  ('finance','transactions_lend'),
+  ('finance','transactions_transfer'),
+  ('finance','transactions_adjustment'),
+  ('finance','exchange_rates'),
+  ('finance','transactions_recurring'),
+  ('api','api_rate_limits')
+ON CONFLICT DO NOTHING;
 
 -- =========================================
 -- Partial UNIQUE index
 -- =========================================
 
 -- Enforce uniqueness only for active rows of exchange_rates
+-- Enforce uniqueness only for active exchange rates per user and currency pair
 CREATE UNIQUE INDEX exchange_rates_user_from_to_active_unique
-ON exchange_rates (user_id, from_currency, to_currency)
+ON finance.exchange_rates (user_id, from_currency, to_currency)
 WHERE deleted_at IS NULL;
 
 -- Enforce uniqueness only for active accounts per user, account name, and type
 CREATE UNIQUE INDEX accounts_user_name_type_active_unique
-ON accounts (user_id, lower(account_name), type)
+ON finance.accounts (user_id, lower(account_name), type)
 WHERE deleted_at IS NULL;
 
 -- Enforce uniqueness only for active expense categories per user
 CREATE UNIQUE INDEX expense_categories_user_name_active_unique
-ON expense_categories (user_id, lower(name))
+ON finance.expense_categories (user_id, lower(name))
 WHERE deleted_at IS NULL;
 
 -- Enforce uniqueness only for active expense subcategories per category
 CREATE UNIQUE INDEX expense_subcategories_category_name_active_unique
-ON expense_subcategories (category_id, lower(name))
+ON finance.expense_subcategories (category_id, lower(name))
 WHERE deleted_at IS NULL;
 
 -- Enforce uniqueness only for active income sources per user
 CREATE UNIQUE INDEX income_sources_user_name_active_unique
-ON income_sources (user_id, lower(name))
+ON finance.income_sources (user_id, lower(name))
 WHERE deleted_at IS NULL;
 
 -- Enforce uniqueness only for active counterparties per user and type
 CREATE UNIQUE INDEX counterparties_user_name_type_active_unique
-ON counterparties (user_id, lower(name), type)
+ON finance.counterparties (user_id, lower(name), type)
 WHERE deleted_at IS NULL;
 
 -- Enforce uniqueness only for active recurring transaction templates
 CREATE UNIQUE INDEX transactions_recurring_template_active_unique
-ON transactions_recurring (transaction_template_id)
+ON finance.transactions_recurring (transaction_template_id)
 WHERE deleted_at IS NULL;
 
 
@@ -525,124 +576,119 @@ WHERE deleted_at IS NULL;
 -- =========================================
 
 -- ----- Foreign key indexes  -----
-CREATE INDEX idx_accounts_user_id ON accounts(user_id);
-CREATE INDEX idx_expense_categories_user_id ON expense_categories(user_id);
-CREATE INDEX idx_expense_subcategories_category_id ON expense_subcategories(category_id);
-CREATE INDEX idx_income_sources_user_id ON income_sources(user_id);
-CREATE INDEX idx_counterparties_user_id ON counterparties(user_id);
+CREATE INDEX idx_accounts_user_id ON finance.accounts(user_id);
+CREATE INDEX idx_expense_categories_user_id ON finance.expense_categories(user_id);
+CREATE INDEX idx_expense_subcategories_category_id ON finance.expense_subcategories(category_id);
+CREATE INDEX idx_income_sources_user_id ON finance.income_sources(user_id);
+CREATE INDEX idx_counterparties_user_id ON finance.counterparties(user_id);
 
-CREATE INDEX idx_tx_user_id ON transactions(user_id);
-CREATE INDEX idx_tx_type ON transactions(type);
-CREATE INDEX idx_tx_user_currency ON transactions(user_id, original_currency);
-CREATE INDEX idx_transactions_user_transaction_date ON transactions(user_id, transaction_date DESC) WHERE deleted_at IS NULL;
-CREATE INDEX idx_transactions_user_type_transaction_date ON transactions(user_id, type, transaction_date DESC) WHERE deleted_at IS NULL;
+CREATE INDEX idx_tx_user_id ON finance.transactions(user_id);
+CREATE INDEX idx_tx_type ON finance.transactions(type);
+CREATE INDEX idx_tx_user_currency ON finance.transactions(user_id, original_currency);
+CREATE INDEX idx_transactions_user_transaction_date ON finance.transactions(user_id, transaction_date DESC) WHERE deleted_at IS NULL;
+CREATE INDEX idx_transactions_user_type_transaction_date ON finance.transactions(user_id, type, transaction_date DESC) WHERE deleted_at IS NULL;
 
+CREATE INDEX idx_txi_txid ON finance.transactions_income(transaction_id);
+CREATE INDEX idx_txi_account_id ON finance.transactions_income(account_id);
+CREATE INDEX idx_txi_source_id ON finance.transactions_income(source_id);
 
-CREATE INDEX idx_txi_txid ON transactions_income(transaction_id);
-CREATE INDEX idx_txi_account_id ON transactions_income(account_id);
-CREATE INDEX idx_txi_source_id ON transactions_income(source_id);
+CREATE INDEX idx_txe_txid ON finance.transactions_expense(transaction_id);
+CREATE INDEX idx_txe_account_id ON finance.transactions_expense(account_id);
+CREATE INDEX idx_txe_category_id ON finance.transactions_expense(category_id);
 
-CREATE INDEX idx_txe_txid ON transactions_expense(transaction_id);
-CREATE INDEX idx_txe_account_id ON transactions_expense(account_id);
-CREATE INDEX idx_txe_category_id ON transactions_expense(category_id);
+CREATE INDEX idx_txin_txid ON finance.transactions_investment(transaction_id);
+CREATE INDEX idx_txin_funding_account_id ON finance.transactions_investment(funding_account_id);
+CREATE INDEX idx_txin_investment_account_id ON finance.transactions_investment(investment_account_id);
 
-CREATE INDEX idx_txin_txid ON transactions_investment(transaction_id);
-CREATE INDEX idx_txin_funding_account_id ON transactions_investment(funding_account_id);
-CREATE INDEX idx_txin_investment_account_id ON transactions_investment(investment_account_id);
+CREATE INDEX idx_txb_txid ON finance.transactions_borrow(transaction_id);
+CREATE INDEX idx_txb_loan_account_id ON finance.transactions_borrow(loan_account_id);
+CREATE INDEX idx_txb_disbursement_account_id ON finance.transactions_borrow(disbursement_account_id);
 
-CREATE INDEX idx_txb_txid ON transactions_borrow(transaction_id);
-CREATE INDEX idx_txb_loan_account_id ON transactions_borrow(loan_account_id);
-CREATE INDEX idx_txb_disbursement_account_id ON transactions_borrow(disbursement_account_id);
+CREATE INDEX idx_txl_txid ON finance.transactions_lend(transaction_id);
+CREATE INDEX idx_txl_funding_account_id ON finance.transactions_lend(funding_account_id);
+CREATE INDEX idx_txl_receivable_account_id ON finance.transactions_lend(receivable_account_id);
 
-CREATE INDEX idx_txl_txid ON transactions_lend(transaction_id);
-CREATE INDEX idx_txl_funding_account_id ON transactions_lend(funding_account_id);
-CREATE INDEX idx_txl_receivable_account_id ON transactions_lend(receivable_account_id);
-CREATE INDEX idx_txl_counterparty_id ON transactions_lend(counterparty_id);
+CREATE INDEX idx_txt_txid ON finance.transactions_transfer(transaction_id);
+CREATE INDEX idx_txt_from_account ON finance.transactions_transfer(from_account);
+CREATE INDEX idx_txt_to_account ON finance.transactions_transfer(to_account);
 
-CREATE INDEX idx_txt_txid ON transactions_transfer(transaction_id);
-CREATE INDEX idx_txt_from_account ON transactions_transfer(from_account);
-CREATE INDEX idx_txt_to_account ON transactions_transfer(to_account);
-
-CREATE INDEX idx_txa_txid ON transactions_adjustment(transaction_id);
-CREATE INDEX idx_txa_account_id ON transactions_adjustment(account_id);
+CREATE INDEX idx_txa_txid ON finance.transactions_adjustment(transaction_id);
+CREATE INDEX idx_txa_account_id ON finance.transactions_adjustment(account_id);
 
 -- Recurring engine FKs
-CREATE INDEX idx_transactions_recurring_user_id ON transactions_recurring(user_id);
-CREATE INDEX idx_transactions_recurring_next_occurrence ON transactions_recurring(next_occurrence);
-CREATE INDEX idx_transactions_recurring_deleted_at ON transactions_recurring(deleted_at) WHERE deleted_at IS NULL;
-CREATE INDEX idx_transactions_recurring_action_by ON transactions_recurring(action_by);
+CREATE INDEX idx_transactions_recurring_user_id ON finance.transactions_recurring(user_id);
+CREATE INDEX idx_transactions_recurring_next_occurrence ON finance.transactions_recurring(next_occurrence);
+CREATE INDEX idx_transactions_recurring_deleted_at ON finance.transactions_recurring(deleted_at) WHERE deleted_at IS NULL;
+CREATE INDEX idx_transactions_recurring_action_by ON finance.transactions_recurring(action_by);
 
 -- ----- Compound indexes likely to be used -----
-CREATE INDEX idx_tx_user_created ON transactions(user_id, created_at DESC);
-CREATE INDEX idx_tx_user_type_created ON transactions(user_id, type, created_at DESC);
+CREATE INDEX idx_tx_user_created ON finance.transactions(user_id, created_at DESC);
+CREATE INDEX idx_tx_user_type_created ON finance.transactions(user_id, type, created_at DESC);
 
 -- ----- Partial indexes for soft-deletes (key tables only) -----
-CREATE INDEX idx_accounts_active ON accounts(user_id, type) WHERE deleted_at IS NULL;
-CREATE INDEX idx_transactions_active ON transactions(user_id, created_at) WHERE deleted_at IS NULL;
-CREATE INDEX idx_counterparties_active ON counterparties(user_id, type) WHERE deleted_at IS NULL;
-CREATE INDEX idx_expense_categories_active ON expense_categories(user_id, name) WHERE deleted_at IS NULL;
-CREATE INDEX idx_expense_subcategories_active ON expense_subcategories(category_id, name) WHERE deleted_at IS NULL;
-CREATE INDEX idx_income_sources_active ON income_sources(user_id, name) WHERE deleted_at IS NULL;
+CREATE INDEX idx_accounts_active ON finance.accounts(user_id, type) WHERE deleted_at IS NULL;
+CREATE INDEX idx_transactions_active ON finance.transactions(user_id, created_at) WHERE deleted_at IS NULL;
+CREATE INDEX idx_counterparties_active ON finance.counterparties(user_id, type) WHERE deleted_at IS NULL;
+CREATE INDEX idx_expense_categories_active ON finance.expense_categories(user_id, name) WHERE deleted_at IS NULL;
+CREATE INDEX idx_expense_subcategories_active ON finance.expense_subcategories(category_id, name) WHERE deleted_at IS NULL;
+CREATE INDEX idx_income_sources_active ON finance.income_sources(user_id, name) WHERE deleted_at IS NULL;
 
 -- ----- Audit log indexes -----
-CREATE INDEX idx_audit_user_table_record ON audit_logs(user_id, table_name, record_id);
-CREATE INDEX idx_audit_old_original_amount ON audit_logs ((old_data->>'original_amount'));
-CREATE INDEX idx_audit_new_original_amount ON audit_logs ((new_data->>'original_amount'));
-CREATE INDEX idx_audit_old_converted_amount ON audit_logs ((old_data->>'converted_amount'));
-CREATE INDEX idx_audit_new_converted_amount ON audit_logs ((new_data->>'converted_amount'));
-CREATE INDEX idx_audit_action_by ON audit_logs(action_by);
-CREATE INDEX idx_audit_created_at ON audit_logs(created_at);
+CREATE INDEX idx_audit_user_table_record ON audit.audit_logs(user_id, table_name, record_id);
+CREATE INDEX idx_audit_old_original_amount ON audit.audit_logs ((old_data->>'original_amount'));
+CREATE INDEX idx_audit_new_original_amount ON audit.audit_logs ((new_data->>'original_amount'));
+CREATE INDEX idx_audit_old_converted_amount ON audit.audit_logs ((old_data->>'converted_amount'));
+CREATE INDEX idx_audit_new_converted_amount ON audit.audit_logs ((new_data->>'converted_amount'));
+CREATE INDEX idx_audit_action_by ON audit.audit_logs(action_by);
+CREATE INDEX idx_audit_created_at ON audit.audit_logs(created_at);
 
 -- JSONB GIN indexes (generic keys)
-CREATE INDEX idx_audit_old_data_gin ON audit_logs USING gin (old_data);
-CREATE INDEX idx_audit_new_data_gin ON audit_logs USING gin (new_data);
+CREATE INDEX idx_audit_old_data_gin ON audit.audit_logs USING gin (old_data);
+CREATE INDEX idx_audit_new_data_gin ON audit.audit_logs USING gin (new_data);
 
-CREATE INDEX idx_rate_limits_user_endpoint ON api_rate_limits(user_id, endpoint, window_start);
+-- ----- API Rate Limits -----
+CREATE INDEX idx_rate_limits_user_endpoint ON api.api_rate_limits(user_id, endpoint, last_request_at);
 
+-- ----- Partial indexes for soft-deletes -----
 CREATE INDEX IF NOT EXISTS idx_accounts_user_deleted 
-ON accounts(user_id, deleted_at) WHERE deleted_at IS NULL;
+ON finance.accounts(user_id, deleted_at) WHERE deleted_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_transactions_user_deleted 
-ON transactions(user_id, deleted_at) WHERE deleted_at IS NULL;
+ON finance.transactions(user_id, deleted_at) WHERE deleted_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_profiles_user_admin_deleted 
-ON profiles(user_id, is_admin, deleted_at) WHERE deleted_at IS NULL;
+ON core.profiles(user_id, is_admin, deleted_at) WHERE deleted_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_expense_categories_user_deleted 
-ON expense_categories(user_id, deleted_at) WHERE deleted_at IS NULL;
+ON finance.expense_categories(user_id, deleted_at) WHERE deleted_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_income_sources_user_deleted 
-ON income_sources(user_id, deleted_at) WHERE deleted_at IS NULL;
+ON finance.income_sources(user_id, deleted_at) WHERE deleted_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_counterparties_user_deleted 
-ON counterparties(user_id, deleted_at) WHERE deleted_at IS NULL;
+ON finance.counterparties(user_id, deleted_at) WHERE deleted_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_transactions_recurring_user_deleted 
-ON transactions_recurring(user_id, deleted_at) WHERE deleted_at IS NULL;
+ON finance.transactions_recurring(user_id, deleted_at) WHERE deleted_at IS NULL;
 
-CREATE INDEX idx_exchange_rates ON exchange_rates(from_currency, to_currency);
-CREATE INDEX idx_transactions_is_recent ON transactions (transaction_date DESC) WHERE is_recent = true AND deleted_at IS NULL;
+-- ----- Additional indexes -----
+CREATE INDEX idx_exchange_rates ON finance.exchange_rates(from_currency, to_currency);
+CREATE INDEX idx_transactions_is_recent ON finance.transactions(transaction_date DESC) 
+WHERE is_recent = true AND deleted_at IS NULL;
 
+-- Create extensions
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE EXTENSION IF NOT EXISTS pg_cron;
+CREATE EXTENSION IF NOT EXISTS hstore;
 
--- =========================================
--- API Access Grants for Tables
--- =========================================
-DO $$
-DECLARE
-    tbl RECORD;
-BEGIN
-    FOR tbl IN
-        SELECT table_name
-        FROM information_schema.tables
-        WHERE table_schema = 'public'
-          AND table_name NOT IN ('audit_logs', 'api_rate_limits')
-    LOOP
-        EXECUTE format(
-            'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.%I TO authenticated;',
-            tbl.table_name
-        );
-    END LOOP;
-END$$;
+-- Create the system user for audit logging
+-- This user will be used for system-initiated actions
+-- Replace with actual UUID with the UUID(00000000-0000-0000-0000-000000000000) of below functions/triggers:
+-- public.log_audit()
+-- public.cleanup_soft_deleted_records_internal(older_than_days INTEGER DEFAULT 90)
+-- public.schedule_recurring_processing()
 
--- Create a role for running scheduled jobs
--- CREATE ROLE scheduled_job_role LOGIN PASSWORD 'strong_password_here';
+-- Then execute the following to add the system_user flag to the raw_user_meta_data:
+-- UPDATE auth.users
+-- SET raw_user_meta_data = jsonb_build_object('system_user', true)
+-- WHERE id = '9c6c6a9e-0c2e-4c35-9b62-1d4e2b5c4a88';
