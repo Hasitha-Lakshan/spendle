@@ -930,6 +930,9 @@ BEGIN
             USING ERRCODE = '28000'; -- invalid_authorization_specification
     END IF;
 
+    -- Enable RLS for this function
+    PERFORM set_config('row_security', 'on', true);
+
     -- Require admin privileges
     IF NOT util.check_admin_permissions_internal() THEN
         RAISE EXCEPTION
