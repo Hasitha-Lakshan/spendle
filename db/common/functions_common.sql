@@ -1,5 +1,39 @@
 -- =========================================
--- 01. Function: util.build_actor
+-- 01. Function: util.current_active_profile_id_internal
+-- =========================================
+-- Purpose:
+--   Resolves the current authenticated user's active profile ID.
+--
+-- Behavior:
+--   - Maps auth.uid() → core.profiles.user_id
+--   - Returns core.profiles.id
+--   - Enforces deleted_at IS NULL
+--   - Fails fast if no active profile exists
+--
+-- Security:
+--   - SECURITY DEFINER to allow use inside RLS
+--   - search_path locked to pg_catalog, core
+--
+-- Notes:
+--   - Assumes exactly one active profile per auth user
+--   - Prevents multi-row ambiguity via LIMIT 1
+-- =========================================
+CREATE OR REPLACE FUNCTION util.current_active_profile_id_internal()
+RETURNS uuid
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, core
+STABLE
+AS $$
+    SELECT p.id
+    FROM core.profiles p
+    WHERE p.user_id = auth.uid()
+      AND p.deleted_at IS NULL
+    LIMIT 1
+$$;
+
+-- =========================================
+-- 02. Function: util.build_actor_internal
 -- =========================================
 -- Purpose:
 --   Constructs a normalized actor identifier string used for auditing,
@@ -31,7 +65,7 @@
 --   - Marked IMMUTABLE because the output depends solely on input parameters.
 --   - Defined as SECURITY DEFINER to allow use in privileged contexts such as triggers.
 -- =========================================
-CREATE OR REPLACE FUNCTION util.build_actor(
+CREATE OR REPLACE FUNCTION util.build_actor_internal(
     p_type TEXT,
     p_id UUID DEFAULT NULL
 ) RETURNS TEXT
@@ -58,7 +92,7 @@ END;
 $$;
 
 -- =========================================
--- 02. Function: initialize_defaults_for_user_internal
+-- 03. Function: initialize_defaults_for_user_internal
 -- =========================================
 -- Purpose:
 --   Inserts all default data for a given user, including:
@@ -191,7 +225,7 @@ END;
 $$;
 
 -- =========================================
--- 03. Function: initialize_my_defaults_internal
+-- 04. Function: initialize_my_defaults_internal
 -- =========================================
 -- Purpose:
 --   Initializes default data for the current session user if not already inserted.
@@ -273,7 +307,7 @@ END;
 $$;
 
 -- =========================================
--- 04. Function: initialize_my_defaults
+-- 05. Function: initialize_my_defaults
 -- =========================================
 -- Purpose:
 --   Wrapper function to initialize default data for the current session user.
@@ -349,7 +383,7 @@ END;
 $$;
 
 -- =========================================
--- 05. Function: check_admin_permissions_internal
+-- 06. Function: check_admin_permissions_internal
 -- =========================================
 -- Purpose:
 --   Determines whether the current session user has administrative privileges.
@@ -403,7 +437,7 @@ END;
 $$;
 
 -- =========================================
--- 06. Function: admin_initialize_user_defaults_internal
+-- 07. Function: admin_initialize_user_defaults_internal
 -- =========================================
 -- Purpose:
 --   Allows an administrator to initialize default data for any user.
@@ -493,7 +527,7 @@ END;
 $$;
 
 -- =========================================
--- 07. Function: admin_initialize_user_defaults
+-- 08. Function: admin_initialize_user_defaults
 -- =========================================
 -- Purpose:
 --   Wrapper function to initialize default data for a specified user,
@@ -600,7 +634,7 @@ END;
 $$;
 
 -- =========================================
--- 08. Function: check_rate_limit_internal
+-- 09. Function: check_rate_limit_internal
 -- =========================================
 -- Purpose:
 --   Enforces per-user API rate limits for a given endpoint within a rolling time window.
@@ -686,7 +720,7 @@ END;
 $$;
 
 -- =========================================
--- 09. Function: hard_delete_record_internal
+-- 10. Function: hard_delete_record_internal
 -- =========================================
 -- Purpose:
 --   Executes a hard delete of a record from a specified table, including all
@@ -942,7 +976,7 @@ END;
 $$;
 
 -- =========================================
--- 10. Function: admin_hard_delete_record_internal
+-- 11. Function: admin_hard_delete_record_internal
 -- =========================================
 -- Purpose:
 --   Performs a hard delete of a record from a specified table, bypassing
@@ -1008,7 +1042,7 @@ END;
 $$;
 
 -- =========================================
--- 11. Function: admin_hard_delete_record
+-- 12. Function: admin_hard_delete_record
 -- =========================================
 -- Purpose:
 --   Wrapper function to perform a hard delete on a specific record
@@ -1146,7 +1180,7 @@ END;
 $$;
 
 -- =========================================
--- 12. Function: cleanup_soft_deleted_records_internal
+-- 13. Function: cleanup_soft_deleted_records_internal
 -- =========================================
 -- Purpose:
 --   Permanently deletes soft-deleted records from key tables that are older than a specified number of days.
@@ -1255,7 +1289,7 @@ SELECT cron.schedule(
 );
 
 -- =========================================
--- 13. Function: cleanup_old_audit_logs_internal
+-- 14. Function: cleanup_old_audit_logs_internal
 -- =========================================
 -- Purpose:
 --   Deletes audit log entries older than a specified number of days to manage table size.
@@ -1312,7 +1346,7 @@ SELECT cron.schedule(
 );
 
 -- =========================================
--- 14. Function: cleanup_old_rate_limits_internal
+-- 15. Function: cleanup_old_rate_limits_internal
 -- =========================================
 -- Purpose:
 --   Deletes API rate limit records older than 24 hours to keep the table current.
