@@ -399,12 +399,12 @@ BEGIN
             WHERE p.id = affected_user_id       -- core.profiles.id
               AND p.user_id = extracted_uuid    -- auth.users.id
         ) THEN
-            v_executed_by := util.build_actor('user', extracted_uuid);
+            v_executed_by := util.build_actor_internal('user', extracted_uuid);
         ELSE
-            v_executed_by := util.build_actor('admin', extracted_uuid);
+            v_executed_by := util.build_actor_internal('admin', extracted_uuid);
         END IF;
     ELSE
-        v_executed_by := util.build_actor('system');
+        v_executed_by := util.build_actor_internal('system');
     END IF;
 
     -- 7. RESOLVE RECORD_ID (must correspond to real row identity)
