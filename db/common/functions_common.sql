@@ -1,5 +1,64 @@
 -- =========================================
--- 01. Function: initialize_defaults_for_user_internal
+-- 01. Function: util.build_actor
+-- =========================================
+-- Purpose:
+--   Constructs a normalized actor identifier string used for auditing,
+--   logging, or attribution of actions within the system.
+--
+-- Behavior:
+--   - For p_type = 'user' or 'admin':
+--       * Requires a non-null UUID.
+--       * Returns a string in the format '<type>:<uuid>'.
+--   - For p_type = 'system':
+--       * Requires p_id to be NULL.
+--       * Returns the fixed identifier 'system:cron'.
+--   - For any other p_type:
+--       * Raises an exception.
+--
+-- Parameters:
+--   p_type TEXT
+--     The actor category. Supported values are 'user', 'admin', and 'system'.
+--
+--   p_id UUID
+--     The actor identifier. Mandatory for 'user' and 'admin', must be NULL for 'system'.
+--
+-- Returns:
+--   TEXT
+--     A canonical actor string suitable for persistent storage and comparison.
+--
+-- Notes:
+--   - Enforces strict validation to prevent malformed actor identifiers.
+--   - Marked IMMUTABLE because the output depends solely on input parameters.
+--   - Defined as SECURITY DEFINER to allow use in privileged contexts such as triggers.
+-- =========================================
+CREATE OR REPLACE FUNCTION util.build_actor(
+    p_type TEXT,
+    p_id UUID DEFAULT NULL
+) RETURNS TEXT
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+IMMUTABLE
+AS $$
+BEGIN
+    IF p_type IN ('user','admin') THEN
+        IF p_id IS NULL THEN
+            RAISE EXCEPTION 'Actor id required for %', p_type;
+        END IF;
+        RETURN p_type || ':' || p_id::text;
+    ELSIF p_type = 'system' THEN
+        IF p_id IS NOT NULL THEN
+            RAISE EXCEPTION 'System actor must not have UUID';
+        END IF;
+        RETURN 'system:cron';
+    ELSE
+        RAISE EXCEPTION 'Invalid actor type %', p_type;
+    END IF;
+END;
+$$;
+
+-- =========================================
+-- 02. Function: initialize_defaults_for_user_internal
 -- =========================================
 -- Purpose:
 --   Inserts all default data for a given user, including:
@@ -132,7 +191,7 @@ END;
 $$;
 
 -- =========================================
--- 02. Function: initialize_my_defaults_internal
+-- 03. Function: initialize_my_defaults_internal
 -- =========================================
 -- Purpose:
 --   Initializes default data for the current session user if not already inserted.
@@ -214,7 +273,7 @@ END;
 $$;
 
 -- =========================================
--- 03. Function: initialize_my_defaults
+-- 04. Function: initialize_my_defaults
 -- =========================================
 -- Purpose:
 --   Wrapper function to initialize default data for the current session user.
@@ -290,7 +349,7 @@ END;
 $$;
 
 -- =========================================
--- 04. Function: check_admin_permissions_internal
+-- 05. Function: check_admin_permissions_internal
 -- =========================================
 -- Purpose:
 --   Determines whether the current session user has administrative privileges.
@@ -344,7 +403,7 @@ END;
 $$;
 
 -- =========================================
--- 05. Function: admin_initialize_user_defaults_internal
+-- 06. Function: admin_initialize_user_defaults_internal
 -- =========================================
 -- Purpose:
 --   Allows an administrator to initialize default data for any user.
@@ -434,7 +493,7 @@ END;
 $$;
 
 -- =========================================
--- 06. Function: admin_initialize_user_defaults
+-- 07. Function: admin_initialize_user_defaults
 -- =========================================
 -- Purpose:
 --   Wrapper function to initialize default data for a specified user,
@@ -541,7 +600,7 @@ END;
 $$;
 
 -- =========================================
--- 07. Function: check_rate_limit_internal
+-- 08. Function: check_rate_limit_internal
 -- =========================================
 -- Purpose:
 --   Enforces per-user API rate limits for a given endpoint within a rolling time window.
@@ -627,7 +686,7 @@ END;
 $$;
 
 -- =========================================
--- 08. Function: hard_delete_record_internal
+-- 09. Function: hard_delete_record_internal
 -- =========================================
 -- Purpose:
 --   Executes a hard delete of a record from a specified table, including all
@@ -883,7 +942,7 @@ END;
 $$;
 
 -- =========================================
--- 09. Function: admin_hard_delete_record_internal
+-- 10. Function: admin_hard_delete_record_internal
 -- =========================================
 -- Purpose:
 --   Performs a hard delete of a record from a specified table, bypassing
@@ -949,7 +1008,7 @@ END;
 $$;
 
 -- =========================================
--- 10. Function: admin_hard_delete_record
+-- 11. Function: admin_hard_delete_record
 -- =========================================
 -- Purpose:
 --   Wrapper function to perform a hard delete on a specific record
@@ -1087,7 +1146,7 @@ END;
 $$;
 
 -- =========================================
--- 11. Function: cleanup_soft_deleted_records_internal
+-- 12. Function: cleanup_soft_deleted_records_internal
 -- =========================================
 -- Purpose:
 --   Permanently deletes soft-deleted records from key tables that are older than a specified number of days.
@@ -1150,13 +1209,7 @@ DECLARE
     rec RECORD;
     deleted_counter BIGINT;
     failed_counter BIGINT;
-
-    -- Fixed internal actor for scheduled jobs
-    v_internal_actor_id UUID := '059fd8b9-f48b-4347-93b7-23d852b48a8a'::UUID;
 BEGIN
-    -- Establish system identity for downstream auth.uid() checks
-    PERFORM set_config('request.jwt.claim.sub', v_internal_actor_id::TEXT, true);
-
     -- Enable hard-delete bypass for entire session
     PERFORM set_config('app.hard_delete', 'on', true);
 
@@ -1177,36 +1230,13 @@ BEGIN
                     deleted_counter := deleted_counter + 1;
                 END IF;
             EXCEPTION
-                WHEN OTHERS THEN
-                    failed_counter := failed_counter + 1;
+            WHEN OTHERS THEN
+                failed_counter := failed_counter + 1;
 
-                    -- Persistent error logging to audit_logs
-                    INSERT INTO audit.audit_logs(
-                        user_id,
-                        action_by,
-                        table_name,
-                        record_id,
-                        action,
-                        old_data,
-                        new_data
-                    )
-                    VALUES (
-                        v_internal_actor_id,   -- affected user (cron job context)
-                        v_internal_actor_id,   -- performed by cron user
-                        tbl,
-                        rec.id,
-                        'DELETE',
-                        NULL,
-                        jsonb_build_object(
-                            'error', SQLERRM,
-                            'sqlstate', SQLSTATE
-                        )
-                    );
-
-                    -- Also raise notice for session visibility
-                    RAISE NOTICE
-                        'Failed to hard delete record % from table % (SQLSTATE %): %',
-                        rec.id, tbl, SQLSTATE, SQLERRM;
+                -- Also raise notice for session visibility
+                RAISE NOTICE
+                    'Failed to hard delete record % from table % (SQLSTATE %): %',
+                    rec.id, tbl, SQLSTATE, SQLERRM;
             END;
         END LOOP;
 
@@ -1225,7 +1255,7 @@ SELECT cron.schedule(
 );
 
 -- =========================================
--- 12. Function: cleanup_old_audit_logs_internal
+-- 13. Function: cleanup_old_audit_logs_internal
 -- =========================================
 -- Purpose:
 --   Deletes audit log entries older than a specified number of days to manage table size.
@@ -1257,11 +1287,7 @@ AS $$
 DECLARE
     v_deleted_count INTEGER;
     cutoff_date TIMESTAMPTZ;
-    v_internal_actor_id UUID := '059fd8b9-f48b-4347-93b7-23d852b48a8a'::UUID;
 BEGIN
-    -- Set internal actor for session (prevents auth.uid() errors)
-    PERFORM set_config('request.jwt.claim.sub', v_internal_actor_id::TEXT, true);
-
     -- Calculate cutoff date
     cutoff_date := CURRENT_DATE - (p_days_to_keep || ' days')::INTERVAL;
 
@@ -1286,7 +1312,7 @@ SELECT cron.schedule(
 );
 
 -- =========================================
--- 13. Function: cleanup_old_rate_limits_internal
+-- 14. Function: cleanup_old_rate_limits_internal
 -- =========================================
 -- Purpose:
 --   Deletes API rate limit records older than 24 hours to keep the table current.
@@ -1318,11 +1344,7 @@ AS $$
 DECLARE
     v_deleted_count INTEGER;
     cutoff_timestamp TIMESTAMPTZ;
-    v_internal_actor_id UUID := '059fd8b9-f48b-4347-93b7-23d852b48a8a'::UUID;
 BEGIN
-    -- Set system actor for session (prevents auth.uid() errors)
-    PERFORM set_config('request.jwt.claim.sub', v_internal_actor_id::TEXT, true);
-
     -- Calculate cutoff timestamp
     cutoff_timestamp := NOW() - (p_hours_to_keep || ' hours')::INTERVAL;
 
