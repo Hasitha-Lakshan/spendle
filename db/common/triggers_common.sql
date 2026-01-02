@@ -264,28 +264,27 @@ CREATE OR REPLACE FUNCTION audit.log_audit()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, extensions, audit, finance
+SET search_path = pg_catalog, extensions, audit, finance, core, util
 VOLATILE
 AS $$
 DECLARE
-    internal_actor_id CONSTANT UUID := '059fd8b9-f48b-4347-93b7-23d852b48a8a'::uuid;
     affected_user_id UUID;
-    actor_user_id UUID;
     record_id UUID;
-    record_id_candidate text;
+    record_id_candidate TEXT;
     row_data hstore;
     session_setting TEXT;
     action_label TEXT;
     extracted_uuid UUID;
+    v_executed_by TEXT;
 BEGIN
     -- 1. SAFETY GUARD: never audit the audit_logs table itself
-    IF TG_TABLE_SCHEMA || '.' || TG_TABLE_NAME = 'audit.audit_logs' THEN
+    IF TG_TABLE_SCHEMA = 'audit' AND TG_TABLE_NAME = 'audit_logs' THEN
         RETURN NULL;
     END IF;
 
-    -- 2. DETERMINE ACTOR
+    -- 2. DETERMINE ACTOR (JWT subject → auth.users.id)
     session_setting := current_setting('request.jwt.claim.sub', true);
-    
+
     -- Handle the case where session_setting is non-UUID
     IF session_setting IS NOT NULL THEN
         BEGIN
@@ -294,82 +293,127 @@ BEGIN
         EXCEPTION WHEN invalid_text_representation THEN
             -- If conversion fails, set to NULL
             extracted_uuid := NULL;
-            RAISE NOTICE 'Invalid JWT claim for actor_user_id: %', session_setting;
+            RAISE NOTICE 'Invalid JWT claim for extracted_uuid: %', session_setting;
         END;
     ELSE
         extracted_uuid := NULL;
     END IF;
-    
-    -- Assign actor_user_id
-    actor_user_id := COALESCE(extracted_uuid, internal_actor_id);
 
     -- 3. DETERMINE ACTION LABEL
-    action_label := TG_OP; -- Default: 'INSERT', 'UPDATE', 'DELETE'
+    action_label := TG_OP; -- Default: INSERT, UPDATE, DELETE
 
     -- Special case for profiles table admin changes
-    IF TG_OP = 'UPDATE' AND TG_TABLE_NAME = 'profiles' THEN
-        IF OLD.is_admin IS DISTINCT FROM NEW.is_admin THEN
-            action_label := 'ADMIN_PRIVILEGE_CHANGE';
-        END IF;
+    IF TG_OP = 'UPDATE'
+       AND TG_TABLE_SCHEMA = 'core'
+       AND TG_TABLE_NAME = 'profiles'
+       AND OLD.is_admin IS DISTINCT FROM NEW.is_admin THEN
+        action_label := 'ADMIN_PRIVILEGE_CHANGE';
+    END IF;
+
+    -- Detect soft delete (deleted_at transition)
+    IF TG_OP = 'UPDATE'
+       AND (OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL) THEN
+        action_label := 'SOFT_DELETE';
     END IF;
 
     -- 4. NORMALIZE ROW DATA
     row_data := hstore(CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END);
 
-    -- 5. RESOLVE AFFECTED USER
+    -- 5. RESOLVE AFFECTED USER (ALWAYS core.profiles.id)
     affected_user_id := NULL;
 
-    -- a. Direct user_id - use safe casting
+    -- a. Direct user_id → core.profiles.id
     IF row_data ? 'user_id' AND row_data -> 'user_id' IS NOT NULL THEN
         BEGIN
-            affected_user_id := (row_data -> 'user_id')::uuid;
-        EXCEPTION WHEN invalid_text_representation THEN
+            -- Some tables store core.profiles.id directly
+            SELECT p.id
+            INTO affected_user_id
+            FROM core.profiles p
+            WHERE p.id = (row_data -> 'user_id')::uuid;
+        EXCEPTION WHEN invalid_text_representation OR NO_DATA_FOUND THEN
             affected_user_id := NULL;
         END;
     END IF;
 
-    -- b. Via account_id
+    -- b. Via account ownership
     IF affected_user_id IS NULL AND row_data ? 'account_id' AND row_data -> 'account_id' IS NOT NULL THEN
         BEGIN
-            SELECT a.user_id INTO affected_user_id
+            SELECT a.user_id
+            INTO affected_user_id
             FROM finance.accounts a
             WHERE a.id = (row_data -> 'account_id')::uuid;
-        EXCEPTION WHEN invalid_text_representation OR OTHERS THEN
+        EXCEPTION WHEN invalid_text_representation OR NO_DATA_FOUND THEN
             affected_user_id := NULL;
         END;
     END IF;
 
-    -- c. Via transaction_id
+    -- c. Via transaction ownership
     IF affected_user_id IS NULL AND row_data ? 'transaction_id' AND row_data -> 'transaction_id' IS NOT NULL THEN
         BEGIN
-            SELECT t.user_id INTO affected_user_id
+            SELECT t.user_id
+            INTO affected_user_id
             FROM finance.transactions t
             WHERE t.id = (row_data -> 'transaction_id')::uuid;
-        EXCEPTION WHEN invalid_text_representation OR OTHERS THEN
+        EXCEPTION WHEN invalid_text_representation OR NO_DATA_FOUND THEN
             affected_user_id := NULL;
         END;
     END IF;
 
-    -- d. Expense subcategories → categories
-    IF affected_user_id IS NULL AND TG_TABLE_NAME = 'expense_subcategories' 
-       AND row_data ? 'category_id' AND row_data -> 'category_id' IS NOT NULL THEN
+    -- d. Expense subcategories → categories → user
+    IF affected_user_id IS NULL
+       AND TG_TABLE_SCHEMA = 'finance'
+       AND TG_TABLE_NAME = 'expense_subcategories'
+       AND row_data ? 'category_id'
+       AND row_data -> 'category_id' IS NOT NULL THEN
         BEGIN
-            SELECT ec.user_id INTO affected_user_id
+            SELECT ec.user_id
+            INTO affected_user_id
             FROM finance.expense_categories ec
             WHERE ec.id = (row_data -> 'category_id')::uuid;
-        EXCEPTION WHEN invalid_text_representation OR OTHERS THEN
+        EXCEPTION WHEN invalid_text_representation OR NO_DATA_FOUND THEN
             affected_user_id := NULL;
         END;
     END IF;
 
-    -- Final fallback
-    affected_user_id := COALESCE(affected_user_id, actor_user_id);
+    -- e. Final fallback: derive from JWT subject → core.profiles
+    -- Required because audit.audit_logs.user_id is NOT NULL
+    IF affected_user_id IS NULL AND extracted_uuid IS NOT NULL THEN
+        SELECT p.id
+        INTO affected_user_id
+        FROM core.profiles p
+        WHERE p.user_id = extracted_uuid;
+    END IF;
 
-    -- 6. RESOLVE RECORD_ID
+    -- Absolute safety net (should never happen in normal operation)
+    IF affected_user_id IS NULL THEN
+        RAISE WARNING 'Audit skipped: unable to resolve affected_user_id for %.%',
+                      TG_TABLE_SCHEMA, TG_TABLE_NAME;
+        RETURN NULL;
+    END IF;
+
+    -- 6. RESOLVE EXECUTED_BY
+    IF extracted_uuid IS NOT NULL THEN
+        IF EXISTS (
+            SELECT 1
+            FROM core.profiles p
+            WHERE p.id = affected_user_id       -- core.profiles.id
+              AND p.user_id = extracted_uuid    -- auth.users.id
+        ) THEN
+            v_executed_by := util.build_actor('user', extracted_uuid);
+        ELSE
+            v_executed_by := util.build_actor('admin', extracted_uuid);
+        END IF;
+    ELSE
+        v_executed_by := util.build_actor('system');
+    END IF;
+
+    -- 7. RESOLVE RECORD_ID (must correspond to real row identity)
     record_id := NULL;
 
     FOREACH record_id_candidate IN ARRAY ARRAY['id','account_id','transaction_id'] LOOP
-        IF record_id IS NULL AND row_data ? record_id_candidate AND row_data -> record_id_candidate IS NOT NULL THEN
+        IF record_id IS NULL
+           AND row_data ? record_id_candidate
+           AND row_data -> record_id_candidate IS NOT NULL THEN
             BEGIN
                 record_id := (row_data -> record_id_candidate)::uuid;
             EXCEPTION WHEN invalid_text_representation THEN
@@ -378,13 +422,17 @@ BEGIN
         END IF;
     END LOOP;
 
-    record_id := COALESCE(record_id, gen_random_uuid());
+    IF record_id IS NULL THEN
+        RAISE WARNING 'Audit skipped: unable to resolve record_id for %.%',
+                      TG_TABLE_SCHEMA, TG_TABLE_NAME;
+        RETURN NULL;
+    END IF;
 
-    -- 7. INSERT AUDIT LOG
+    -- 8. INSERT AUDIT LOG
     BEGIN
         INSERT INTO audit.audit_logs (
             user_id,
-            action_by,
+            executed_by,
             table_name,
             record_id,
             action,
@@ -392,7 +440,7 @@ BEGIN
             new_data
         ) VALUES (
             affected_user_id,
-            actor_user_id,
+            v_executed_by,
             TG_TABLE_SCHEMA || '.' || TG_TABLE_NAME,
             record_id,
             action_label,
@@ -401,8 +449,9 @@ BEGIN
         );
     EXCEPTION WHEN OTHERS THEN
         -- Auditing must never block the main database operation
-        RAISE WARNING 'Audit log insertion failed for %: %', TG_TABLE_SCHEMA || '.' || TG_TABLE_NAME, SQLERRM;
-        NULL;
+        RAISE WARNING 'Audit log insertion failed for %.%: %',
+                      TG_TABLE_SCHEMA, TG_TABLE_NAME, SQLERRM;
+        RETURN NULL;
     END;
 
     -- Standard for AFTER triggers
