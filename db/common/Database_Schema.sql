@@ -322,8 +322,7 @@ CREATE TABLE finance.transactions (
 
 -- Income Transactions
 CREATE TABLE finance.transactions_income (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  transaction_id UUID NOT NULL REFERENCES finance.transactions(id),
+  transaction_id UUID PRIMARY KEY REFERENCES finance.transactions(id),
   account_id UUID NOT NULL REFERENCES finance.accounts(id),
   source_id UUID REFERENCES finance.income_sources(id), -- link to source of income
   created_at timestamptz DEFAULT now(),
@@ -333,8 +332,7 @@ CREATE TABLE finance.transactions_income (
 
 -- Expense Transactions
 CREATE TABLE finance.transactions_expense (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  transaction_id UUID NOT NULL REFERENCES finance.transactions(id),
+  transaction_id UUID PRIMARY KEY REFERENCES finance.transactions(id),
   account_id UUID NOT NULL REFERENCES finance.accounts(id),
   category_id UUID REFERENCES finance.expense_subcategories(id),
   payment_method finance.payment_method DEFAULT 'other',
@@ -345,8 +343,7 @@ CREATE TABLE finance.transactions_expense (
 
 -- Investment Transactions
 CREATE TABLE finance.transactions_investment (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  transaction_id UUID NOT NULL REFERENCES finance.transactions(id),
+  transaction_id UUID PRIMARY KEY REFERENCES finance.transactions(id),
   -- The account used to fund the investment (cash, bank, wallet)
   funding_account_id UUID NOT NULL REFERENCES finance.accounts(id),
   -- The destination investment account (stocks, bonds, crypto, etc.)
@@ -363,8 +360,7 @@ CREATE TABLE finance.transactions_investment (
 
 -- Borrow Transactions
 CREATE TABLE finance.transactions_borrow (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  transaction_id UUID NOT NULL REFERENCES finance.transactions(id),
+  transaction_id UUID PRIMARY KEY REFERENCES finance.transactions(id),
   -- The loan liability account (what you owe)
   loan_account_id UUID NOT NULL REFERENCES finance.accounts(id),
   -- Where the borrowed funds are deposited (cash, bank, wallet)
@@ -377,8 +373,7 @@ CREATE TABLE finance.transactions_borrow (
 
 -- Lend Transactions
 CREATE TABLE finance.transactions_lend (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  transaction_id UUID NOT NULL REFERENCES finance.transactions(id),
+  transaction_id UUID PRIMARY KEY REFERENCES finance.transactions(id),
   -- The account you use to lend out money (cash, bank, wallet)
   funding_account_id UUID NOT NULL REFERENCES finance.accounts(id),
   -- The receivable account representing what’s owed to you
@@ -394,8 +389,7 @@ CREATE TABLE finance.transactions_lend (
 
 -- Transfer Transactions
 CREATE TABLE finance.transactions_transfer (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  transaction_id UUID NOT NULL REFERENCES finance.transactions(id),
+  transaction_id UUID PRIMARY KEY REFERENCES finance.transactions(id),
   from_account UUID NOT NULL REFERENCES finance.accounts(id),
   to_account UUID NOT NULL REFERENCES finance.accounts(id),
   transfer_method finance.transfer_method DEFAULT 'other',
@@ -407,8 +401,7 @@ CREATE TABLE finance.transactions_transfer (
 
 -- Adjustment Transactions
 CREATE TABLE finance.transactions_adjustment (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  transaction_id UUID NOT NULL REFERENCES finance.transactions(id),
+  transaction_id UUID PRIMARY KEY REFERENCES finance.transactions(id),
   account_id UUID NOT NULL REFERENCES finance.accounts(id),
   created_at timestamptz DEFAULT now(),
   updated_at timestamptz DEFAULT now(),
