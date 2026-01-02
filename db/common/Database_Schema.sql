@@ -435,25 +435,22 @@ CREATE TABLE finance.exchange_rates (
 -- Table to store recurrence definitions
 CREATE TABLE finance.transactions_recurring (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-
-    -- Links to base transaction definition
-    transaction_template_id UUID NOT NULL REFERENCES finance.transactions(id),
-
-    -- Recurrence metadata
+    transaction_template_id UUID NOT NULL REFERENCES finance.transactions(id), -- Links to base transaction definition
     frequency finance.recurrence_frequency NOT NULL,   -- daily, weekly, monthly, yearly
     interval INT NOT NULL DEFAULT 1,           -- every N days/weeks/months
     start_date DATE NOT NULL,
     end_date DATE,                             -- optional, NULL = no end
     next_occurrence DATE NOT NULL,      -- next due date
-
-    -- Ownership & actor semantics
-    user_id UUID NOT NULL REFERENCES core.profiles(id), -- affected user
-    action_by UUID DEFAULT NULL,                    -- actor (creator)
-
-    -- Auditing
+    user_id UUID NOT NULL REFERENCES core.profiles(id), -- owner of the recurring transaction (business ownership)
+    updated_by TEXT NOT NULL DEFAULT 'system:unknown',  -- who created or last modified the recurring rule
     created_at timestamptz DEFAULT now(),
     updated_at timestamptz DEFAULT now(),
-    deleted_at timestamptz DEFAULT NULL
+    deleted_at timestamptz DEFAULT NULL,
+
+  CONSTRAINT chk_transactions_recurring_actor CHECK (
+    executed_by ~ '^(user|admin):[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+    OR executed_by ~ '^system:[a-z_]+$'
+  )
 );
 
 -- =========================================
@@ -462,14 +459,35 @@ CREATE TABLE finance.transactions_recurring (
 CREATE TABLE audit.audit_logs (
   id BIGSERIAL PRIMARY KEY,
   user_id UUID NOT NULL REFERENCES core.profiles(id),   -- affected user (context)
-  action_by UUID DEFAULT NULL, -- who performed the action
+  executed_by TEXT NOT NULL DEFAULT 'system:unknown',   -- who performed the action
   table_name TEXT NOT NULL,
   record_id UUID NOT NULL,
   action TEXT NOT NULL CHECK (action IN ('INSERT','UPDATE','DELETE','SOFT_DELETE', 'ADMIN_PRIVILEGE_CHANGE')),
   old_data JSONB,
   new_data JSONB,
   created_at timestamptz DEFAULT now(),
-  updated_at timestamptz DEFAULT now()
+  updated_at timestamptz DEFAULT now(),
+
+  CONSTRAINT chk_audit_actor CHECK (
+    executed_by ~ '^(user|admin):[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+    OR executed_by ~ '^system:[a-z_]+$'
+  )
+);
+
+-- =========================================
+-- System Job Logs
+-- =========================================
+CREATE TABLE IF NOT EXISTS public.system_job_logs (
+    id BIGSERIAL PRIMARY KEY,                     -- internal unique identifier
+    job_name TEXT NOT NULL,                       -- name of the scheduled job
+    executed_by TEXT NOT NULL DEFAULT 'system',   -- actor performing the job
+    started_at TIMESTAMPTZ NOT NULL DEFAULT now(),-- when job started
+    finished_at TIMESTAMPTZ,                      -- when job finished
+    status TEXT NOT NULL DEFAULT 'completed',     -- 'completed', 'failed', 'partial'
+    result_summary TEXT,                          -- human-readable summary
+    details JSONB,                                -- structured data: counts, IDs, errors
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- =========================================
@@ -619,7 +637,7 @@ CREATE INDEX idx_txa_account_id ON finance.transactions_adjustment(account_id);
 CREATE INDEX idx_transactions_recurring_user_id ON finance.transactions_recurring(user_id);
 CREATE INDEX idx_transactions_recurring_next_occurrence ON finance.transactions_recurring(next_occurrence);
 CREATE INDEX idx_transactions_recurring_deleted_at ON finance.transactions_recurring(deleted_at) WHERE deleted_at IS NULL;
-CREATE INDEX idx_transactions_recurring_action_by ON finance.transactions_recurring(action_by);
+CREATE INDEX idx_transactions_recurring_updated_by ON finance.transactions_recurring(updated_by);
 
 -- ----- Compound indexes likely to be used -----
 CREATE INDEX idx_tx_user_created ON finance.transactions(user_id, created_at DESC);
@@ -639,7 +657,7 @@ CREATE INDEX idx_audit_old_original_amount ON audit.audit_logs ((old_data->>'ori
 CREATE INDEX idx_audit_new_original_amount ON audit.audit_logs ((new_data->>'original_amount'));
 CREATE INDEX idx_audit_old_converted_amount ON audit.audit_logs ((old_data->>'converted_amount'));
 CREATE INDEX idx_audit_new_converted_amount ON audit.audit_logs ((new_data->>'converted_amount'));
-CREATE INDEX idx_audit_action_by ON audit.audit_logs(action_by);
+CREATE INDEX idx_audit_executed_by ON audit.audit_logs(executed_by);
 CREATE INDEX idx_audit_created_at ON audit.audit_logs(created_at);
 
 -- JSONB GIN indexes (generic keys)
