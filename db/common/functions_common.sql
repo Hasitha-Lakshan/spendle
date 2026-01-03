@@ -1,39 +1,5 @@
 -- =========================================
--- 01. Function: util.current_active_profile_id_internal
--- =========================================
--- Purpose:
---   Resolves the current authenticated user's active profile ID.
---
--- Behavior:
---   - Maps auth.uid() → core.profiles.user_id
---   - Returns core.profiles.id
---   - Enforces deleted_at IS NULL
---   - Fails fast if no active profile exists
---
--- Security:
---   - SECURITY DEFINER to allow use inside RLS
---   - search_path locked to pg_catalog, core
---
--- Notes:
---   - Assumes exactly one active profile per auth user
---   - Prevents multi-row ambiguity via LIMIT 1
--- =========================================
-CREATE OR REPLACE FUNCTION util.current_active_profile_id_internal()
-RETURNS uuid
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = pg_catalog, core
-STABLE
-AS $$
-    SELECT p.id
-    FROM core.profiles p
-    WHERE p.user_id = auth.uid()
-      AND p.deleted_at IS NULL
-    LIMIT 1
-$$;
-
--- =========================================
--- 02. Function: util.build_actor_internal
+-- 01. Function: util.build_actor_internal
 -- =========================================
 -- Purpose:
 --   Constructs a normalized actor identifier string used for auditing,
@@ -75,24 +41,207 @@ SET search_path = pg_catalog
 IMMUTABLE
 AS $$
 BEGIN
+    -- User or admin must have a UUID
     IF p_type IN ('user','admin') THEN
         IF p_id IS NULL THEN
-            RAISE EXCEPTION 'Actor id required for %', p_type;
+            RAISE EXCEPTION 'Actor id required for %', p_type
+                USING ERRCODE = 'P0001'; -- user-defined exception
         END IF;
         RETURN p_type || ':' || p_id::text;
+
+    -- System actor must not have a UUID
     ELSIF p_type = 'system' THEN
         IF p_id IS NOT NULL THEN
-            RAISE EXCEPTION 'System actor must not have UUID';
+            RAISE EXCEPTION 'System actor must not have UUID'
+                USING ERRCODE = 'P0002'; -- user-defined exception
         END IF;
         RETURN 'system:cron';
+
+    -- Invalid actor type
     ELSE
-        RAISE EXCEPTION 'Invalid actor type %', p_type;
+        RAISE EXCEPTION 'Invalid actor type %', p_type
+            USING ERRCODE = 'P0003'; -- user-defined exception
     END IF;
 END;
 $$;
 
 -- =========================================
--- 03. Function: initialize_defaults_for_user_internal
+-- 02. Function: util.current_active_profile_id_internal
+-- =========================================
+-- Purpose:
+--   Resolves the current authenticated user's active profile ID.
+--
+-- Behavior:
+--   - Maps auth.uid() → core.profiles.user_id
+--   - Returns core.profiles.id
+--   - Enforces deleted_at IS NULL
+--   - Fails fast if no active profile exists
+--
+-- Security:
+--   - SECURITY DEFINER to allow use inside RLS
+--   - search_path locked to pg_catalog, core
+--
+-- Notes:
+--   - Assumes exactly one active profile per auth user
+--   - Prevents multi-row ambiguity via LIMIT 1
+-- =========================================
+CREATE OR REPLACE FUNCTION util.current_active_profile_id_internal()
+RETURNS uuid
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, core
+STABLE
+AS $$
+    SELECT p.id
+    FROM core.profiles p
+    WHERE p.user_id = auth.uid()
+      AND p.deleted_at IS NULL
+    LIMIT 1
+$$;
+
+-- =========================================
+-- 03. Function: check_admin_permissions_internal
+-- =========================================
+-- Purpose:
+--   Determines whether the current session user has administrative privileges.
+--
+-- Behavior:
+--   - Retrieves the current session user ID via `auth.uid()`
+--   - Queries the `profiles` table for the `is_admin` flag of the active user
+--   - Considers users with no profile or a deleted profile as non-admin
+--
+-- Parameters:
+--   None - The function uses the current session user from `auth.uid()`
+--
+-- Returns:
+--   BOOLEAN - TRUE if the current user is an admin, FALSE otherwise
+--
+-- Notes:
+--   - SECURITY DEFINER allows the function to bypass RLS restrictions on the `profiles` table
+--   - Useful for enforcing admin-only actions in triggers, policies, and other functions
+--   - Always returns FALSE if the session is unauthenticated
+-- =========================================
+CREATE OR REPLACE FUNCTION util.check_admin_permissions_internal()
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, core
+STABLE
+AS $$
+DECLARE
+    v_user_id UUID := auth.uid();
+    v_is_admin BOOLEAN := FALSE;
+BEGIN
+    -- Return false if user is unauthenticated
+    IF v_user_id IS NULL THEN
+        RETURN FALSE;
+    END IF;
+
+    -- Check admin flag from core.profiles
+    SELECT p.is_admin
+    INTO v_is_admin
+    FROM core.profiles p
+    WHERE p.user_id = v_user_id
+      AND p.deleted_at IS NULL
+    LIMIT 1;
+
+    RETURN COALESCE(v_is_admin, FALSE);
+EXCEPTION
+    WHEN OTHERS THEN
+        -- Log or propagate unexpected errors
+        RAISE EXCEPTION 'Failed to check admin permissions for user %: %', v_user_id, SQLERRM;
+END;
+$$;
+
+-- =========================================
+-- 04. Function: check_rate_limit_internal
+-- =========================================
+-- Purpose:
+--   Enforces per-user API rate limits for a given endpoint within a rolling time window.
+--
+-- Behavior:
+--   - SECURITY DEFINER ensures the function runs with the privileges of the owner
+--   - Checks the number of requests made by the current user for a specific endpoint
+--     within the specified time window (p_window_minutes)
+--   - Inserts a new rate limit record if none exists, or increments the request count
+--   - Returns TRUE if the request is allowed (under the limit), FALSE if the limit is exceeded
+--
+-- Parameters:
+--   p_endpoint      VARCHAR(100) - The API endpoint being accessed
+--   p_max_requests  INTEGER DEFAULT 100 - Maximum allowed requests in the window
+--   p_window_minutes INTEGER DEFAULT 60 - Length of the rolling window in minutes
+--
+-- Returns:
+--   BOOLEAN - TRUE if the request is within the allowed limit, FALSE otherwise
+--
+-- Notes:
+--   - Uses the api_rate_limits table to track requests per user per endpoint
+--   - Can be called in triggers or directly from API middleware
+--   - Designed to prevent abuse without blocking legitimate usage
+-- =========================================
+CREATE OR REPLACE FUNCTION api.check_rate_limit_internal(
+    p_endpoint VARCHAR(100),
+    p_max_requests INTEGER DEFAULT 100,
+    p_window_minutes INTEGER DEFAULT 60
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, api
+VOLATILE
+AS $$
+DECLARE
+    v_user_id UUID;
+    v_counter RECORD;
+    v_window_start TIMESTAMPTZ;
+    v_now TIMESTAMPTZ := NOW();
+BEGIN
+    v_user_id := util.current_active_profile_id_internal();
+    v_window_start := v_now - (p_window_minutes || ' minutes')::INTERVAL;
+
+    -- Lock the row for this user/endpoint to prevent race conditions
+    SELECT *
+    INTO v_counter
+    FROM api.api_rate_limits
+    WHERE user_id = v_user_id
+      AND endpoint = p_endpoint
+    FOR UPDATE;
+
+    IF NOT FOUND THEN
+        -- Row doesn't exist yet: create it
+        INSERT INTO api.api_rate_limits(user_id, endpoint, request_count, last_request_at)
+        VALUES (v_user_id, p_endpoint, 1, v_now);
+        RETURN TRUE;
+    ELSE
+        -- Row exists: check if the last_request_at is within the rolling window
+        IF v_counter.last_request_at < v_window_start THEN
+            -- Window expired: reset counter
+            UPDATE api.api_rate_limits
+            SET request_count = 1,
+                last_request_at = v_now
+            WHERE user_id = v_user_id
+              AND endpoint = p_endpoint;
+            RETURN TRUE;
+        ELSE
+            -- Within window: check if under max requests
+            IF v_counter.request_count < p_max_requests THEN
+                UPDATE api.api_rate_limits
+                SET request_count = request_count + 1,
+                    last_request_at = v_now
+                WHERE user_id = v_user_id
+                  AND endpoint = p_endpoint;
+                RETURN TRUE;
+            ELSE
+                -- Limit reached
+                RETURN FALSE;
+            END IF;
+        END IF;
+    END IF;
+END;
+$$;
+
+-- =========================================
+-- 05. Function: initialize_defaults_for_user_internal
 -- =========================================
 -- Purpose:
 --   Inserts all default data for a given user, including:
@@ -225,7 +374,7 @@ END;
 $$;
 
 -- =========================================
--- 04. Function: initialize_my_defaults_internal
+-- 06. Function: initialize_my_defaults_internal
 -- =========================================
 -- Purpose:
 --   Initializes default data for the current session user if not already inserted.
@@ -309,7 +458,7 @@ END;
 $$;
 
 -- =========================================
--- 05. Function: initialize_my_defaults
+-- 07. Function: initialize_my_defaults
 -- =========================================
 -- Purpose:
 --   Wrapper function to initialize default data for the current session user.
@@ -385,61 +534,7 @@ END;
 $$;
 
 -- =========================================
--- 06. Function: check_admin_permissions_internal
--- =========================================
--- Purpose:
---   Determines whether the current session user has administrative privileges.
---
--- Behavior:
---   - Retrieves the current session user ID via `auth.uid()`
---   - Queries the `profiles` table for the `is_admin` flag of the active user
---   - Considers users with no profile or a deleted profile as non-admin
---
--- Parameters:
---   None - The function uses the current session user from `auth.uid()`
---
--- Returns:
---   BOOLEAN - TRUE if the current user is an admin, FALSE otherwise
---
--- Notes:
---   - SECURITY DEFINER allows the function to bypass RLS restrictions on the `profiles` table
---   - Useful for enforcing admin-only actions in triggers, policies, and other functions
---   - Always returns FALSE if the session is unauthenticated
--- =========================================
-CREATE OR REPLACE FUNCTION util.check_admin_permissions_internal()
-RETURNS BOOLEAN
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = pg_catalog, core
-STABLE
-AS $$
-DECLARE
-    v_user_id UUID := auth.uid();
-    v_is_admin BOOLEAN := FALSE;
-BEGIN
-    -- Return false if user is unauthenticated
-    IF v_user_id IS NULL THEN
-        RETURN FALSE;
-    END IF;
-
-    -- Check admin flag from core.profiles
-    SELECT p.is_admin
-    INTO v_is_admin
-    FROM core.profiles p
-    WHERE p.user_id = v_user_id
-      AND p.deleted_at IS NULL
-    LIMIT 1;
-
-    RETURN COALESCE(v_is_admin, FALSE);
-EXCEPTION
-    WHEN OTHERS THEN
-        -- Log or propagate unexpected errors
-        RAISE EXCEPTION 'Failed to check admin permissions for user %: %', v_user_id, SQLERRM;
-END;
-$$;
-
--- =========================================
--- 07. Function: admin_initialize_user_defaults_internal
+-- 08. Function: admin_initialize_user_defaults_internal
 -- =========================================
 -- Purpose:
 --   Allows an administrator to initialize default data for any user.
@@ -535,7 +630,7 @@ END;
 $$;
 
 -- =========================================
--- 08. Function: admin_initialize_user_defaults
+-- 09. Function: admin_initialize_user_defaults
 -- =========================================
 -- Purpose:
 --   Wrapper function to initialize default data for a specified user,
@@ -638,93 +733,6 @@ EXCEPTION
             'message', 'Failed to initialize defaults for user',
             'data', NULL
         );
-END;
-$$;
-
--- =========================================
--- 09. Function: check_rate_limit_internal
--- =========================================
--- Purpose:
---   Enforces per-user API rate limits for a given endpoint within a rolling time window.
---
--- Behavior:
---   - SECURITY DEFINER ensures the function runs with the privileges of the owner
---   - Checks the number of requests made by the current user for a specific endpoint
---     within the specified time window (p_window_minutes)
---   - Inserts a new rate limit record if none exists, or increments the request count
---   - Returns TRUE if the request is allowed (under the limit), FALSE if the limit is exceeded
---
--- Parameters:
---   p_endpoint      VARCHAR(100) - The API endpoint being accessed
---   p_max_requests  INTEGER DEFAULT 100 - Maximum allowed requests in the window
---   p_window_minutes INTEGER DEFAULT 60 - Length of the rolling window in minutes
---
--- Returns:
---   BOOLEAN - TRUE if the request is within the allowed limit, FALSE otherwise
---
--- Notes:
---   - Uses the api_rate_limits table to track requests per user per endpoint
---   - Can be called in triggers or directly from API middleware
---   - Designed to prevent abuse without blocking legitimate usage
--- =========================================
-CREATE OR REPLACE FUNCTION api.check_rate_limit_internal(
-    p_endpoint VARCHAR(100),
-    p_max_requests INTEGER DEFAULT 100,
-    p_window_minutes INTEGER DEFAULT 60
-)
-RETURNS BOOLEAN
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = pg_catalog, api
-VOLATILE
-AS $$
-DECLARE
-    v_user_id UUID;
-    v_counter RECORD;
-    v_window_start TIMESTAMPTZ;
-    v_now TIMESTAMPTZ := NOW();
-BEGIN
-    v_user_id := util.current_active_profile_id_internal();
-    v_window_start := v_now - (p_window_minutes || ' minutes')::INTERVAL;
-
-    -- Lock the row for this user/endpoint to prevent race conditions
-    SELECT *
-    INTO v_counter
-    FROM api.api_rate_limits
-    WHERE user_id = v_user_id
-      AND endpoint = p_endpoint
-    FOR UPDATE;
-
-    IF NOT FOUND THEN
-        -- Row doesn't exist yet: create it
-        INSERT INTO api.api_rate_limits(user_id, endpoint, request_count, last_request_at)
-        VALUES (v_user_id, p_endpoint, 1, v_now);
-        RETURN TRUE;
-    ELSE
-        -- Row exists: check if the last_request_at is within the rolling window
-        IF v_counter.last_request_at < v_window_start THEN
-            -- Window expired: reset counter
-            UPDATE api.api_rate_limits
-            SET request_count = 1,
-                last_request_at = v_now
-            WHERE user_id = v_user_id
-              AND endpoint = p_endpoint;
-            RETURN TRUE;
-        ELSE
-            -- Within window: check if under max requests
-            IF v_counter.request_count < p_max_requests THEN
-                UPDATE api.api_rate_limits
-                SET request_count = request_count + 1,
-                    last_request_at = v_now
-                WHERE user_id = v_user_id
-                  AND endpoint = p_endpoint;
-                RETURN TRUE;
-            ELSE
-                -- Limit reached
-                RETURN FALSE;
-            END IF;
-        END IF;
-    END IF;
 END;
 $$;
 
@@ -1138,7 +1146,7 @@ EXCEPTION
             'data', NULL
         );
 
-    WHEN no_data_found THEN
+    WHEN SQLSTATE '02000' THEN
         RETURN jsonb_build_object(
             'success', FALSE,
             'code', 'NOT_FOUND',
@@ -1181,7 +1189,312 @@ END;
 $$;
 
 -- =========================================
--- 13. Function: cleanup_soft_deleted_records_internal
+-- 13. Function: finance.soft_delete_profile_internal
+-- =========================================
+-- Purpose:
+--   Performs a soft-delete of a profile in the `core.profiles` table.
+--   Designed for internal use by RPC wrappers or administrative routines.
+--
+-- Behavior:
+--   - Raises an exception with SQLSTATE '02000' if the profile does not exist.
+--   - Soft-deletes the profile by setting `deleted_at = NOW()`, but only if it is not already deleted.
+--   - Returns TRUE if the profile was successfully soft-deleted.
+--   - Returns FALSE if the profile existed but was already soft-deleted.
+--
+-- Parameters:
+--   p_id UUID
+--     The unique identifier of the profile to be soft-deleted.
+--
+-- Returns:
+--   BOOLEAN
+--     - TRUE: profile was soft-deleted.
+--     - FALSE: profile already soft-deleted.
+--
+-- Notes:
+--   - Raises a controlled exception for non-existent profiles to ensure consistent error handling.
+--   - Uses SECURITY DEFINER to allow execution with elevated privileges.
+--   - VOLATILE because the function modifies table data.
+--   - Designed to be wrapped by higher-level RPC functions that handle JSON responses and logging.
+-- =========================================
+CREATE OR REPLACE FUNCTION finance.soft_delete_profile_internal(p_id UUID)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, core
+VOLATILE
+AS $$
+DECLARE
+    v_updated BOOLEAN;
+BEGIN
+    -- Explicit NOT FOUND handling (must raise)
+    IF NOT EXISTS (
+        SELECT 1
+        FROM core.profiles
+        WHERE id = p_id
+    ) THEN
+        RAISE EXCEPTION 'Profile not found: %', p_id
+            USING ERRCODE = '02000';
+    END IF;
+
+    -- Soft-delete only if not already deleted
+    UPDATE core.profiles
+    SET deleted_at = NOW()
+    WHERE id = p_id
+      AND deleted_at IS NULL
+    RETURNING TRUE
+    INTO v_updated;
+
+    -- Already soft-deleted → FALSE
+    RETURN COALESCE(v_updated, FALSE);
+END;
+$$;
+
+-- =========================================
+-- 14. Function: public.soft_delete_my_profile
+-- =========================================
+-- Purpose:
+--   Soft-deletes the currently active profile of the authenticated user.
+--   Intended to be used via RPC endpoints for self-service profile management.
+--
+-- Behavior:
+--   - Retrieves the current active profile ID using `util.current_active_profile_id_internal()`.
+--   - Returns a `NOT_AUTHENTICATED` error if no active profile exists (i.e., user not logged in).
+--   - Calls `core.soft_delete_profile_internal(v_id)` to perform the soft-delete:
+--       * Returns `ALREADY_DELETED` if the profile was already soft-deleted.
+--       * Raises SQLSTATE '02000' if the profile does not exist.
+--       * Returns `TRUE` if the profile was successfully soft-deleted.
+--   - Returns a success JSON object including the profile ID if deletion succeeds.
+--   - Catches exceptions for:
+--       * Profile not found (`02000`)
+--       * Unauthorized session (`invalid_authorization_specification`)
+--       * Insufficient privileges (`insufficient_privilege`)
+--       * Any other internal error (`OTHERS`)
+--
+-- Parameters:
+--   p_profile_id UUID
+--     Parameter for profile ID (not directly used; function relies on current active profile).
+--
+-- Returns:
+--   JSONB
+--     Standardized JSON response object with:
+--       - success (BOOLEAN)
+--       - code (TEXT)
+--       - message (TEXT)
+--       - data (JSONB, containing profile_id when applicable)
+--
+-- Notes:
+--   - SECURITY DEFINER allows the function to execute with elevated privileges.
+--   - VOLATILE because it updates table data.
+--   - Handles authentication, authorization, and soft-delete state in a single RPC-friendly wrapper.
+--   - Exception handling ensures uniform JSON output for all error conditions.
+-- =========================================
+CREATE OR REPLACE FUNCTION public.soft_delete_my_profile(p_profile_id UUID)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, core
+VOLATILE
+AS $$
+DECLARE
+    v_deleted BOOLEAN;
+    v_id UUID;
+BEGIN
+    -- Get current active profile ID
+    v_id := util.current_active_profile_id_internal();
+
+    -- Authentication check
+    IF v_id IS NULL THEN
+        RETURN jsonb_build_object(
+            'success', FALSE,
+            'code', 'NOT_AUTHENTICATED',
+            'message', 'You must be logged in to initialize defaults',
+            'data', NULL
+        );
+    END IF;
+
+    -- Call internal function
+    v_deleted := core.soft_delete_profile_internal(v_id);
+
+    -- Already soft-deleted
+    IF NOT v_deleted THEN
+        RETURN jsonb_build_object(
+            'success', FALSE,
+            'code', 'ALREADY_DELETED',
+            'message', 'Profile already soft-deleted',
+            'data', jsonb_build_object('profile_id', v_id)
+        );
+    END IF;
+
+    -- Success response
+    RETURN jsonb_build_object(
+        'success', TRUE,
+        'code', 'OK',
+        'message', 'Profile soft-deleted; all child data cascaded',
+        'data', jsonb_build_object('profile_id', v_id)
+    );
+
+EXCEPTION
+    -- Explicit NOT FOUND from internal function
+    WHEN SQLSTATE '02000' THEN
+        RETURN jsonb_build_object(
+            'success', FALSE,
+            'code', 'NOT_FOUND',
+            'message', 'Profile not found',
+            'data', jsonb_build_object('profile_id', v_id)
+        );
+
+    WHEN invalid_authorization_specification THEN
+        RETURN jsonb_build_object(
+            'success', FALSE,
+            'code', 'NOT_AUTHENTICATED',
+            'message', 'User is not authenticated',
+            'data', NULL
+        );
+
+    WHEN insufficient_privilege THEN
+        RETURN jsonb_build_object(
+            'success', FALSE,
+            'code', 'NOT_AUTHORIZED',
+            'message', 'User does not have admin privileges',
+            'data', NULL
+        );
+
+    WHEN OTHERS THEN
+        RETURN jsonb_build_object(
+            'success', FALSE,
+            'code', 'INTERNAL_ERROR',
+            'message', SQLERRM,
+            'data', jsonb_build_object('profile_id', v_id)
+        );
+END;
+$$;
+
+-- =========================================
+-- 15. Function: public.admin_soft_user_delete_profile
+-- =========================================
+-- Purpose:
+--   Allows an administrator to soft-delete a specific user profile.
+--   Designed for administrative use via RPC endpoints or internal scripts.
+--
+-- Behavior:
+--   - Authenticates the calling user via `auth.uid()`.
+--   - Returns `NOT_AUTHENTICATED` if the admin session is invalid or missing.
+--   - Checks admin privileges using `util.check_admin_permissions_internal()`.
+--       * Returns `NOT_AUTHORIZED` if the user lacks admin rights.
+--   - Validates the input `p_profile_id`:
+--       * Returns `MISSING_PROFILE_ID` if NULL.
+--   - Calls `core.soft_delete_profile_internal(p_profile_id)`:
+--       * Returns `ALREADY_DELETED` if the profile was already soft-deleted.
+--       * Raises SQLSTATE '02000' if the profile does not exist.
+--       * Returns `TRUE` if the profile was successfully soft-deleted.
+--   - Returns a success JSON object including the profile ID if deletion succeeds.
+--   - Exception handling:
+--       * `SQLSTATE '02000'` → `NOT_FOUND`
+--       * `OTHERS` → `INTERNAL_ERROR`
+--
+-- Parameters:
+--   p_profile_id UUID
+--     The unique identifier of the profile to be soft-deleted.
+--
+-- Returns:
+--   JSONB
+--     Standardized JSON response object with:
+--       - success (BOOLEAN)
+--       - code (TEXT)
+--       - message (TEXT)
+--       - data (JSONB, containing profile_id when applicable)
+--
+-- Notes:
+--   - SECURITY DEFINER ensures the function executes with elevated privileges required for admin operations.
+--   - VOLATILE because it modifies table data.
+--   - Provides a safe RPC-friendly wrapper for soft-deleting user profiles by administrators.
+--   - Exception handling ensures consistent JSON output for all error conditions.
+-- =========================================
+CREATE OR REPLACE FUNCTION public.admin_soft_user_delete_profile(p_profile_id UUID)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, core, util
+VOLATILE
+AS $$
+DECLARE
+    v_deleted BOOLEAN;
+    v_admin_user_id UUID := auth.uid();
+BEGIN
+    -- Authenticate admin
+    IF v_admin_user_id IS NULL THEN
+        RETURN jsonb_build_object(
+            'success', FALSE,
+            'code', 'NOT_AUTHENTICATED',
+            'message', 'Admin user not authenticated',
+            'data', NULL
+        );
+    END IF;
+
+    -- Check admin privileges
+    IF NOT util.check_admin_permissions_internal() THEN
+        RETURN jsonb_build_object(
+            'success', FALSE,
+            'code', 'NOT_AUTHORIZED',
+            'message', 'User does not have admin privileges',
+            'data', NULL
+        );
+    END IF;
+
+    -- Input validation
+    IF p_profile_id IS NULL THEN
+        RETURN jsonb_build_object(
+            'success', FALSE,
+            'code', 'MISSING_PROFILE_ID',
+            'message', 'Profile ID is required',
+            'data', NULL
+        );
+    END IF;
+
+    -- Call internal function to soft-delete profile
+    v_deleted := core.soft_delete_profile_internal(p_profile_id);
+
+    -- Already soft-deleted
+    IF NOT v_deleted THEN
+        RETURN jsonb_build_object(
+            'success', FALSE,
+            'code', 'ALREADY_DELETED',
+            'message', 'Profile already soft-deleted',
+            'data', jsonb_build_object('profile_id', p_profile_id)
+        );
+    END IF;
+
+    -- Success response
+    RETURN jsonb_build_object(
+        'success', TRUE,
+        'code', 'OK',
+        'message', 'Profile soft-deleted; all child data cascaded',
+        'data', jsonb_build_object('profile_id', p_profile_id)
+    );
+
+EXCEPTION
+    -- Profile does not exist
+    WHEN SQLSTATE '02000' THEN
+        RETURN jsonb_build_object(
+            'success', FALSE,
+            'code', 'NOT_FOUND',
+            'message', 'Profile not found',
+            'data', jsonb_build_object('profile_id', p_profile_id)
+        );
+
+    -- Any other error
+    WHEN OTHERS THEN
+        RETURN jsonb_build_object(
+            'success', FALSE,
+            'code', 'INTERNAL_ERROR',
+            'message', SQLERRM,
+            'data', jsonb_build_object('profile_id', p_profile_id)
+        );
+END;
+$$;
+
+-- =========================================
+-- 16. Function: cleanup_soft_deleted_records_internal
 -- =========================================
 -- Purpose:
 --   Permanently deletes soft-deleted records from key tables that are older than a specified number of days.
@@ -1291,7 +1604,7 @@ SELECT cron.schedule(
 );
 
 -- =========================================
--- 14. Function: cleanup_old_audit_logs_internal
+-- 17. Function: cleanup_old_audit_logs_internal
 -- =========================================
 -- Purpose:
 --   Deletes audit log entries older than a specified number of days to manage table size.
@@ -1348,7 +1661,7 @@ SELECT cron.schedule(
 );
 
 -- =========================================
--- 15. Function: cleanup_old_rate_limits_internal
+-- 18. Function: cleanup_old_rate_limits_internal
 -- =========================================
 -- Purpose:
 --   Deletes API rate limit records older than 24 hours to keep the table current.
@@ -1411,6 +1724,8 @@ SELECT cron.schedule(
 GRANT EXECUTE ON FUNCTION public.initialize_my_defaults() TO authenticated;
 GRANT EXECUTE ON FUNCTION public.admin_initialize_user_defaults(UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.admin_hard_delete_record(TEXT, UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.soft_delete_my_profile(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.admin_soft_user_delete_profile(UUID) TO authenticated;
 
 -- ================================
 -- Function Documentation

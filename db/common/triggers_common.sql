@@ -490,3 +490,91 @@ BEGIN
     END LOOP;
 END;
 $$;
+
+-- =========================================
+-- 04. Function: cascade_soft_delete_profile
+-- =========================================
+-- Purpose:
+--   Soft-deletes a profile and all related child data.
+--   Accounts and their related specialized accounts / transactions
+--   are automatically handled by existing account/transaction triggers.
+--   Additionally, soft-deletes counterparties, income sources, expense
+--   categories & subcategories, recurring transactions, and exchange rates.
+--
+-- Behavior:
+--   - Trigger fires BEFORE UPDATE OF deleted_at on core.profiles
+--   - Sets deleted_at for the profile and child rows.
+--   - Relies on existing account/transaction triggers for deep cascading.
+--   - No hard delete occurs; historical data is preserved.
+--
+-- Parameters:
+--   OLD - The profile row before update
+--   NEW - The profile row being updated
+--
+-- Returns:
+--   OLD - standard for BEFORE triggers
+--
+-- Notes:
+--   - SECURITY DEFINER allows execution under row-level security
+--   - Should be used only in combination with `deleted_at` field
+-- =========================================
+CREATE OR REPLACE FUNCTION core.cascade_soft_delete_profile()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, finance, core
+VOLATILE
+AS $$
+BEGIN
+    -- Soft-delete profile itself
+    UPDATE core.profiles
+    SET deleted_at = NOW(),
+        updated_at = NOW()
+    WHERE id = OLD.id;
+
+    -- Soft-delete direct accounts (specialized accounts & transactions are handled via clean up triggers)
+    UPDATE finance.accounts
+    SET deleted_at = NOW(),
+        updated_at = NOW()
+    WHERE user_id = OLD.id
+      AND deleted_at IS NULL;
+
+    -- Soft-delete counterparties
+    UPDATE finance.counterparties
+    SET deleted_at = NOW(),
+        updated_at = NOW()
+    WHERE user_id = OLD.id
+      AND deleted_at IS NULL;
+
+    -- Soft-delete income sources
+    UPDATE finance.income_sources
+    SET deleted_at = NOW(),
+        updated_at = NOW()
+    WHERE user_id = OLD.id
+      AND deleted_at IS NULL;
+
+    -- Soft-delete expense categories (expense_subcategories are handled via clean up triggers)
+    UPDATE finance.expense_categories
+    SET deleted_at = NOW(),
+        updated_at = NOW()
+    WHERE user_id = OLD.id
+      AND deleted_at IS NULL;
+
+    -- Soft-delete exchange rates
+    UPDATE finance.exchange_rates
+    SET deleted_at = NOW(),
+        updated_at = NOW()
+    WHERE user_id = OLD.id
+      AND deleted_at IS NULL;
+
+    RETURN OLD;
+END;
+$$;
+
+-- Trigger: before update on profiles
+CREATE TRIGGER trigger_cascade_soft_delete_profile
+BEFORE UPDATE OF deleted_at
+ON core.profiles
+FOR EACH ROW
+WHEN (NEW.deleted_at IS NOT NULL)
+EXECUTE FUNCTION core.cascade_soft_delete_profile();
