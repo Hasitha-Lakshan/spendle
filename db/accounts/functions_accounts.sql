@@ -127,10 +127,13 @@ SET search_path = pg_catalog, finance
 STABLE
 AS $$
 DECLARE
-    v_user_id UUID := auth.uid();  -- current authenticated user
+    v_profile_id UUID;
 BEGIN
+    -- Get current user profile ID
+    v_profile_id := util.current_active_profile_id_internal();
+
     -- Authentication is mandatory
-    IF v_user_id IS NULL THEN
+    IF v_profile_id IS NULL THEN
         RAISE EXCEPTION
             'Not authenticated'
             USING ERRCODE = '28000'; -- invalid_authorization_specification
@@ -141,7 +144,7 @@ BEGIN
         SELECT 1
         FROM finance.accounts
         WHERE id = p_account_id
-          AND user_id = v_user_id
+          AND user_id = v_profile_id
           AND deleted_at IS NULL
     );
 END;
@@ -189,7 +192,7 @@ $$;
 --   - Critical for maintaining correct ownership, type safety, and relational integrity.
 -- =========================================
 CREATE OR REPLACE FUNCTION finance.create_account_internal(
-    p_user_id UUID,
+    p_profile_id UUID,                  -- profile ID
     p_account_name VARCHAR,
     p_type finance.account_type,
     p_currency VARCHAR,
@@ -202,7 +205,6 @@ SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
 DECLARE
-    v_user_id UUID := auth.uid();
     v_account_id UUID;
     v_counterparty_id UUID;
 
@@ -216,24 +218,9 @@ DECLARE
     v_term_months INT;
     v_portfolio_value NUMERIC;
     v_amount_due NUMERIC;
-    v_default_init_override BOOLEAN := current_setting('app.allow_default_initialization_override', true)::BOOLEAN;
 BEGIN
     -- Enable RLS
     PERFORM set_config('row_security', 'on', true);
-
-    -- Authentication required
-    IF v_user_id IS NULL THEN
-        RAISE EXCEPTION
-            'Not authenticated'
-            USING ERRCODE = '28000';
-    END IF;
-
-    -- Allow creating accounts for admins only when default initialization
-    IF p_user_id IS DISTINCT FROM v_user_id AND NOT v_default_init_override THEN
-        RAISE EXCEPTION
-            'Permission denied'
-            USING ERRCODE = '42501';
-    END IF;
 
     -- Parse counterparty_id if present
     IF p_details ? 'counterparty_id' THEN
@@ -260,7 +247,7 @@ BEGIN
 
     -- Insert base account
     INSERT INTO finance.accounts(user_id, account_name, type, currency)
-    VALUES (p_user_id, p_account_name, p_type, p_currency)
+    VALUES (p_profile_id, p_account_name, p_type, p_currency)
     RETURNING id INTO v_account_id;
 
     -- Insert specialized account
@@ -316,7 +303,7 @@ BEGIN
                 SELECT 1
                 FROM finance.counterparties
                 WHERE id = v_counterparty_id
-                  AND user_id = v_user_id
+                  AND user_id = p_profile_id
             ) THEN
                 RAISE EXCEPTION
                     'Invalid counterparty ownership'
@@ -390,7 +377,7 @@ BEGIN
                 SELECT 1
                 FROM finance.counterparties
                 WHERE id = v_counterparty_id
-                  AND user_id = v_user_id
+                  AND user_id = p_profile_id
             ) THEN
                 RAISE EXCEPTION
                     'Invalid counterparty ownership'
@@ -472,7 +459,7 @@ SET search_path = pg_catalog, finance, api
 VOLATILE
 AS $$
 DECLARE
-    v_user_id UUID := auth.uid();
+    v_profile_id UUID;
     v_max_requests INTEGER := 100;
     v_window_minutes INTEGER := 60;
     v_account_type finance.account_type;
@@ -492,12 +479,6 @@ BEGIN
     -- Enable Row-Level Security
     PERFORM set_config('row_security', 'on', true);
 
-    -- Ensure authenticated user
-    IF v_user_id IS NULL THEN
-        RAISE EXCEPTION 'Not authenticated'
-            USING ERRCODE = '28000';
-    END IF;
-
     -- Validate ownership
     IF NOT finance.validate_account_ownership_internal(p_account_id) THEN
         RAISE EXCEPTION 'Permission denied'
@@ -510,6 +491,9 @@ BEGIN
             USING ERRCODE = '55000';
     END IF;
 
+    -- Get current profile ID
+    v_profile_id := util.current_active_profile_id_internal();
+
     -- Fetch account type
     SELECT type::finance.account_type
     INTO v_account_type
@@ -517,9 +501,9 @@ BEGIN
     WHERE id = p_account_id
       AND deleted_at IS NULL;
 
-    IF v_account_type IS NULL THEN
+    IF NOT FOUND THEN
         RAISE EXCEPTION 'Account not found or deleted'
-            USING ERRCODE = 'P0002';
+            USING ERRCODE = '02000';
     END IF;
 
     -- Safely cast counterparty_id if present
@@ -625,7 +609,7 @@ BEGIN
             IF v_counterparty_id IS NOT NULL AND NOT EXISTS (
                 SELECT 1
                 FROM finance.counterparties
-                WHERE id = v_counterparty_id AND user_id = v_user_id
+                WHERE id = v_counterparty_id AND user_id = v_profile_id
             ) THEN
                 RAISE EXCEPTION 'Invalid counterparty_id'
                     USING ERRCODE = 'P0002';
@@ -650,7 +634,7 @@ BEGIN
             IF v_counterparty_id IS NOT NULL AND NOT EXISTS (
                 SELECT 1
                 FROM finance.counterparties
-                WHERE id = v_counterparty_id AND user_id = v_user_id
+                WHERE id = v_counterparty_id AND user_id = v_profile_id
             ) THEN
                 RAISE EXCEPTION 'Invalid counterparty_id'
                     USING ERRCODE = 'P0002';
@@ -722,17 +706,14 @@ SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
 DECLARE
-    v_user_id UUID := auth.uid();
+    v_profile_id UUID;
     v_exists UUID;
 BEGIN
     -- Enable Row-Level Security
     PERFORM set_config('row_security', 'on', true);
 
-    -- Ensure authenticated user
-    IF v_user_id IS NULL THEN
-        RAISE EXCEPTION 'Not authenticated'
-            USING ERRCODE = '28000';
-    END IF;
+    -- Get current user profile ID
+    v_profile_id := util.current_active_profile_id_internal();
 
     -- Validate ownership
     IF NOT finance.validate_account_ownership_internal(p_account_id) THEN
@@ -745,7 +726,7 @@ BEGIN
     SET deleted_at = NOW(),
         updated_at = NOW()
     WHERE id = p_account_id
-      AND user_id = v_user_id
+      AND user_id = v_profile_id
       AND deleted_at IS NULL
     RETURNING id INTO v_exists;
 
@@ -806,11 +787,14 @@ SET search_path = pg_catalog, finance, util
 VOLATILE
 AS $$
 DECLARE
-    v_is_admin BOOLEAN := util.check_admin_permissions_internal();
+    v_is_admin BOOLEAN;
     v_exists UUID;
 BEGIN
     -- Enable Row-Level Security
     PERFORM set_config('row_security', 'on', true);
+
+    -- Check admin permissions
+    v_is_admin := util.check_admin_permissions_internal();
 
     -- Ensure caller is an admin
     IF NOT v_is_admin THEN
@@ -883,26 +867,16 @@ SET search_path = pg_catalog, finance, util
 VOLATILE
 AS $$
 DECLARE
-    current_user_id UUID;
-    account_owner UUID;
-    account_type finance.account_type;
+    v_account_type finance.account_type;
     v_deleted_at timestamptz;
-    is_admin BOOLEAN;
+    v_is_admin BOOLEAN;
 BEGIN
     -- Enable Row-Level Security
     PERFORM set_config('row_security', 'on', true);
 
-    -- Authentication
-    current_user_id := auth.uid();
-
-    IF current_user_id IS NULL THEN
-        RAISE EXCEPTION 'Not authenticated'
-            USING ERRCODE = '28000';
-    END IF;
-
     -- Admin check
-    is_admin := util.check_admin_permissions_internal();
-    IF NOT is_admin THEN
+    v_is_admin := util.check_admin_permissions_internal();
+    IF NOT v_is_admin THEN
         RAISE EXCEPTION 'Permission denied: only admins can hard delete accounts'
             USING ERRCODE = '42501';
     END IF;
@@ -911,15 +885,15 @@ BEGIN
     PERFORM set_config('app.hard_delete', 'on', true);
 
     -- Fetch account info
-    SELECT user_id, type, deleted_at
-    INTO account_owner, account_type, v_deleted_at
+    SELECT type, deleted_at
+    INTO v_account_type, v_deleted_at
     FROM finance.accounts
     WHERE id = p_account_id;
 
-    IF account_owner IS NULL THEN
+    IF NOT FOUND THEN
         RAISE EXCEPTION 'Account not found'
-            USING ERRCODE = 'P0002';
-    END IF;
+            USING ERRCODE = '02000';
+    END IF
 
     IF v_deleted_at IS NULL THEN
         RAISE EXCEPTION 'Account must be soft-deleted before hard delete'
@@ -958,7 +932,7 @@ BEGIN
         );
 
     -- Delete specialized account row
-    CASE account_type
+    CASE v_account_type
         WHEN 'cash'       THEN DELETE FROM finance.cash_accounts        WHERE account_id = p_account_id;
         WHEN 'bank'       THEN DELETE FROM finance.bank_accounts        WHERE account_id = p_account_id;
         WHEN 'credit_card' THEN DELETE FROM finance.credit_card_accounts WHERE account_id = p_account_id;
@@ -968,7 +942,7 @@ BEGIN
         WHEN 'wallet'     THEN DELETE FROM finance.wallet_accounts      WHERE account_id = p_account_id;
         WHEN 'receivable' THEN DELETE FROM finance.receivable_accounts  WHERE account_id = p_account_id;
         ELSE
-            RAISE EXCEPTION 'Unknown account type during hard delete: %', account_type
+            RAISE EXCEPTION 'Unknown account type during hard delete: %', v_account_type
                 USING ERRCODE = 'P0002';
     END CASE;
 
@@ -1014,7 +988,7 @@ $$;
 --   - Suitable for direct use by application code or API layers.
 -- =========================================
 CREATE OR REPLACE FUNCTION public.create_account(
-    p_user_id UUID,
+    p_profile_id UUID,
     p_account_name TEXT,
     p_type finance.account_type,
     p_currency TEXT,
@@ -1027,10 +1001,11 @@ SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
 DECLARE
+    v_user_id UUID := auth.uid();
     v_account_id UUID;
 BEGIN
     -- Input validation
-    IF p_user_id IS NULL THEN
+    IF p_profile_id IS NULL THEN
         RETURN jsonb_build_object(
             'success', false,
             'code', 'MISSING_USER_ID',
@@ -1057,9 +1032,27 @@ BEGIN
         );
     END IF;
 
+    IF v_user_id IS NULL THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'code', 'NOT_AUTHENTICATED',
+            'message', 'User is not authenticated',
+            'data', NULL
+        );
+    END IF;
+
+    IF v_user_id IS DISTINCT FROM p_profile_id THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'code', 'NOT_AUTHORIZED',
+            'message', 'Cannot create accounts for another user',
+            'data', NULL
+        );
+    END IF;
+
     -- Call internal function
     v_account_id := finance.create_account_internal(
-        p_user_id,
+        p_profile_id,
         p_account_name,
         p_type,
         p_currency,
@@ -1141,6 +1134,7 @@ SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
 DECLARE
+    v_user_id UUID := auth.uid();
     v_success BOOLEAN;
 BEGIN
     -- Input validation
@@ -1158,6 +1152,15 @@ BEGIN
             'success', false,
             'code', 'INVALID_JSON',
             'message', 'Update data must be a valid JSON object',
+            'data', NULL
+        );
+    END IF;
+
+    IF v_user_id IS NULL THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'code', 'NOT_AUTHENTICATED',
+            'message', 'User is not authenticated',
             'data', NULL
         );
     END IF;
@@ -1243,6 +1246,7 @@ SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
 DECLARE
+    v_user_id UUID := auth.uid();
     v_success BOOLEAN;
 BEGIN
     -- Input validation
@@ -1251,6 +1255,15 @@ BEGIN
             'success', false,
             'code', 'MISSING_ACCOUNT_ID',
             'message', 'Account ID is required',
+            'data', NULL
+        );
+    END IF;
+
+    IF v_user_id IS NULL THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'code', 'NOT_AUTHENTICATED',
+            'message', 'User is not authenticated',
             'data', NULL
         );
     END IF;
@@ -1321,6 +1334,7 @@ SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
 DECLARE
+    v_user_id UUID := auth.uid();
     v_success BOOLEAN;
 BEGIN
     -- Input validation
@@ -1329,6 +1343,15 @@ BEGIN
             'success', false,
             'code', 'MISSING_ACCOUNT_ID',
             'message', 'Account ID is required',
+            'data', NULL
+        );
+    END IF;
+
+    IF v_user_id IS NULL THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'code', 'NOT_AUTHENTICATED',
+            'message', 'User is not authenticated',
             'data', NULL
         );
     END IF;
@@ -1401,6 +1424,7 @@ SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
 DECLARE
+    v_user_id UUID := auth.uid();
     v_success BOOLEAN;
 BEGIN
     -- Input validation
@@ -1409,6 +1433,15 @@ BEGIN
             'success', false,
             'code', 'MISSING_ACCOUNT_ID',
             'message', 'Account ID is required',
+            'data', NULL
+        );
+    END IF;
+
+    IF v_user_id IS NULL THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'code', 'NOT_AUTHENTICATED',
+            'message', 'User is not authenticated',
             'data', NULL
         );
     END IF;
@@ -1495,17 +1528,14 @@ SET search_path = pg_catalog, finance
 STABLE
 AS $$
 DECLARE
-    v_user_id UUID := auth.uid();
+    v_profile_id UUID;
 BEGIN
     -- Enable Row-Level Security
     PERFORM set_config('row_security', 'on', true);
-    
-    -- Authentication guard
-    IF v_user_id IS NULL THEN
-        RAISE EXCEPTION 'Not authenticated'
-            USING ERRCODE = '28000'; -- invalid_authorization_specification
-    END IF;
 
+    -- Get current user profile ID
+    v_profile_id := util.current_active_profile_id_internal();
+    
     -- Return accounts with balances and statuses per type
     RETURN QUERY
     SELECT 
@@ -1545,7 +1575,7 @@ BEGIN
     LEFT JOIN finance.wallet_accounts wa ON a.id = wa.account_id AND wa.deleted_at IS NULL
     LEFT JOIN finance.receivable_accounts ra ON a.id = ra.account_id AND ra.deleted_at IS NULL
     WHERE a.deleted_at IS NULL
-      AND a.user_id = v_user_id
+      AND a.user_id = v_profile_id
     ORDER BY a.account_name;
 END;
 $$;
@@ -1597,7 +1627,7 @@ SET search_path = pg_catalog, finance
 STABLE
 AS $$
 DECLARE
-    v_user_id UUID := auth.uid();
+    v_profile_id UUID;
     v_account_type finance.account_type;
     v_base JSONB;
     v_details JSONB;
@@ -1606,11 +1636,14 @@ BEGIN
     -- Enable Row-Level Security
     PERFORM set_config('row_security', 'on', true);
 
-    -- Authentication guard
-    IF v_user_id IS NULL THEN
-        RAISE EXCEPTION 'Not authenticated'
-            USING ERRCODE = '28000'; -- invalid_authorization_specification
+    -- Validate ownership
+    IF NOT finance.validate_account_ownership_internal(p_account_id) THEN
+        RAISE EXCEPTION 'Permission denied'
+            USING ERRCODE = '42501';
     END IF;
+
+    -- Get current user profile ID
+    v_profile_id := util.current_active_profile_id_internal();
 
     -- Get base account info and enforce ownership
     SELECT jsonb_build_object(
@@ -1626,11 +1659,11 @@ BEGIN
     FROM finance.accounts a
     WHERE a.id = p_account_id
       AND a.deleted_at IS NULL
-      AND a.user_id = v_user_id;
+      AND a.user_id = v_profile_id;
 
-    IF v_base IS NULL THEN
+    IF NOT FOUND THEN
         RAISE EXCEPTION 'Account not found or access denied'
-            USING ERRCODE = '42501'; -- insufficient_privilege
+            USING ERRCODE = '02000';
     END IF;
 
     -- Cast and validate account type
@@ -1749,17 +1782,14 @@ SET search_path = pg_catalog, finance
 STABLE
 AS $$
 DECLARE
+    v_profile_id UUID;
     v_result JSONB := '[]'::jsonb;
-    v_user_id UUID := auth.uid();
 BEGIN
     -- Enable Row-Level Security
     PERFORM set_config('row_security', 'on', true);
 
-    -- Authentication guard
-    IF v_user_id IS NULL THEN
-        RAISE EXCEPTION 'Not authenticated'
-            USING ERRCODE = '28000'; -- invalid_authorization_specification
-    END IF;
+    -- Get current user profile ID
+    v_profile_id := util.current_active_profile_id_internal();
 
     -- Cash accounts
     IF p_account_type = 'cash' THEN
@@ -1770,7 +1800,7 @@ BEGIN
           ON a_base.id = ca.account_id AND ca.deleted_at IS NULL
         WHERE a_base.type = 'cash'
           AND a_base.deleted_at IS NULL
-          AND a_base.user_id = v_user_id;
+          AND a_base.user_id = v_profile_id;
 
     -- Bank accounts
     ELSIF p_account_type = 'bank' THEN
@@ -1781,7 +1811,7 @@ BEGIN
           ON a_base.id = ba.account_id AND ba.deleted_at IS NULL
         WHERE a_base.type = 'bank'
           AND a_base.deleted_at IS NULL
-          AND a_base.user_id = v_user_id;
+          AND a_base.user_id = v_profile_id;
 
     -- Credit card accounts
     ELSIF p_account_type = 'credit_card' THEN
@@ -1792,7 +1822,7 @@ BEGIN
           ON a_base.id = cc.account_id AND cc.deleted_at IS NULL
         WHERE a_base.type = 'credit_card'
           AND a_base.deleted_at IS NULL
-          AND a_base.user_id = v_user_id;
+          AND a_base.user_id = v_profile_id;
 
     -- Loan accounts
     ELSIF p_account_type = 'loan' THEN
@@ -1803,7 +1833,7 @@ BEGIN
           ON a_base.id = la.account_id AND la.deleted_at IS NULL
         WHERE a_base.type = 'loan'
           AND a_base.deleted_at IS NULL
-          AND a_base.user_id = v_user_id;
+          AND a_base.user_id = v_profile_id;
 
     -- Investment accounts
     ELSIF p_account_type = 'investment' THEN
@@ -1814,7 +1844,7 @@ BEGIN
           ON a_base.id = ia.account_id AND ia.deleted_at IS NULL
         WHERE a_base.type = 'investment'
           AND a_base.deleted_at IS NULL
-          AND a_base.user_id = v_user_id;
+          AND a_base.user_id = v_profile_id;
 
     -- Crypto accounts
     ELSIF p_account_type = 'crypto' THEN
@@ -1825,7 +1855,7 @@ BEGIN
           ON a_base.id = cra.account_id AND cra.deleted_at IS NULL
         WHERE a_base.type = 'crypto'
           AND a_base.deleted_at IS NULL
-          AND a_base.user_id = v_user_id;
+          AND a_base.user_id = v_profile_id;
 
     -- Wallet accounts
     ELSIF p_account_type = 'wallet' THEN
@@ -1836,7 +1866,7 @@ BEGIN
           ON a_base.id = wa.account_id AND wa.deleted_at IS NULL
         WHERE a_base.type = 'wallet'
           AND a_base.deleted_at IS NULL
-          AND a_base.user_id = v_user_id;
+          AND a_base.user_id = v_profile_id;
 
     -- Receivable accounts
     ELSIF p_account_type = 'receivable' THEN
@@ -1847,7 +1877,7 @@ BEGIN
           ON a_base.id = ra.account_id AND ra.deleted_at IS NULL
         WHERE a_base.type = 'receivable'
           AND a_base.deleted_at IS NULL
-          AND a_base.user_id = v_user_id;
+          AND a_base.user_id = v_profile_id;
 
     ELSE
         RAISE EXCEPTION 'Unknown account type: %', p_account_type
@@ -1898,38 +1928,46 @@ SET search_path = pg_catalog, finance
 STABLE
 AS $$
 DECLARE
+    v_user_id UUID := auth.uid();
     v_accounts JSONB;
 BEGIN
-    BEGIN
-        -- Call internal function
-        v_accounts := finance.get_all_accounts_internal();
-
+    IF v_user_id IS NULL THEN
         RETURN jsonb_build_object(
-            'success', true,
-            'code', 'OK',
-            'message', 'Fetched all accounts successfully',
-            'data', v_accounts
+            'success', false,
+            'code', 'NOT_AUTHENTICATED',
+            'message', 'User is not authenticated',
+            'data', NULL
+        );
+    END IF;
+
+    -- Call internal function
+    v_accounts := finance.get_all_accounts_internal();
+
+    RETURN jsonb_build_object(
+        'success', true,
+        'code', 'OK',
+        'message', 'Fetched all accounts successfully',
+        'data', v_accounts
+    );
+
+EXCEPTION
+    WHEN SQLSTATE '28000' THEN
+        -- Not authenticated
+        RETURN jsonb_build_object(
+            'success', false,
+            'code', 'NOT_AUTHENTICATED',
+            'message', 'User is not authenticated',
+            'data', '[]'::jsonb
         );
 
-    EXCEPTION
-        WHEN SQLSTATE '28000' THEN
-            -- Not authenticated
-            RETURN jsonb_build_object(
-                'success', false,
-                'code', 'NOT_AUTHENTICATED',
-                'message', 'User is not authenticated',
-                'data', '[]'::jsonb
-            );
-
-        WHEN OTHERS THEN
-            -- Catch all other errors
-            RETURN jsonb_build_object(
-                'success', false,
-                'code', 'ERROR',
-                'message', 'Failed to fetch accounts',
-                'data', '[]'::jsonb
-            );
-    END;
+    WHEN OTHERS THEN
+        -- Catch all other errors
+        RETURN jsonb_build_object(
+            'success', false,
+            'code', 'ERROR',
+            'message', 'Failed to fetch accounts',
+            'data', '[]'::jsonb
+        );
 END;
 $$;
 
@@ -1971,47 +2009,55 @@ SET search_path = pg_catalog, finance
 STABLE
 AS $$
 DECLARE
+    v_user_id UUID := auth.uid();
     v_account JSONB;
 BEGIN
-    BEGIN
-        -- Call internal function
-        v_account := finance.get_account_details_internal(p_account_id);
-
+    IF v_user_id IS NULL THEN
         RETURN jsonb_build_object(
-            'success', true,
-            'code', 'OK',
-            'message', 'Fetched account details successfully',
-            'data', v_account
+            'success', false,
+            'code', 'NOT_AUTHENTICATED',
+            'message', 'User is not authenticated',
+            'data', NULL
+        );
+    END IF;
+
+    -- Call internal function
+    v_account := finance.get_account_details_internal(p_account_id);
+
+    RETURN jsonb_build_object(
+        'success', true,
+        'code', 'OK',
+        'message', 'Fetched account details successfully',
+        'data', v_account
+    );
+
+EXCEPTION
+    WHEN SQLSTATE '28000' THEN
+        -- Not authenticated
+        RETURN jsonb_build_object(
+            'success', false,
+            'code', 'NOT_AUTHENTICATED',
+            'message', 'User is not authenticated',
+            'data', '{}'::jsonb
         );
 
-    EXCEPTION
-        WHEN SQLSTATE '28000' THEN
-            -- Not authenticated
-            RETURN jsonb_build_object(
-                'success', false,
-                'code', 'NOT_AUTHENTICATED',
-                'message', 'User is not authenticated',
-                'data', '{}'::jsonb
-            );
+    WHEN SQLSTATE '42501' THEN
+        -- Insufficient privilege / ownership failure
+        RETURN jsonb_build_object(
+            'success', false,
+            'code', 'ACCESS_DENIED',
+            'message', 'Account not found or access denied',
+            'data', '{}'::jsonb
+        );
 
-        WHEN SQLSTATE '42501' THEN
-            -- Insufficient privilege / ownership failure
-            RETURN jsonb_build_object(
-                'success', false,
-                'code', 'ACCESS_DENIED',
-                'message', 'Account not found or access denied',
-                'data', '{}'::jsonb
-            );
-
-        WHEN OTHERS THEN
-            -- Catch all other errors
-            RETURN jsonb_build_object(
-                'success', false,
-                'code', 'ERROR',
-                'message', 'Failed to fetch account details',
-                'data', '{}'::jsonb
-            );
-    END;
+    WHEN OTHERS THEN
+        -- Catch all other errors
+        RETURN jsonb_build_object(
+            'success', false,
+            'code', 'ERROR',
+            'message', 'Failed to fetch account details',
+            'data', '{}'::jsonb
+        );
 END;
 $$;
 
@@ -2052,47 +2098,55 @@ SET search_path = pg_catalog, finance
 STABLE
 AS $$
 DECLARE
+    v_user_id UUID := auth.uid();
     v_accounts JSONB;
 BEGIN
-    BEGIN
-        -- Call internal function
-        v_accounts := finance.get_accounts_by_type_internal(p_account_type);
-
+    IF v_user_id IS NULL THEN
         RETURN jsonb_build_object(
-            'success', true,
-            'code', 'OK',
-            'message', 'Fetched accounts successfully',
-            'data', v_accounts
+            'success', false,
+            'code', 'NOT_AUTHENTICATED',
+            'message', 'User is not authenticated',
+            'data', NULL
+        );
+    END IF;
+
+    -- Call internal function
+    v_accounts := finance.get_accounts_by_type_internal(p_account_type);
+
+    RETURN jsonb_build_object(
+        'success', true,
+        'code', 'OK',
+        'message', 'Fetched accounts successfully',
+        'data', v_accounts
+    );
+
+EXCEPTION
+    WHEN SQLSTATE '28000' THEN
+            -- Not authenticated
+        RETURN jsonb_build_object(
+            'success', false,
+            'code', 'NOT_AUTHENTICATED',
+            'message', 'User is not authenticated',
+            'data', '[]'::jsonb
         );
 
-    EXCEPTION
-        WHEN SQLSTATE '28000' THEN
-            -- Not authenticated
-            RETURN jsonb_build_object(
-                'success', false,
-                'code', 'NOT_AUTHENTICATED',
-                'message', 'User is not authenticated',
-                'data', '[]'::jsonb
-            );
-
-        WHEN SQLSTATE '22023' THEN
+    WHEN SQLSTATE '22023' THEN
             -- Invalid account type
-            RETURN jsonb_build_object(
-                'success', false,
-                'code', 'INVALID_TYPE',
-                'message', 'Invalid account type provided',
-                'data', '[]'::jsonb
-            );
+        RETURN jsonb_build_object(
+            'success', false,
+            'code', 'INVALID_TYPE',
+            'message', 'Invalid account type provided',
+            'data', '[]'::jsonb
+        );
 
-        WHEN OTHERS THEN
+    WHEN OTHERS THEN
             -- Catch-all for other errors
-            RETURN jsonb_build_object(
-                'success', false,
-                'code', 'ERROR',
-                'message', 'Failed to fetch accounts by type',
-                'data', '[]'::jsonb
-            );
-    END;
+        RETURN jsonb_build_object(
+            'success', false,
+            'code', 'ERROR',
+            'message', 'Failed to fetch accounts by type',
+            'data', '[]'::jsonb
+        );
 END;
 $$;
 
