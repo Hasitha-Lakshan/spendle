@@ -10,7 +10,7 @@
 --       * Requires a non-null UUID.
 --       * Returns a string in the format '<type>:<uuid>'.
 --   - For p_type = 'system':
---       * Requires p_id to be NULL.
+--       * Requires p_profile_id to be NULL.
 --       * Returns the fixed identifier 'system:cron'.
 --   - For any other p_type:
 --       * Raises an exception.
@@ -19,7 +19,7 @@
 --   p_type TEXT
 --     The actor category. Supported values are 'user', 'admin', and 'system'.
 --
---   p_id UUID
+--   p_profile_id UUID
 --     The actor identifier. Mandatory for 'user' and 'admin', must be NULL for 'system'.
 --
 -- Returns:
@@ -33,7 +33,7 @@
 -- =========================================
 CREATE OR REPLACE FUNCTION util.build_actor_internal(
     p_type TEXT,
-    p_id UUID DEFAULT NULL
+    p_profile_id UUID DEFAULT NULL
 ) RETURNS TEXT
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -43,15 +43,15 @@ AS $$
 BEGIN
     -- User or admin must have a UUID
     IF p_type IN ('user','admin') THEN
-        IF p_id IS NULL THEN
+        IF p_profile_id IS NULL THEN
             RAISE EXCEPTION 'Actor id required for %', p_type
                 USING ERRCODE = 'P0001'; -- user-defined exception
         END IF;
-        RETURN p_type || ':' || p_id::text;
+        RETURN p_type || ':' || p_profile_id::text;
 
     -- System actor must not have a UUID
     ELSIF p_type = 'system' THEN
-        IF p_id IS NOT NULL THEN
+        IF p_profile_id IS NOT NULL THEN
             RAISE EXCEPTION 'System actor must not have UUID'
                 USING ERRCODE = 'P0002'; -- user-defined exception
         END IF;
@@ -263,7 +263,7 @@ $$;
 --   - Wraps all inserts in a block to catch errors and raise exceptions
 --   - Safe to call multiple times; defaults are only inserted once per user
 -- =========================================
-CREATE OR REPLACE FUNCTION finance.initialize_defaults_for_user_internal(p_id UUID)
+CREATE OR REPLACE FUNCTION finance.initialize_defaults_for_user_internal(p_profile_id UUID)
 RETURNS VOID
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -275,7 +275,7 @@ DECLARE
 BEGIN
     -- Create Cash account
     PERFORM finance.create_account_internal(
-        p_user_id := p_id,
+        p_user_id := p_profile_id,
         p_account_name := 'Cash Wallet',
         p_type := 'cash'::finance.account_type,
         p_currency := 'USD',
@@ -284,7 +284,7 @@ BEGIN
 
     -- Create Bank account
     PERFORM finance.create_account_internal(
-        p_user_id := p_id,
+        p_user_id := p_profile_id,
         p_account_name := 'Default Bank',
         p_type := 'bank'::finance.account_type,
         p_currency := 'USD',
@@ -299,7 +299,7 @@ BEGIN
 
     -- Insert default expense category
     INSERT INTO finance.expense_categories(user_id, name)
-    VALUES (p_id, 'General')
+    VALUES (p_profile_id, 'General')
     ON CONFLICT (user_id, lower(name)) 
     WHERE deleted_at IS NULL
     DO NOTHING;
@@ -307,7 +307,7 @@ BEGIN
     -- Get the inserted category id
     SELECT id INTO default_category_id
     FROM finance.expense_categories
-    WHERE user_id = p_id AND name = 'General';
+    WHERE user_id = p_profile_id AND name = 'General';
 
     -- Insert default expense subcategory
     IF default_category_id IS NOT NULL THEN
@@ -320,7 +320,7 @@ BEGIN
 
     -- Insert default income source
     INSERT INTO finance.income_sources(user_id, name)
-    VALUES (p_id, 'Salary')
+    VALUES (p_profile_id, 'Salary')
     ON CONFLICT (user_id, lower(name))
     WHERE deleted_at IS NULL
     DO NOTHING;
@@ -331,36 +331,36 @@ BEGIN
     )
     VALUES
         -- Fiat currencies
-        (p_id, 'USD', 'EUR', 0.92, 'ECB', NOW(), NOW()),
-        (p_id, 'EUR', 'USD', 1.09, 'ECB', NOW(), NOW()),
-        (p_id, 'USD', 'GBP', 0.80, 'ECB', NOW(), NOW()),
-        (p_id, 'GBP', 'USD', 1.25, 'ECB', NOW(), NOW()),
-        (p_id, 'USD', 'JPY', 145.23, 'ECB', NOW(), NOW()),
-        (p_id, 'JPY', 'USD', 0.0069, 'ECB', NOW(), NOW()),
-        (p_id, 'EUR', 'GBP', 0.87, 'ECB', NOW(), NOW()),
-        (p_id, 'GBP', 'EUR', 1.15, 'ECB', NOW(), NOW()),
-        (p_id, 'EUR', 'JPY', 158.00, 'ECB', NOW(), NOW()),
-        (p_id, 'JPY', 'EUR', 0.0063, 'ECB', NOW(), NOW()),
-        (p_id, 'USD', 'LKR', 320.00, 'CBSL', NOW(), NOW()),
-        (p_id, 'LKR', 'USD', 0.003125, 'CBSL', NOW(), NOW()),
-        (p_id, 'EUR', 'LKR', 333.00, 'CBSL', NOW(), NOW()),
-        (p_id, 'LKR', 'EUR', 0.00300, 'CBSL', NOW(), NOW()),
-        (p_id, 'GBP', 'LKR', 448.00, 'CBSL', NOW(), NOW()),
-        (p_id, 'LKR', 'GBP', 0.00223, 'CBSL', NOW(), NOW()),
+        (p_profile_id, 'USD', 'EUR', 0.92, 'ECB', NOW(), NOW()),
+        (p_profile_id, 'EUR', 'USD', 1.09, 'ECB', NOW(), NOW()),
+        (p_profile_id, 'USD', 'GBP', 0.80, 'ECB', NOW(), NOW()),
+        (p_profile_id, 'GBP', 'USD', 1.25, 'ECB', NOW(), NOW()),
+        (p_profile_id, 'USD', 'JPY', 145.23, 'ECB', NOW(), NOW()),
+        (p_profile_id, 'JPY', 'USD', 0.0069, 'ECB', NOW(), NOW()),
+        (p_profile_id, 'EUR', 'GBP', 0.87, 'ECB', NOW(), NOW()),
+        (p_profile_id, 'GBP', 'EUR', 1.15, 'ECB', NOW(), NOW()),
+        (p_profile_id, 'EUR', 'JPY', 158.00, 'ECB', NOW(), NOW()),
+        (p_profile_id, 'JPY', 'EUR', 0.0063, 'ECB', NOW(), NOW()),
+        (p_profile_id, 'USD', 'LKR', 320.00, 'CBSL', NOW(), NOW()),
+        (p_profile_id, 'LKR', 'USD', 0.003125, 'CBSL', NOW(), NOW()),
+        (p_profile_id, 'EUR', 'LKR', 333.00, 'CBSL', NOW(), NOW()),
+        (p_profile_id, 'LKR', 'EUR', 0.00300, 'CBSL', NOW(), NOW()),
+        (p_profile_id, 'GBP', 'LKR', 448.00, 'CBSL', NOW(), NOW()),
+        (p_profile_id, 'LKR', 'GBP', 0.00223, 'CBSL', NOW(), NOW()),
 
         -- Cryptocurrencies
-        (p_id, 'BTC', 'USD', 27450.00, 'CoinGecko', NOW(), NOW()),
-        (p_id, 'USD', 'BTC', 0.0000364, 'CoinGecko', NOW(), NOW()),
-        (p_id, 'ETH', 'USD', 1800.00, 'CoinGecko', NOW(), NOW()),
-        (p_id, 'USD', 'ETH', 0.000555, 'CoinGecko', NOW(), NOW()),
-        (p_id, 'BTC', 'EUR', 25254.00, 'CoinGecko', NOW(), NOW()),
-        (p_id, 'EUR', 'BTC', 0.0000396, 'CoinGecko', NOW(), NOW()),
-        (p_id, 'ETH', 'EUR', 1650.00, 'CoinGecko', NOW(), NOW()),
-        (p_id, 'EUR', 'ETH', 0.000606, 'CoinGecko', NOW(), NOW()),
-        (p_id, 'BTC', 'LKR', 9995000.00, 'CoinGecko', NOW(), NOW()),
-        (p_id, 'LKR', 'BTC', 0.00000010005, 'CoinGecko', NOW(), NOW()),
-        (p_id, 'ETH', 'LKR', 655000.00, 'CoinGecko', NOW(), NOW()),
-        (p_id, 'LKR', 'ETH', 0.000001526, 'CoinGecko', NOW(), NOW())
+        (p_profile_id, 'BTC', 'USD', 27450.00, 'CoinGecko', NOW(), NOW()),
+        (p_profile_id, 'USD', 'BTC', 0.0000364, 'CoinGecko', NOW(), NOW()),
+        (p_profile_id, 'ETH', 'USD', 1800.00, 'CoinGecko', NOW(), NOW()),
+        (p_profile_id, 'USD', 'ETH', 0.000555, 'CoinGecko', NOW(), NOW()),
+        (p_profile_id, 'BTC', 'EUR', 25254.00, 'CoinGecko', NOW(), NOW()),
+        (p_profile_id, 'EUR', 'BTC', 0.0000396, 'CoinGecko', NOW(), NOW()),
+        (p_profile_id, 'ETH', 'EUR', 1650.00, 'CoinGecko', NOW(), NOW()),
+        (p_profile_id, 'EUR', 'ETH', 0.000606, 'CoinGecko', NOW(), NOW()),
+        (p_profile_id, 'BTC', 'LKR', 9995000.00, 'CoinGecko', NOW(), NOW()),
+        (p_profile_id, 'LKR', 'BTC', 0.00000010005, 'CoinGecko', NOW(), NOW()),
+        (p_profile_id, 'ETH', 'LKR', 655000.00, 'CoinGecko', NOW(), NOW()),
+        (p_profile_id, 'LKR', 'ETH', 0.000001526, 'CoinGecko', NOW(), NOW())
     ON CONFLICT (user_id, from_currency, to_currency)
     WHERE deleted_at IS NULL
     DO NOTHING;
@@ -368,7 +368,7 @@ BEGIN
     -- Mark defaults as inserted
     UPDATE core.profiles
     SET defaults_inserted = TRUE, updated_at = NOW()
-    WHERE id = p_id;
+    WHERE id = p_profile_id;
 
 END;
 $$;
@@ -411,7 +411,7 @@ VOLATILE
 AS $$
 DECLARE
     v_user_id UUID := auth.uid();
-    v_id UUID;
+    v_profile_id UUID;
     defaults_flag BOOLEAN;
     is_soft_deleted BOOLEAN := FALSE;
 BEGIN
@@ -448,8 +448,8 @@ BEGIN
 
     -- Insert defaults if needed
     IF NOT defaults_flag THEN
-        v_id := util.current_active_profile_id_internal();
-        PERFORM finance.initialize_defaults_for_user_internal(v_id);
+        v_profile_id := util.current_active_profile_id_internal();
+        PERFORM finance.initialize_defaults_for_user_internal(v_profile_id);
         RETURN TRUE;  -- inserted now
     END IF;
 
@@ -568,7 +568,7 @@ VOLATILE
 AS $$
 DECLARE
     v_admin_user_id UUID := auth.uid();
-    v_id UUID;
+    v_user_profile_id UUID;
     defaults_flag BOOLEAN;
     is_soft_deleted BOOLEAN := FALSE;
 BEGIN
@@ -612,12 +612,12 @@ BEGIN
 
     -- Insert defaults if needed
     IF NOT defaults_flag THEN
-        SELECT id INTO v_id
+        SELECT id INTO v_user_profile_id
         FROM core.profiles
         WHERE user_id = p_user_id
           AND deleted_at IS NULL
         LIMIT 1;
-        PERFORM finance.initialize_defaults_for_user_internal(v_id);
+        PERFORM finance.initialize_defaults_for_user_internal(v_user_profile_id);
         RETURN TRUE;  -- inserted now
     END IF;
 
@@ -1199,7 +1199,7 @@ $$;
 --   - Returns FALSE if the profile existed but was already soft-deleted.
 --
 -- Parameters:
---   p_id UUID
+--   p_profile_id UUID
 --     The unique identifier of the profile to be soft-deleted.
 --
 -- Returns:
@@ -1213,7 +1213,7 @@ $$;
 --   - VOLATILE because the function modifies table data.
 --   - Designed to be wrapped by higher-level RPC functions that handle JSON responses and logging.
 -- =========================================
-CREATE OR REPLACE FUNCTION finance.soft_delete_profile_internal(p_id UUID)
+CREATE OR REPLACE FUNCTION finance.soft_delete_profile_internal(p_profile_id UUID)
 RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -1227,16 +1227,16 @@ BEGIN
     IF NOT EXISTS (
         SELECT 1
         FROM core.profiles
-        WHERE id = p_id
+        WHERE id = p_profile_id
     ) THEN
-        RAISE EXCEPTION 'Profile not found: %', p_id
+        RAISE EXCEPTION 'Profile not found: %', p_profile_id
             USING ERRCODE = '02000';
     END IF;
 
     -- Soft-delete only if not already deleted
     UPDATE core.profiles
     SET deleted_at = NOW()
-    WHERE id = p_id
+    WHERE id = p_profile_id
       AND deleted_at IS NULL
     RETURNING TRUE
     INTO v_updated;
@@ -1256,7 +1256,7 @@ $$;
 -- Behavior:
 --   - Retrieves the current active profile ID using `util.current_active_profile_id_internal()`.
 --   - Returns a `NOT_AUTHENTICATED` error if no active profile exists (i.e., user not logged in).
---   - Calls `core.soft_delete_profile_internal(v_id)` to perform the soft-delete:
+--   - Calls `core.soft_delete_profile_internal(v_profile_id)` to perform the soft-delete:
 --       * Returns `ALREADY_DELETED` if the profile was already soft-deleted.
 --       * Raises SQLSTATE '02000' if the profile does not exist.
 --       * Returns `TRUE` if the profile was successfully soft-deleted.
@@ -1294,13 +1294,13 @@ VOLATILE
 AS $$
 DECLARE
     v_deleted BOOLEAN;
-    v_id UUID;
+    v_profile_id UUID;
 BEGIN
     -- Get current active profile ID
-    v_id := util.current_active_profile_id_internal();
+    v_profile_id := util.current_active_profile_id_internal();
 
     -- Authentication check
-    IF v_id IS NULL THEN
+    IF v_profile_id IS NULL THEN
         RETURN jsonb_build_object(
             'success', FALSE,
             'code', 'NOT_AUTHENTICATED',
@@ -1310,7 +1310,7 @@ BEGIN
     END IF;
 
     -- Call internal function
-    v_deleted := core.soft_delete_profile_internal(v_id);
+    v_deleted := core.soft_delete_profile_internal(v_profile_id);
 
     -- Already soft-deleted
     IF NOT v_deleted THEN
@@ -1318,7 +1318,7 @@ BEGIN
             'success', FALSE,
             'code', 'ALREADY_DELETED',
             'message', 'Profile already soft-deleted',
-            'data', jsonb_build_object('profile_id', v_id)
+            'data', jsonb_build_object('profile_id', v_profile_id)
         );
     END IF;
 
@@ -1327,7 +1327,7 @@ BEGIN
         'success', TRUE,
         'code', 'OK',
         'message', 'Profile soft-deleted; all child data cascaded',
-        'data', jsonb_build_object('profile_id', v_id)
+        'data', jsonb_build_object('profile_id', v_profile_id)
     );
 
 EXCEPTION
@@ -1337,7 +1337,7 @@ EXCEPTION
             'success', FALSE,
             'code', 'NOT_FOUND',
             'message', 'Profile not found',
-            'data', jsonb_build_object('profile_id', v_id)
+            'data', jsonb_build_object('profile_id', v_profile_id)
         );
 
     WHEN invalid_authorization_specification THEN
@@ -1361,7 +1361,7 @@ EXCEPTION
             'success', FALSE,
             'code', 'INTERNAL_ERROR',
             'message', SQLERRM,
-            'data', jsonb_build_object('profile_id', v_id)
+            'data', jsonb_build_object('profile_id', v_profile_id)
         );
 END;
 $$;
