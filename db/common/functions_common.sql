@@ -572,9 +572,6 @@ DECLARE
     defaults_flag BOOLEAN;
     is_soft_deleted BOOLEAN := FALSE;
 BEGIN
-    -- Enable default initialization override
-    PERFORM set_config('app.allow_default_initialization_override', 'true', true);
-
     -- Enable RLS for this function
     PERFORM set_config('row_security', 'on', true);
 
