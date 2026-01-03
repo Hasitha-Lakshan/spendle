@@ -470,7 +470,7 @@ CREATE TABLE audit.audit_logs (
 -- =========================================
 -- System Job Logs
 -- =========================================
-CREATE TABLE IF NOT EXISTS public.system_job_logs (
+CREATE TABLE IF NOT EXISTS audit.system_job_logs (
     id BIGSERIAL PRIMARY KEY,                     -- internal unique identifier
     job_name TEXT NOT NULL,                       -- name of the scheduled job
     executed_by TEXT NOT NULL DEFAULT 'system',   -- actor performing the job
