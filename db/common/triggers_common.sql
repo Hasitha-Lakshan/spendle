@@ -526,21 +526,8 @@ SET search_path = pg_catalog, finance, core
 VOLATILE
 AS $$
 BEGIN
-    -- Soft-delete profile itself
-    UPDATE core.profiles
-    SET deleted_at = NOW(),
-        updated_at = NOW()
-    WHERE id = OLD.id;
-
-    -- Soft-delete direct accounts (specialized accounts & transactions are handled via clean up triggers)
-    UPDATE finance.accounts
-    SET deleted_at = NOW(),
-        updated_at = NOW()
-    WHERE user_id = OLD.id
-      AND deleted_at IS NULL;
-
-    -- Soft-delete counterparties
-    UPDATE finance.counterparties
+    -- Soft-delete direct transactions (specialized transactions are handled via clean up triggers)
+    UPDATE finance.transactions
     SET deleted_at = NOW(),
         updated_at = NOW()
     WHERE user_id = OLD.id
@@ -566,6 +553,26 @@ BEGIN
         updated_at = NOW()
     WHERE user_id = OLD.id
       AND deleted_at IS NULL;
+
+    -- Soft-delete direct accounts (specialized accounts are handled via clean up triggers)
+    UPDATE finance.accounts
+    SET deleted_at = NOW(),
+        updated_at = NOW()
+    WHERE user_id = OLD.id
+      AND deleted_at IS NULL;
+
+    -- Soft-delete counterparties
+    UPDATE finance.counterparties
+    SET deleted_at = NOW(),
+        updated_at = NOW()
+    WHERE user_id = OLD.id
+      AND deleted_at IS NULL;
+
+    -- Soft-delete profile itself
+    UPDATE core.profiles
+    SET deleted_at = NOW(),
+        updated_at = NOW()
+    WHERE id = OLD.id;
 
     RETURN OLD;
 END;
