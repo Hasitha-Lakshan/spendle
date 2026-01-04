@@ -304,7 +304,7 @@ BEGIN
                 FROM finance.counterparties
                 WHERE id = v_counterparty_id
                   AND user_id = p_profile_id
-                FOR SHARE;
+                FOR SHARE
             ) THEN
                 RAISE EXCEPTION
                     'Invalid counterparty ownership'
@@ -379,7 +379,7 @@ BEGIN
                 FROM finance.counterparties
                 WHERE id = v_counterparty_id
                   AND user_id = p_profile_id
-                FOR SHARE;
+                FOR SHARE
             ) THEN
                 RAISE EXCEPTION
                     'Invalid counterparty ownership'
@@ -613,7 +613,7 @@ BEGIN
                 FROM finance.counterparties
                 WHERE id = v_counterparty_id
                     AND user_id = v_profile_id
-                FOR SHARE;
+                FOR SHARE
             ) THEN
                 RAISE EXCEPTION 'Invalid counterparty_id'
                     USING ERRCODE = 'P0002';
@@ -640,7 +640,7 @@ BEGIN
                 FROM finance.counterparties
                 WHERE id = v_counterparty_id
                     AND user_id = v_profile_id
-                FOR SHARE;
+                FOR SHARE
             ) THEN
                 RAISE EXCEPTION 'Invalid counterparty_id'
                     USING ERRCODE = 'P0002';
@@ -900,7 +900,7 @@ BEGIN
     IF NOT FOUND THEN
         RAISE EXCEPTION 'Account not found'
             USING ERRCODE = '02000';
-    END IF
+    END IF;
 
     IF v_deleted_at IS NULL THEN
         RAISE EXCEPTION 'Account must be soft-deleted before hard delete'
