@@ -304,6 +304,7 @@ BEGIN
                 FROM finance.counterparties
                 WHERE id = v_counterparty_id
                   AND user_id = p_profile_id
+                FOR SHARE;
             ) THEN
                 RAISE EXCEPTION
                     'Invalid counterparty ownership'
@@ -378,6 +379,7 @@ BEGIN
                 FROM finance.counterparties
                 WHERE id = v_counterparty_id
                   AND user_id = p_profile_id
+                FOR SHARE;
             ) THEN
                 RAISE EXCEPTION
                     'Invalid counterparty ownership'
@@ -609,7 +611,9 @@ BEGIN
             IF v_counterparty_id IS NOT NULL AND NOT EXISTS (
                 SELECT 1
                 FROM finance.counterparties
-                WHERE id = v_counterparty_id AND user_id = v_profile_id
+                WHERE id = v_counterparty_id
+                    AND user_id = v_profile_id
+                FOR SHARE;
             ) THEN
                 RAISE EXCEPTION 'Invalid counterparty_id'
                     USING ERRCODE = 'P0002';
@@ -634,7 +638,9 @@ BEGIN
             IF v_counterparty_id IS NOT NULL AND NOT EXISTS (
                 SELECT 1
                 FROM finance.counterparties
-                WHERE id = v_counterparty_id AND user_id = v_profile_id
+                WHERE id = v_counterparty_id
+                    AND user_id = v_profile_id
+                FOR SHARE;
             ) THEN
                 RAISE EXCEPTION 'Invalid counterparty_id'
                     USING ERRCODE = 'P0002';
@@ -888,7 +894,8 @@ BEGIN
     SELECT type, deleted_at
     INTO v_account_type, v_deleted_at
     FROM finance.accounts
-    WHERE id = p_account_id;
+    WHERE id = p_account_id
+    FOR UPDATE;
 
     IF NOT FOUND THEN
         RAISE EXCEPTION 'Account not found'
