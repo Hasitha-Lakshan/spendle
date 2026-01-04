@@ -92,12 +92,19 @@ SECURITY DEFINER
 SET search_path = pg_catalog, core
 STABLE
 AS $$
+DECLARE
+    v_profile_id uuid;
+BEGIN
     SELECT p.id
+    INTO v_profile_id
     FROM core.profiles p
     WHERE p.user_id = auth.uid()
       AND p.deleted_at IS NULL
     LIMIT 1
     FOR SHARE;
+
+    RETURN v_profile_id;
+END;
 $$;
 
 -- =========================================
