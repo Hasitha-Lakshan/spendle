@@ -112,117 +112,7 @@ END;
 $$;
 
 -- =========================================
--- 02. Function: update_receivable_status
--- =========================================
--- Purpose:
---   Automatically updates the status of a receivable account based on its
---   amount_due and due_date whenever a row is inserted or updated.
---
--- Behavior:
---   - If amount_due <= 0          → sets status to 'paid'
---   - If due_date is past today   → sets status to 'overdue'
---   - Otherwise                    → sets status to 'pending'
---
--- Parameters:
---   NEW (trigger record) - The new row being inserted or updated
---
--- Returns:
---   NEW - The modified row with updated status
---
--- Notes:
---   - Trigger is applied BEFORE INSERT OR UPDATE on receivable_accounts
---   - Uses SECURITY DEFINER to enforce consistent logic regardless of RLS
---   - Ensures receivable status is always accurate based on business rules
--- =========================================
-CREATE OR REPLACE FUNCTION finance.update_receivable_status() 
-RETURNS TRIGGER 
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = pg_catalog, finance
-VOLATILE
-AS $$
-BEGIN
-    -- Ensure amount_due is not null
-    IF NEW.amount_due IS NULL THEN
-        RAISE EXCEPTION 'amount_due cannot be NULL in receivable_accounts'
-            USING ERRCODE = '23502'; -- not_null_violation
-    END IF;
-
-    -- Update receivable status based on amount_due and due_date
-    IF NEW.amount_due <= 0 THEN
-        NEW.status := 'paid';
-    ELSIF NEW.due_date IS NOT NULL AND NEW.due_date < CURRENT_DATE THEN
-        NEW.status := 'overdue';
-    ELSE
-        NEW.status := 'pending';
-    END IF;
-
-    RETURN NEW;
-END;
-$$;
-
--- Create trigger on receivable_accounts table (fully schema-qualified)
-CREATE TRIGGER trg_receivable_status
-    BEFORE INSERT OR UPDATE ON finance.receivable_accounts
-    FOR EACH ROW EXECUTE FUNCTION finance.update_receivable_status();
-
--- =========================================
--- 03. Function: update_loan_status
--- =========================================
--- Purpose:
---   Automatically updates the status of a loan account based on its
---   outstanding_amount and end_date whenever a row is inserted or updated.
---
--- Behavior:
---   - If outstanding_amount <= 0                  → sets status to 'closed'
---   - If end_date is past today AND amount > 0    → sets status to 'defaulted'
---   - Otherwise                                   → sets status to 'active'
---
--- Parameters:
---   NEW (trigger record) - The new row being inserted or updated
---
--- Returns:
---   NEW - The modified row with updated status
---
--- Notes:
---   - Trigger is applied BEFORE INSERT OR UPDATE on loan_accounts
---   - Uses SECURITY DEFINER to ensure logic executes correctly regardless of RLS
---   - Ensures loan status is always accurate based on business rules
--- =========================================
-CREATE OR REPLACE FUNCTION finance.update_loan_status() 
-RETURNS TRIGGER 
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = pg_catalog, finance
-VOLATILE
-AS $$
-BEGIN
-    -- Ensure outstanding_amount is not NULL
-    IF NEW.outstanding_amount IS NULL THEN
-        RAISE EXCEPTION 'outstanding_amount cannot be NULL in loan_accounts'
-            USING ERRCODE = '23502'; -- not_null_violation
-    END IF;
-
-    -- Update loan status based on outstanding_amount and end_date
-    IF NEW.outstanding_amount <= 0 THEN
-        NEW.status := 'closed';
-    ELSIF NEW.end_date IS NOT NULL AND NEW.end_date < CURRENT_DATE AND NEW.outstanding_amount > 0 THEN
-        NEW.status := 'defaulted';
-    ELSE
-        NEW.status := 'active';
-    END IF;
-
-    RETURN NEW;
-END;
-$$;
-
--- Create trigger on loan_accounts table (fully schema-qualified)
-CREATE TRIGGER trg_loan_status
-    BEFORE INSERT OR UPDATE ON finance.loan_accounts
-    FOR EACH ROW EXECUTE FUNCTION finance.update_loan_status();
-
--- =========================================
--- 04. Function: validate_account_balance
+-- 02. Function: validate_account_balance
 -- =========================================
 -- Purpose:
 --   Monitors account balances for negative values in cash, bank, wallet, and crypto accounts.
@@ -320,126 +210,168 @@ $$;
 
 -- Cash
 CREATE TRIGGER trg_validate_cash_balance
-    BEFORE INSERT OR UPDATE ON finance.cash_accounts
-    FOR EACH ROW EXECUTE FUNCTION finance.validate_account_balance();
+BEFORE INSERT OR UPDATE ON finance.cash_accounts
+FOR EACH ROW
+EXECUTE FUNCTION finance.validate_account_balance();
 
 -- Bank
 CREATE TRIGGER trg_validate_bank_balance
-    BEFORE INSERT OR UPDATE ON finance.bank_accounts
-    FOR EACH ROW EXECUTE FUNCTION finance.validate_account_balance();
+BEFORE INSERT OR UPDATE ON finance.bank_accounts
+FOR EACH ROW
+EXECUTE FUNCTION finance.validate_account_balance();
 
 -- Wallet
 CREATE TRIGGER trg_validate_wallet_balance
-    BEFORE INSERT OR UPDATE ON finance.wallet_accounts
-    FOR EACH ROW EXECUTE FUNCTION finance.validate_account_balance();
+BEFORE INSERT OR UPDATE ON finance.wallet_accounts
+FOR EACH ROW
+EXECUTE FUNCTION finance.validate_account_balance();
 
 -- Crypto
 CREATE TRIGGER trg_validate_crypto_balance
-    BEFORE INSERT OR UPDATE ON finance.crypto_accounts
-    FOR EACH ROW EXECUTE FUNCTION finance.validate_account_balance();
+BEFORE INSERT OR UPDATE ON finance.crypto_accounts
+FOR EACH ROW
+EXECUTE FUNCTION finance.validate_account_balance();
 
 -- Credit Card
 CREATE TRIGGER trg_validate_credit_card_balance
-    BEFORE INSERT OR UPDATE ON finance.credit_card_accounts
-    FOR EACH ROW EXECUTE FUNCTION finance.validate_account_balance();
+BEFORE INSERT OR UPDATE ON finance.credit_card_accounts
+FOR EACH ROW
+EXECUTE FUNCTION finance.validate_account_balance();
 
 -- Loan
 CREATE TRIGGER trg_validate_loan_balance
-    BEFORE INSERT OR UPDATE ON finance.loan_accounts
-    FOR EACH ROW EXECUTE FUNCTION finance.validate_account_balance();
+BEFORE INSERT OR UPDATE ON finance.loan_accounts
+FOR EACH ROW
+EXECUTE FUNCTION finance.validate_account_balance();
 
 -- Investment
 CREATE TRIGGER trg_validate_investment_balance
-    BEFORE INSERT OR UPDATE ON finance.investment_accounts
-    FOR EACH ROW EXECUTE FUNCTION finance.validate_account_balance();
+BEFORE INSERT OR UPDATE ON finance.investment_accounts
+FOR EACH ROW
+EXECUTE FUNCTION finance.validate_account_balance();
 
 -- Receivable
 CREATE TRIGGER trg_validate_receivable_balance
-    BEFORE INSERT OR UPDATE ON finance.receivable_accounts
-    FOR EACH ROW EXECUTE FUNCTION finance.validate_account_balance();
-
-
+BEFORE INSERT OR UPDATE ON finance.receivable_accounts
+FOR EACH ROW
+EXECUTE FUNCTION finance.validate_account_balance();
 
 -- =========================================
--- 05. Function: validate_account_modification
+-- 03. Function: update_receivable_status
 -- =========================================
 -- Purpose:
---   Prevents modification or deletion of accounts that have existing transactions.
---   Ensures data integrity by enforcing business rules for account updates.
+--   Automatically updates the status of a receivable account based on its
+--   amount_due and due_date whenever a row is inserted or updated.
 --
 -- Behavior:
---   - BEFORE UPDATE: Disallows changes to account type or currency if associated transactions exist.
---   - BEFORE DELETE: Disallows hard deletes if the account has any associated transactions; soft delete should be used instead.
+--   - If amount_due <= 0          → sets status to 'paid'
+--   - If due_date is past today   → sets status to 'overdue'
+--   - Otherwise                    → sets status to 'pending'
 --
 -- Parameters:
---   OLD - The original account row before modification or deletion
---   NEW - The new account row being updated (NULL for deletes)
+--   NEW (trigger record) - The new row being inserted or updated
 --
 -- Returns:
---   COALESCE(NEW, OLD) - The row being processed
+--   NEW - The modified row with updated status
 --
 -- Notes:
---   - SECURITY DEFINER is used to bypass RLS for validation
---   - Checks all related transaction detail tables to enforce constraints
---   - Helps maintain consistency between accounts and transactions
+--   - Trigger is applied BEFORE INSERT OR UPDATE on receivable_accounts
+--   - Uses SECURITY DEFINER to enforce consistent logic regardless of RLS
+--   - Ensures receivable status is always accurate based on business rules
 -- =========================================
-CREATE OR REPLACE FUNCTION finance.validate_account_modification()
-RETURNS TRIGGER
+CREATE OR REPLACE FUNCTION finance.update_receivable_status() 
+RETURNS TRIGGER 
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
 BEGIN
-    -- Only enforce rules if account has active transactions
-    IF finance.account_has_active_transactions_internal(OLD.id, OLD.user_id) THEN
-
-        -- Handle UPDATE operations
-        IF TG_OP = 'UPDATE' THEN
-            -- Prevent modification of currency
-            IF OLD.currency IS DISTINCT FROM NEW.currency THEN
-                RAISE EXCEPTION
-                    'Cannot modify account currency when transactions exist for account %',
-                    OLD.id
-                    USING ERRCODE = '45000';
-            END IF;
-
-            -- Prevent soft delete
-            IF OLD.deleted_at IS NULL
-               AND NEW.deleted_at IS NOT NULL THEN
-                RAISE EXCEPTION
-                    'Cannot soft-delete account with existing transactions for account %',
-                    OLD.id
-                    USING ERRCODE = '45000';
-            END IF;
-        END IF;
-
-        -- Handle DELETE operations
-        IF TG_OP = 'DELETE' THEN
-            RAISE EXCEPTION
-                'Cannot hard-delete account with existing transactions for account %',
-                OLD.id
-                USING ERRCODE = '45000';
-        END IF;
+    -- Ensure amount_due is not null
+    IF NEW.amount_due IS NULL THEN
+        RAISE EXCEPTION 'amount_due cannot be NULL in receivable_accounts'
+            USING ERRCODE = '23502'; -- not_null_violation
     END IF;
 
-    -- Return the appropriate row
-    IF TG_OP = 'DELETE' THEN
-        RETURN OLD;
+    -- Update receivable status based on amount_due and due_date
+    IF NEW.amount_due <= 0 THEN
+        NEW.status := 'paid';
+    ELSIF NEW.due_date IS NOT NULL AND NEW.due_date < CURRENT_DATE THEN
+        NEW.status := 'overdue';
     ELSE
-        RETURN NEW;
+        NEW.status := 'pending';
     END IF;
+
+    RETURN NEW;
 END;
 $$;
 
--- Add triggers for account validation
-CREATE TRIGGER trg_validate_account_modification
-BEFORE UPDATE OR DELETE ON finance.accounts
+-- Create trigger on receivable_accounts table (fully schema-qualified)
+CREATE TRIGGER trg_receivable_status
+BEFORE INSERT OR UPDATE ON finance.receivable_accounts
 FOR EACH ROW
-EXECUTE FUNCTION finance.validate_account_modification();
+EXECUTE FUNCTION finance.update_receivable_status()
+FOLLOWS trg_validate_receivable_balance;
 
 -- =========================================
--- 06. Function: prevent_balance_change_if_transactions
+-- 04. Function: update_loan_status
+-- =========================================
+-- Purpose:
+--   Automatically updates the status of a loan account based on its
+--   outstanding_amount and end_date whenever a row is inserted or updated.
+--
+-- Behavior:
+--   - If outstanding_amount <= 0                  → sets status to 'closed'
+--   - If end_date is past today AND amount > 0    → sets status to 'defaulted'
+--   - Otherwise                                   → sets status to 'active'
+--
+-- Parameters:
+--   NEW (trigger record) - The new row being inserted or updated
+--
+-- Returns:
+--   NEW - The modified row with updated status
+--
+-- Notes:
+--   - Trigger is applied BEFORE INSERT OR UPDATE on loan_accounts
+--   - Uses SECURITY DEFINER to ensure logic executes correctly regardless of RLS
+--   - Ensures loan status is always accurate based on business rules
+-- =========================================
+CREATE OR REPLACE FUNCTION finance.update_loan_status() 
+RETURNS TRIGGER 
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, finance
+VOLATILE
+AS $$
+BEGIN
+    -- Ensure outstanding_amount is not NULL
+    IF NEW.outstanding_amount IS NULL THEN
+        RAISE EXCEPTION 'outstanding_amount cannot be NULL in loan_accounts'
+            USING ERRCODE = '23502'; -- not_null_violation
+    END IF;
+
+    -- Update loan status based on outstanding_amount and end_date
+    IF NEW.outstanding_amount <= 0 THEN
+        NEW.status := 'closed';
+    ELSIF NEW.end_date IS NOT NULL AND NEW.end_date < CURRENT_DATE AND NEW.outstanding_amount > 0 THEN
+        NEW.status := 'defaulted';
+    ELSE
+        NEW.status := 'active';
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+-- Create trigger on loan_accounts table (fully schema-qualified)
+CREATE TRIGGER trg_loan_status
+BEFORE INSERT OR UPDATE ON finance.loan_accounts
+FOR EACH ROW
+EXECUTE FUNCTION finance.update_loan_status()
+FOLLOWS trg_validate_loan_balance;
+
+-- =========================================
+-- 05. Function: prevent_balance_change_if_transactions
 -- =========================================
 -- Purpose:
 --   Prevents modification of account balances, currency, or deletion/soft-delete
@@ -592,42 +524,162 @@ $$;
 -- Cash
 CREATE TRIGGER trg_prevent_cash_balance_change
 BEFORE UPDATE OR DELETE ON finance.cash_accounts
-FOR EACH ROW EXECUTE FUNCTION finance.prevent_balance_change_if_transactions();
+FOR EACH ROW
+EXECUTE FUNCTION finance.prevent_balance_change_if_transactions()
+FOLLOWS trg_validate_cash_balance;
 
 -- Bank
 CREATE TRIGGER trg_prevent_bank_balance_change
 BEFORE UPDATE OR DELETE ON finance.bank_accounts
-FOR EACH ROW EXECUTE FUNCTION finance.prevent_balance_change_if_transactions();
+FOR EACH ROW
+EXECUTE FUNCTION finance.prevent_balance_change_if_transactions()
+FOLLOWS trg_validate_bank_balance;
 
 -- Wallet
 CREATE TRIGGER trg_prevent_wallet_balance_change
 BEFORE UPDATE OR DELETE ON finance.wallet_accounts
-FOR EACH ROW EXECUTE FUNCTION finance.prevent_balance_change_if_transactions();
+FOR EACH ROW
+EXECUTE FUNCTION finance.prevent_balance_change_if_transactions()
+FOLLOWS trg_validate_wallet_balance;
 
 -- Crypto
 CREATE TRIGGER trg_prevent_crypto_balance_change
 BEFORE UPDATE OR DELETE ON finance.crypto_accounts
-FOR EACH ROW EXECUTE FUNCTION finance.prevent_balance_change_if_transactions();
+FOR EACH ROW
+EXECUTE FUNCTION finance.prevent_balance_change_if_transactions()
+FOLLOWS trg_validate_crypto_balance;
 
 -- Credit Card
 CREATE TRIGGER trg_prevent_credit_card_balance_change
 BEFORE UPDATE OR DELETE ON finance.credit_card_accounts
-FOR EACH ROW EXECUTE FUNCTION finance.prevent_balance_change_if_transactions();
+FOR EACH ROW
+EXECUTE FUNCTION finance.prevent_balance_change_if_transactions()
+FOLLOWS trg_validate_credit_card_balance;
 
 -- Investment
 CREATE TRIGGER trg_prevent_investment_balance_change
 BEFORE UPDATE OR DELETE ON finance.investment_accounts
-FOR EACH ROW EXECUTE FUNCTION finance.prevent_balance_change_if_transactions();
+FOR EACH ROW
+EXECUTE FUNCTION finance.prevent_balance_change_if_transactions()
+FOLLOWS trg_validate_investment_balance;
 
 -- Loan
 CREATE TRIGGER trg_prevent_loan_balance_change
 BEFORE UPDATE OR DELETE ON finance.loan_accounts
-FOR EACH ROW EXECUTE FUNCTION finance.prevent_balance_change_if_transactions();
+FOR EACH ROW
+EXECUTE FUNCTION finance.prevent_balance_change_if_transactions()
+FOLLOWS trg_loan_status;
 
 -- Receivable
 CREATE TRIGGER trg_prevent_receivable_balance_change
 BEFORE UPDATE OR DELETE ON finance.receivable_accounts
-FOR EACH ROW EXECUTE FUNCTION finance.prevent_balance_change_if_transactions();
+FOR EACH ROW
+EXECUTE FUNCTION finance.prevent_balance_change_if_transactions()
+FOLLOWS trg_receivable_status;
+
+-- =========================================
+-- 06. Function: prevent_specialized_soft_delete
+-- =========================================
+-- Purpose:
+--   Prevents direct soft-delete operations on specialized account tables
+--   (cash, bank, credit card, loan, investment, crypto, wallet, receivable)
+--   unless the parent account trigger explicitly allows it.
+--
+-- Behavior:
+--   - Triggered BEFORE UPDATE on specialized account tables.
+--   - Checks if a soft-delete is attempted (OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL).
+--   - Verifies the session-level flag 'app.allow_specialized_soft_delete' is set to 'true'.
+--   - Raises an exception if a direct soft-delete is attempted without the flag.
+--
+-- Parameters:
+--   NEW (trigger record) - The proposed new state of the specialized account row.
+--   OLD (trigger record) - The existing state of the specialized account row.
+--
+-- Returns:
+--   NEW - Only allows the update to proceed if the soft-delete is authorized via the parent account trigger.
+--
+-- Notes:
+--   - Uses SECURITY DEFINER to bypass Row-Level Security (RLS) for enforcement.
+--   - Relies on the parent account trigger (cleanup_specialized_account) to set the session flag.
+--   - Ensures consistency between parent accounts and their specialized accounts.
+--   - Applied per specialized account table via dedicated triggers.
+-- =========================================
+CREATE OR REPLACE FUNCTION finance.prevent_specialized_soft_delete()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, finance
+VOLATILE
+AS $$
+BEGIN
+    -- Block direct soft-delete unless parent trigger flagged it
+    IF OLD.deleted_at IS NULL
+       AND NEW.deleted_at IS NOT NULL
+       AND current_setting('app.allow_specialized_soft_delete', true) IS DISTINCT FROM 'true' THEN
+        RAISE EXCEPTION 'Direct soft-delete on table % for account id % is not allowed. Use parent account operations',
+            TG_TABLE_NAME, OLD.account_id
+            USING ERRCODE = '45000'; -- user-defined exception
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+-- Cash
+CREATE TRIGGER trg_prevent_cash_soft_delete
+BEFORE UPDATE ON finance.cash_accounts
+FOR EACH ROW
+EXECUTE FUNCTION finance.prevent_specialized_soft_delete()
+FOLLOWS trg_prevent_cash_balance_change;
+
+-- Bank
+CREATE TRIGGER trg_prevent_bank_soft_delete
+BEFORE UPDATE ON finance.bank_accounts
+FOR EACH ROW
+EXECUTE FUNCTION finance.prevent_specialized_soft_delete()
+FOLLOWS trg_prevent_bank_balance_change;
+
+-- Credit Card
+CREATE TRIGGER trg_prevent_credit_card_soft_delete
+BEFORE UPDATE ON finance.credit_card_accounts
+FOR EACH ROW
+EXECUTE FUNCTION finance.prevent_specialized_soft_delete()
+FOLLOWS trg_prevent_credit_card_balance_change;
+
+-- Loan
+CREATE TRIGGER trg_prevent_loan_soft_delete
+BEFORE UPDATE ON finance.loan_accounts
+FOR EACH ROW
+EXECUTE FUNCTION finance.prevent_specialized_soft_delete()
+FOLLOWS trg_prevent_loan_balance_change;
+
+-- Investment
+CREATE TRIGGER trg_prevent_investment_soft_delete
+BEFORE UPDATE ON finance.investment_accounts
+FOR EACH ROW
+EXECUTE FUNCTION finance.prevent_specialized_soft_delete()
+FOLLOWS trg_prevent_investment_balance_change;
+
+-- Crypto
+CREATE TRIGGER trg_prevent_crypto_soft_delete
+BEFORE UPDATE ON finance.crypto_accounts
+FOR EACH ROW
+EXECUTE FUNCTION finance.prevent_specialized_soft_delete()
+FOLLOWS trg_prevent_crypto_balance_change;
+
+-- Wallet
+CREATE TRIGGER trg_prevent_wallet_soft_delete
+BEFORE UPDATE ON finance.wallet_accounts
+FOR EACH ROW
+EXECUTE FUNCTION finance.prevent_specialized_soft_delete()
+FOLLOWS trg_prevent_wallet_balance_change;
+
+-- Receivable
+CREATE TRIGGER trg_prevent_receivable_soft_delete
+BEFORE UPDATE ON finance.receivable_accounts
+FOR EACH ROW
+EXECUTE FUNCTION finance.prevent_specialized_soft_delete()
+FOLLOWS trg_prevent_receivable_balance_change;
 
 -- =========================================
 -- 07. Function: prevent_account_type_change
@@ -681,7 +733,86 @@ FOR EACH ROW
 EXECUTE FUNCTION finance.prevent_account_type_change();
 
 -- =========================================
--- 08. Function: soft_delete_specialized_account
+-- 08. Function: validate_account_modification
+-- =========================================
+-- Purpose:
+--   Prevents modification or deletion of accounts that have existing transactions.
+--   Ensures data integrity by enforcing business rules for account updates.
+--
+-- Behavior:
+--   - BEFORE UPDATE: Disallows changes to account type or currency if associated transactions exist.
+--   - BEFORE DELETE: Disallows hard deletes if the account has any associated transactions; soft delete should be used instead.
+--
+-- Parameters:
+--   OLD - The original account row before modification or deletion
+--   NEW - The new account row being updated (NULL for deletes)
+--
+-- Returns:
+--   COALESCE(NEW, OLD) - The row being processed
+--
+-- Notes:
+--   - SECURITY DEFINER is used to bypass RLS for validation
+--   - Checks all related transaction detail tables to enforce constraints
+--   - Helps maintain consistency between accounts and transactions
+-- =========================================
+CREATE OR REPLACE FUNCTION finance.validate_account_modification()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, finance
+VOLATILE
+AS $$
+BEGIN
+    -- Only enforce rules if account has active transactions
+    IF finance.account_has_active_transactions_internal(OLD.id, OLD.user_id) THEN
+
+        -- Handle UPDATE operations
+        IF TG_OP = 'UPDATE' THEN
+            -- Prevent modification of currency
+            IF OLD.currency IS DISTINCT FROM NEW.currency THEN
+                RAISE EXCEPTION
+                    'Cannot modify account currency when transactions exist for account %',
+                    OLD.id
+                    USING ERRCODE = '45000';
+            END IF;
+
+            -- Prevent soft delete
+            IF OLD.deleted_at IS NULL
+               AND NEW.deleted_at IS NOT NULL THEN
+                RAISE EXCEPTION
+                    'Cannot soft-delete account with existing transactions for account %',
+                    OLD.id
+                    USING ERRCODE = '45000';
+            END IF;
+        END IF;
+
+        -- Handle DELETE operations
+        IF TG_OP = 'DELETE' THEN
+            RAISE EXCEPTION
+                'Cannot hard-delete account with existing transactions for account %',
+                OLD.id
+                USING ERRCODE = '45000';
+        END IF;
+    END IF;
+
+    -- Return the appropriate row
+    IF TG_OP = 'DELETE' THEN
+        RETURN OLD;
+    ELSE
+        RETURN NEW;
+    END IF;
+END;
+$$;
+
+-- Add triggers for account validation
+CREATE TRIGGER trg_validate_account_modification
+BEFORE UPDATE OR DELETE ON finance.accounts
+FOR EACH ROW
+EXECUTE FUNCTION finance.validate_account_modification()
+FOLLOWS trg_prevent_account_type_change;
+
+-- =========================================
+-- 09. Function: soft_delete_specialized_account
 -- =========================================
 -- Purpose:
 --   Automatically soft deletes the corresponding specialized account when a parent account is soft deleted.
@@ -772,99 +903,3 @@ $$;
 CREATE TRIGGER trg_cleanup_specialized_account
 AFTER UPDATE ON finance.accounts
 FOR EACH ROW EXECUTE FUNCTION finance.soft_delete_specialized_account();
-
--- =========================================
--- 09. Function: prevent_specialized_soft_delete
--- =========================================
--- Purpose:
---   Prevents direct soft-delete operations on specialized account tables
---   (cash, bank, credit card, loan, investment, crypto, wallet, receivable)
---   unless the parent account trigger explicitly allows it.
---
--- Behavior:
---   - Triggered BEFORE UPDATE on specialized account tables.
---   - Checks if a soft-delete is attempted (OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL).
---   - Verifies the session-level flag 'app.allow_specialized_soft_delete' is set to 'true'.
---   - Raises an exception if a direct soft-delete is attempted without the flag.
---
--- Parameters:
---   NEW (trigger record) - The proposed new state of the specialized account row.
---   OLD (trigger record) - The existing state of the specialized account row.
---
--- Returns:
---   NEW - Only allows the update to proceed if the soft-delete is authorized via the parent account trigger.
---
--- Notes:
---   - Uses SECURITY DEFINER to bypass Row-Level Security (RLS) for enforcement.
---   - Relies on the parent account trigger (cleanup_specialized_account) to set the session flag.
---   - Ensures consistency between parent accounts and their specialized accounts.
---   - Applied per specialized account table via dedicated triggers.
--- =========================================
-CREATE OR REPLACE FUNCTION finance.prevent_specialized_soft_delete()
-RETURNS TRIGGER
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = pg_catalog, finance
-VOLATILE
-AS $$
-BEGIN
-    -- Block direct soft-delete unless parent trigger flagged it
-    IF OLD.deleted_at IS NULL
-       AND NEW.deleted_at IS NOT NULL
-       AND current_setting('app.allow_specialized_soft_delete', true) IS DISTINCT FROM 'true' THEN
-        RAISE EXCEPTION 'Direct soft-delete on table % for account id % is not allowed. Use parent account operations',
-            TG_TABLE_NAME, OLD.account_id
-            USING ERRCODE = '45000'; -- user-defined exception
-    END IF;
-
-    RETURN NEW;
-END;
-$$;
-
--- Cash
-CREATE TRIGGER trg_prevent_cash_soft_delete
-BEFORE UPDATE ON finance.cash_accounts
-FOR EACH ROW
-EXECUTE FUNCTION finance.prevent_specialized_soft_delete();
-
--- Bank
-CREATE TRIGGER trg_prevent_bank_soft_delete
-BEFORE UPDATE ON finance.bank_accounts
-FOR EACH ROW
-EXECUTE FUNCTION finance.prevent_specialized_soft_delete();
-
--- Credit Card
-CREATE TRIGGER trg_prevent_credit_card_soft_delete
-BEFORE UPDATE ON finance.credit_card_accounts
-FOR EACH ROW
-EXECUTE FUNCTION finance.prevent_specialized_soft_delete();
-
--- Loan
-CREATE TRIGGER trg_prevent_loan_soft_delete
-BEFORE UPDATE ON finance.loan_accounts
-FOR EACH ROW
-EXECUTE FUNCTION finance.prevent_specialized_soft_delete();
-
--- Investment
-CREATE TRIGGER trg_prevent_investment_soft_delete
-BEFORE UPDATE ON finance.investment_accounts
-FOR EACH ROW
-EXECUTE FUNCTION finance.prevent_specialized_soft_delete();
-
--- Crypto
-CREATE TRIGGER trg_prevent_crypto_soft_delete
-BEFORE UPDATE ON finance.crypto_accounts
-FOR EACH ROW
-EXECUTE FUNCTION finance.prevent_specialized_soft_delete();
-
--- Wallet
-CREATE TRIGGER trg_prevent_wallet_soft_delete
-BEFORE UPDATE ON finance.wallet_accounts
-FOR EACH ROW
-EXECUTE FUNCTION finance.prevent_specialized_soft_delete();
-
--- Receivable
-CREATE TRIGGER trg_prevent_receivable_soft_delete
-BEFORE UPDATE ON finance.receivable_accounts
-FOR EACH ROW
-EXECUTE FUNCTION finance.prevent_specialized_soft_delete();
