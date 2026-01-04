@@ -58,6 +58,7 @@ CREATE INDEX IF NOT EXISTS idx_expense_categories_active ON finance.expense_cate
 CREATE INDEX IF NOT EXISTS idx_expense_subcategories_active ON finance.expense_subcategories(category_id, name) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_income_sources_active ON finance.income_sources(user_id, name) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_transactions_recurring_deleted_at ON finance.transactions_recurring(deleted_at) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_transactions_deleted_at ON finance.transactions(deleted_at);
 
 -- ===============================================================================
 -- 4. Transactions-specific indexes (for analytics & reports)
@@ -130,6 +131,10 @@ CREATE INDEX IF NOT EXISTS idx_audit_new_converted_amount ON audit.audit_logs ((
 -- API rate-limits
 CREATE INDEX IF NOT EXISTS idx_rate_limits_user_endpoint 
     ON api.api_rate_limits(user_id, endpoint, last_request_at);
+
+-- Cleanup / retention support
+CREATE INDEX IF NOT EXISTS idx_api_rate_limits_created_at
+    ON api.api_rate_limits(created_at);
 
 -- ===============================================================================
 -- 8. Concurrent Indexes for finance.transaction
