@@ -97,6 +97,7 @@ AS $$
     WHERE p.user_id = auth.uid()
       AND p.deleted_at IS NULL
     LIMIT 1
+    FOR SHARE;
 $$;
 
 -- =========================================
@@ -832,7 +833,7 @@ BEGIN
     END;
 
     v_sql_query := format(
-        'SELECT %I, deleted_at FROM %I.%I WHERE %I = $1',
+        'SELECT %I, deleted_at FROM %I.%I WHERE %I = $1 FOR UPDATE',
         v_primary_key_col,  -- primary key column
         v_schema_name,      -- schema
         v_table_name,       -- table
@@ -859,7 +860,8 @@ BEGIN
         SELECT type
         INTO v_acc_type
         FROM finance.accounts
-        WHERE id = p_record_id;
+        WHERE id = p_record_id
+        FOR UPDATE;
 
         IF NOT FOUND THEN
             RAISE EXCEPTION
@@ -911,7 +913,7 @@ BEGIN
     -- Transaction-specific cascading deletes
     IF p_table_name = 'finance.transactions' THEN
         -- Raise error if transaction does not exist
-        PERFORM 1 FROM finance.transactions WHERE id = p_record_id;
+        PERFORM 1 FROM finance.transactions WHERE id = p_record_id FOR UPDATE;
         IF NOT FOUND THEN
             RAISE EXCEPTION
             'Transaction does not exist'
@@ -933,7 +935,7 @@ BEGIN
 
     -- Expense category cascade
     IF p_table_name = 'finance.expense_categories' THEN
-        PERFORM 1 FROM finance.expense_categories WHERE id = p_record_id;
+        PERFORM 1 FROM finance.expense_categories WHERE id = p_record_id FOR UPDATE;
         IF NOT FOUND THEN
             RAISE EXCEPTION
             'Expense category does not exist'
@@ -945,7 +947,7 @@ BEGIN
 
     -- Counterparty cascade
     IF p_table_name = 'finance.counterparties' THEN
-        PERFORM 1 FROM finance.counterparties WHERE id = p_record_id;
+        PERFORM 1 FROM finance.counterparties WHERE id = p_record_id FOR UPDATE;
         IF NOT FOUND THEN
             RAISE EXCEPTION
             'Counterparty does not exist'
@@ -958,7 +960,7 @@ BEGIN
 
     -- Income source cascade
     IF p_table_name = 'finance.income_sources' THEN
-        PERFORM 1 FROM finance.income_sources WHERE id = p_record_id;
+        PERFORM 1 FROM finance.income_sources WHERE id = p_record_id FOR UPDATE;
         IF NOT FOUND THEN
             RAISE EXCEPTION
             'Income source does not exist'
@@ -1544,7 +1546,8 @@ $$;
 --   - Uses `hard_delete_record_internal` to handle dependencies and ensure safe deletion
 -- =========================================
 CREATE OR REPLACE FUNCTION finance.cleanup_soft_deleted_records_internal(
-    older_than_days INTEGER DEFAULT 90
+    older_than_days INTEGER DEFAULT 90,
+    batch_size INTEGER DEFAULT 500  -- number of rows to process per batch
 )
 RETURNS TABLE(
     table_name TEXT,
@@ -1558,7 +1561,7 @@ VOLATILE
 AS $$
 DECLARE
     cutoff_date TIMESTAMPTZ;
-    -- Include all tables with soft-delete support
+    -- List of all tables with soft-delete support
     tables_to_clean TEXT[] := ARRAY[
         -- Transactions and related
         'finance.transactions', 'finance.transactions_recurring',
@@ -1581,6 +1584,7 @@ DECLARE
     rec RECORD;
     deleted_counter BIGINT;
     failed_counter BIGINT;
+    rows_fetched BIGINT;
 BEGIN
     -- Enable hard-delete bypass for entire session
     PERFORM set_config('app.hard_delete', 'on', true);
@@ -1590,30 +1594,39 @@ BEGIN
     FOREACH tbl IN ARRAY tables_to_clean LOOP
         deleted_counter := 0;
         failed_counter := 0;
-
-        FOR rec IN EXECUTE format(
-            'SELECT id FROM %I.%I WHERE deleted_at IS NOT NULL AND deleted_at < $1',
-            split_part(tbl, '.', 1),
-            split_part(tbl, '.', 2)
-        ) USING cutoff_date
         LOOP
-            BEGIN
-                -- Call the existing hard_delete_record_internal function
-                IF finance.hard_delete_record_internal(tbl, rec.id) THEN
-                    deleted_counter := deleted_counter + 1;
-                END IF;
-            EXCEPTION
-            WHEN OTHERS THEN
-                failed_counter := failed_counter + 1;
+            -- Fetch a batch of IDs to process
+            rows_fetched := 0;
+            FOR rec IN EXECUTE format(
+                'SELECT id FROM %I.%I WHERE deleted_at IS NOT NULL AND deleted_at < $1 ORDER BY deleted_at LIMIT %s FOR UPDATE',
+                split_part(tbl, '.', 1),
+                split_part(tbl, '.', 2),
+                batch_size
+            ) USING cutoff_date
+            LOOP
+                rows_fetched := rows_fetched + 1;
 
-                -- Also raise notice for session visibility
-                RAISE NOTICE
-                    'Failed to hard delete record % from table % (SQLSTATE %): %',
-                    rec.id, tbl, SQLSTATE, SQLERRM;
-            END;
+                BEGIN
+                    -- Call the existing hard_delete_record_internal function
+                    IF finance.hard_delete_record_internal(tbl, rec.id) THEN
+                        deleted_counter := deleted_counter + 1;
+                    END IF;
+                EXCEPTION
+                    WHEN OTHERS THEN
+                        failed_counter := failed_counter + 1;
+
+                        -- Log failure
+                        RAISE NOTICE
+                            'Failed to hard delete record % from table % (SQLSTATE %): %',
+                            rec.id, tbl, SQLSTATE, SQLERRM;
+                END;
+            END LOOP;
+
+            -- If no rows were fetched in this batch, exit the inner loop
+            EXIT WHEN rows_fetched = 0;
         END LOOP;
 
-        -- Return the results for this table, including failed deletions
+        -- Return the results for this table
         RETURN QUERY
         SELECT tbl, deleted_counter, failed_counter;
     END LOOP;
@@ -1624,7 +1637,7 @@ $$;
 SELECT cron.schedule(
   'cleanup_soft_deleted_records_nightly',  -- job name
   '0 2 * * *',                             -- cron expression (2:00 AM daily)
-  $$ SELECT finance.cleanup_soft_deleted_records_internal(90); $$
+  $$ SELECT finance.cleanup_soft_deleted_records_internal(90, 500); $$
 );
 
 -- =========================================
@@ -1649,7 +1662,8 @@ SELECT cron.schedule(
 --   - Helps control storage growth for audit_logs table
 -- =========================================
 CREATE OR REPLACE FUNCTION audit.cleanup_old_audit_logs_internal(
-    p_days_to_keep INTEGER DEFAULT 90
+    p_days_to_keep INTEGER DEFAULT 90,
+    p_batch_size INTEGER DEFAULT 1000  -- number of rows to delete per batch
 )
 RETURNS INTEGER
 LANGUAGE plpgsql
@@ -1658,17 +1672,39 @@ SET search_path = pg_catalog, audit, util
 VOLATILE
 AS $$
 DECLARE
-    v_deleted_count INTEGER;
-    cutoff_date TIMESTAMPTZ;
+    v_deleted_count INTEGER := 0;        -- total deleted rows
+    v_batch_deleted INTEGER := 0;        -- rows deleted in current batch
+    v_cutoff_date TIMESTAMPTZ;
+    rec RECORD;
 BEGIN
     -- Calculate cutoff date
-    cutoff_date := CURRENT_DATE - (p_days_to_keep || ' days')::INTERVAL;
+    v_cutoff_date := CURRENT_DATE - (p_days_to_keep || ' days')::INTERVAL;
 
-    -- Delete old audit logs
-    DELETE FROM audit.audit_logs
-    WHERE created_at < cutoff_date;
+    LOOP
+        v_batch_deleted := 0;
 
-    GET DIAGNOSTICS v_deleted_count = ROW_COUNT;
+        -- Select a batch of old audit log IDs to delete
+        FOR rec IN
+            SELECT id
+            FROM audit.audit_logs
+            WHERE created_at < v_cutoff_date
+            ORDER BY created_at
+            LIMIT p_batch_size
+            FOR UPDATE
+        LOOP
+            -- Delete each row individually
+            DELETE FROM audit.audit_logs
+            WHERE id = rec.id;
+
+            v_batch_deleted := v_batch_deleted + 1;
+        END LOOP;
+
+        -- Add batch count to total
+        v_deleted_count := v_deleted_count + v_batch_deleted;
+
+        -- Exit when no more rows in batch
+        EXIT WHEN v_batch_deleted = 0;
+    END LOOP;
 
     -- Optional notice for job logs
     RAISE NOTICE 'Deleted % audit logs older than % days', v_deleted_count, p_days_to_keep;
@@ -1681,7 +1717,7 @@ $$;
 SELECT cron.schedule(
   'cleanup_audit_logs_daily',           -- job name
   '0 2 * * *',                          -- cron expression (2:00 AM daily)
-  $$ SELECT audit.cleanup_old_audit_logs_internal(90); $$  -- call function with fully qualified reference
+  $$ SELECT audit.cleanup_old_audit_logs_internal(90, 1000); $$  -- call function with fully qualified reference
 );
 
 -- =========================================
@@ -1706,7 +1742,8 @@ SELECT cron.schedule(
 --   - Helps ensure accurate rate limiting without table bloat
 -- =========================================
 CREATE OR REPLACE FUNCTION util.cleanup_old_rate_limits_internal(
-    p_hours_to_keep INTEGER DEFAULT 24
+    p_hours_to_keep INTEGER DEFAULT 24,
+    p_batch_size INTEGER DEFAULT 1000
 )
 RETURNS INTEGER
 LANGUAGE plpgsql
@@ -1715,21 +1752,45 @@ SET search_path = pg_catalog, api, util
 VOLATILE
 AS $$
 DECLARE
-    v_deleted_count INTEGER;
     cutoff_timestamp TIMESTAMPTZ;
+    v_deleted_count INTEGER := 0;
+    v_batch_deleted INTEGER;
 BEGIN
     -- Calculate cutoff timestamp
     cutoff_timestamp := NOW() - (p_hours_to_keep || ' hours')::INTERVAL;
 
-    -- Delete old API rate limit entries
-    DELETE FROM api.api_rate_limits
-    WHERE created_at < cutoff_timestamp;
+    LOOP
+        /*
+         * Delete a bounded batch of rows.
+         * FOR UPDATE SKIP LOCKED ensures:
+         * - No contention with concurrent cleanup jobs
+         * - No blocking on rows being inserted or processed elsewhere
+         */
+        WITH to_delete AS (
+            SELECT id
+            FROM api.api_rate_limits
+            WHERE created_at < cutoff_timestamp
+            ORDER BY created_at
+            LIMIT p_batch_size
+            FOR UPDATE SKIP LOCKED
+        )
+        DELETE FROM api.api_rate_limits arl
+        USING to_delete
+        WHERE arl.id = to_delete.id;
 
-    -- Return number of deleted rows
-    GET DIAGNOSTICS v_deleted_count = ROW_COUNT;
+        GET DIAGNOSTICS v_batch_deleted = ROW_COUNT;
+
+        -- Accumulate total deleted rows
+        v_deleted_count := v_deleted_count + v_batch_deleted;
+
+        -- Exit when no more rows qualify
+        EXIT WHEN v_batch_deleted = 0;
+    END LOOP;
 
     -- Optional notice for job logs
-    RAISE NOTICE 'Deleted % API rate limit records older than % hours', v_deleted_count, p_hours_to_keep;
+    RAISE NOTICE
+        'Deleted % API rate limit records older than % hours',
+        v_deleted_count, p_hours_to_keep;
 
     RETURN v_deleted_count;
 END;
@@ -1739,7 +1800,7 @@ $$;
 SELECT cron.schedule(
   'cleanup_api_rate_limits_daily',        -- job name
   '0 0 * * *',                            -- cron expression (midnight daily)
-  $$ SELECT util.cleanup_old_rate_limits_internal(24); $$  -- call function with fully qualified reference
+  $$ SELECT util.cleanup_old_rate_limits_internal(24, 1000); $$  -- call function with fully qualified reference
 );
 
 -- ================================
