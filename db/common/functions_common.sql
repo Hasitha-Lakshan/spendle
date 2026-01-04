@@ -418,13 +418,6 @@ BEGIN
     -- Enable RLS
     PERFORM set_config('row_security', 'on', true);
 
-    -- Authenticate
-    IF v_user_id IS NULL THEN
-        RAISE EXCEPTION
-            'Not authenticated'
-            USING ERRCODE = '28000'; -- invalid_authorization_specification
-    END IF;
-
     -- Lock profile
     SELECT defaults_inserted, deleted_at IS NOT NULL
     INTO defaults_flag, is_soft_deleted
@@ -492,8 +485,18 @@ SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
 DECLARE
+    v_user_id UUID := auth.uid();
     v_result BOOLEAN;
 BEGIN
+    IF v_user_id IS NULL THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'code', 'NOT_AUTHENTICATED',
+            'message', 'User is not authenticated',
+            'data', NULL
+        );
+    END IF;
+
     -- Call internal function
     v_result := finance.initialize_my_defaults_internal();
 
@@ -567,20 +570,12 @@ SET search_path = pg_catalog, finance, core, util
 VOLATILE
 AS $$
 DECLARE
-    v_admin_user_id UUID := auth.uid();
     v_user_profile_id UUID;
     defaults_flag BOOLEAN;
     is_soft_deleted BOOLEAN := FALSE;
 BEGIN
     -- Enable RLS for this function
     PERFORM set_config('row_security', 'on', true);
-
-    -- Authenticate caller
-    IF v_admin_user_id IS NULL THEN
-        RAISE EXCEPTION
-            'Not authenticated'
-            USING ERRCODE = '28000'; -- invalid_authorization_specification
-    END IF;
 
     -- Authorize admin privileges
     IF NOT util.check_admin_permissions_internal() THEN
@@ -667,6 +662,7 @@ SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
 DECLARE
+    v_user_id UUID := auth.uid();
     v_inserted BOOLEAN;
 BEGIN
     -- Validate input
@@ -675,6 +671,15 @@ BEGIN
             'success', FALSE,
             'code', 'MISSING_USER_ID',
             'message', 'User id is required',
+            'data', NULL
+        );
+    END IF;
+
+    IF v_user_id IS NULL THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'code', 'NOT_AUTHENTICATED',
+            'message', 'User is not authenticated',
             'data', NULL
         );
     END IF;
@@ -1019,16 +1024,7 @@ SECURITY DEFINER
 SET search_path = pg_catalog, finance, util
 VOLATILE
 AS $$
-DECLARE
-    v_admin_user_id UUID := auth.uid();
 BEGIN
-    -- Require authentication
-    IF v_admin_user_id IS NULL THEN
-        RAISE EXCEPTION
-            'Not authenticated'
-            USING ERRCODE = '28000'; -- invalid_authorization_specification
-    END IF;
-
     -- Enable RLS for this function
     PERFORM set_config('row_security', 'on', true);
 
@@ -1092,6 +1088,7 @@ SET search_path = pg_catalog, finance
 VOLATILE
 AS $$
 DECLARE
+    v_user_id UUID := auth.uid();
     v_deleted BOOLEAN;
 BEGIN
     -- Input validation
@@ -1109,6 +1106,15 @@ BEGIN
             'success', FALSE,
             'code', 'MISSING_RECORD_ID',
             'message', 'Record id is required',
+            'data', NULL
+        );
+    END IF;
+
+    IF v_user_id IS NULL THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'code', 'NOT_AUTHENTICATED',
+            'message', 'User is not authenticated',
             'data', NULL
         );
     END IF;
@@ -1221,16 +1227,40 @@ SET search_path = pg_catalog, core
 VOLATILE
 AS $$
 DECLARE
+    v_profile_id UUID;
+    v_deleted_at TIMESTAMP;
     v_updated BOOLEAN;
 BEGIN
-    -- Explicit NOT FOUND handling (must raise)
-    IF NOT EXISTS (
-        SELECT 1
-        FROM core.profiles
-        WHERE id = p_profile_id
-    ) THEN
+    -- Enable RLS for this function
+    PERFORM set_config('row_security', 'on', true);
+
+    -- Check if profile exists
+    SELECT deleted_at
+    INTO v_deleted_at
+    FROM core.profiles
+    WHERE id = p_profile_id
+    FOR UPDATE;
+
+    IF NOT FOUND THEN
         RAISE EXCEPTION 'Profile not found: %', p_profile_id
-            USING ERRCODE = '02000';
+            USING ERRCODE = '02000';  -- no_data_found
+    END IF;
+
+    IF v_deleted_at IS NOT NULL THEN
+        -- Already soft-deleted
+        RETURN FALSE;
+    END IF;
+
+    -- Get current active profile ID
+    v_profile_id := util.current_active_profile_id_internal();
+
+    IF v_profile_id IS DISTINCT FROM p_profile_id THEN
+        -- Check admin privileges
+        IF NOT util.check_admin_permissions_internal() THEN
+            RAISE EXCEPTION
+                'Not authorized'
+            USING ERRCODE = '42501'; -- insufficient_privilege
+        END IF;
     END IF;
 
     -- Soft-delete only if not already deleted
@@ -1293,24 +1323,31 @@ SET search_path = pg_catalog, core
 VOLATILE
 AS $$
 DECLARE
+    v_user_id UUID := auth.uid();
     v_deleted BOOLEAN;
-    v_profile_id UUID;
 BEGIN
-    -- Get current active profile ID
-    v_profile_id := util.current_active_profile_id_internal();
-
-    -- Authentication check
-    IF v_profile_id IS NULL THEN
+    -- Input validation
+    IF p_profile_id IS NULL THEN
         RETURN jsonb_build_object(
             'success', FALSE,
+            'code', 'MISSING_PROFILE_ID',
+            'message', 'Profile ID is required',
+            'data', NULL
+        );
+    END IF;
+
+    -- Authentication check
+    IF v_user_id IS NULL THEN
+        RETURN jsonb_build_object(
+            'success', false,
             'code', 'NOT_AUTHENTICATED',
-            'message', 'You must be logged in to initialize defaults',
+            'message', 'User is not authenticated',
             'data', NULL
         );
     END IF;
 
     -- Call internal function
-    v_deleted := core.soft_delete_profile_internal(v_profile_id);
+    v_deleted := core.soft_delete_profile_internal(p_profile_id);
 
     -- Already soft-deleted
     IF NOT v_deleted THEN
@@ -1318,7 +1355,7 @@ BEGIN
             'success', FALSE,
             'code', 'ALREADY_DELETED',
             'message', 'Profile already soft-deleted',
-            'data', jsonb_build_object('profile_id', v_profile_id)
+            'data', jsonb_build_object('profile_id', p_profile_id)
         );
     END IF;
 
@@ -1327,7 +1364,7 @@ BEGIN
         'success', TRUE,
         'code', 'OK',
         'message', 'Profile soft-deleted; all child data cascaded',
-        'data', jsonb_build_object('profile_id', v_profile_id)
+        'data', jsonb_build_object('profile_id', p_profile_id)
     );
 
 EXCEPTION
@@ -1337,7 +1374,7 @@ EXCEPTION
             'success', FALSE,
             'code', 'NOT_FOUND',
             'message', 'Profile not found',
-            'data', jsonb_build_object('profile_id', v_profile_id)
+            'data', jsonb_build_object('profile_id', p_profile_id)
         );
 
     WHEN invalid_authorization_specification THEN
@@ -1361,7 +1398,7 @@ EXCEPTION
             'success', FALSE,
             'code', 'INTERNAL_ERROR',
             'message', SQLERRM,
-            'data', jsonb_build_object('profile_id', v_profile_id)
+            'data', jsonb_build_object('profile_id', p_profile_id)
         );
 END;
 $$;
@@ -1415,35 +1452,25 @@ SET search_path = pg_catalog, core, util
 VOLATILE
 AS $$
 DECLARE
+    v_user_id UUID := auth.uid();
     v_deleted BOOLEAN;
-    v_admin_user_id UUID := auth.uid();
 BEGIN
-    -- Authenticate admin
-    IF v_admin_user_id IS NULL THEN
-        RETURN jsonb_build_object(
-            'success', FALSE,
-            'code', 'NOT_AUTHENTICATED',
-            'message', 'Admin user not authenticated',
-            'data', NULL
-        );
-    END IF;
-
-    -- Check admin privileges
-    IF NOT util.check_admin_permissions_internal() THEN
-        RETURN jsonb_build_object(
-            'success', FALSE,
-            'code', 'NOT_AUTHORIZED',
-            'message', 'User does not have admin privileges',
-            'data', NULL
-        );
-    END IF;
-
     -- Input validation
     IF p_profile_id IS NULL THEN
         RETURN jsonb_build_object(
             'success', FALSE,
             'code', 'MISSING_PROFILE_ID',
             'message', 'Profile ID is required',
+            'data', NULL
+        );
+    END IF;
+
+    -- Authentication check
+    IF v_user_id IS NULL THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'code', 'NOT_AUTHENTICATED',
+            'message', 'User is not authenticated',
             'data', NULL
         );
     END IF;
