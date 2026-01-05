@@ -124,7 +124,7 @@ RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, finance
-STABLE
+VOLATILE
 AS $$
 DECLARE
     v_profile_id UUID;
@@ -1532,7 +1532,7 @@ RETURNS TABLE(
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, finance
-STABLE
+VOLATILE
 AS $$
 DECLARE
     v_profile_id UUID;
@@ -1631,7 +1631,7 @@ RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, finance
-STABLE
+VOLATILE
 AS $$
 DECLARE
     v_profile_id UUID;
@@ -1786,7 +1786,7 @@ RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, finance
-STABLE
+VOLATILE
 AS $$
 DECLARE
     v_profile_id UUID;

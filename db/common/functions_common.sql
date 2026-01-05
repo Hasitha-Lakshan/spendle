@@ -90,7 +90,7 @@ RETURNS uuid
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, core
-STABLE
+VOLATILE
 AS $$
 DECLARE
     v_profile_id uuid;
