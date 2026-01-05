@@ -44,21 +44,28 @@ DECLARE
     v_batch_updated INTEGER := 0;       -- rows updated in current batch
 BEGIN
     LOOP
-        -- Update a batch of receivable accounts with incorrect statuses
-        WITH updated AS (
-            UPDATE finance.receivable_accounts
-            SET status = CASE
-                WHEN amount_due <= 0 THEN 'paid'
-                WHEN due_date < CURRENT_DATE THEN 'overdue'
-                ELSE 'pending'
-            END
+        -- Select a batch of account_ids to update
+        WITH batch AS (
+            SELECT account_id
+            FROM finance.receivable_accounts
             WHERE status != CASE
                 WHEN amount_due <= 0 THEN 'paid'
                 WHEN due_date < CURRENT_DATE THEN 'overdue'
                 ELSE 'pending'
             END
-            RETURNING 1
             LIMIT p_batch_size
+            FOR UPDATE
+        ),
+        updated AS (
+            UPDATE finance.receivable_accounts r
+            SET status = CASE
+                WHEN amount_due <= 0 THEN 'paid'
+                WHEN due_date < CURRENT_DATE THEN 'overdue'
+                ELSE 'pending'
+            END
+            FROM batch b
+            WHERE r.account_id = b.account_id
+            RETURNING 1
         )
         SELECT COUNT(*) INTO v_batch_updated FROM updated;
 
@@ -129,21 +136,28 @@ DECLARE
     v_batch_updated INTEGER := 0;       -- rows updated in current batch
 BEGIN
     LOOP
-        -- Update a batch of loan accounts with incorrect statuses
-        WITH updated AS (
-            UPDATE finance.loan_accounts
-            SET status = CASE
-                WHEN outstanding_amount <= 0 THEN 'closed'
-                WHEN end_date < CURRENT_DATE AND outstanding_amount > 0 THEN 'defaulted'
-                ELSE 'active'
-            END
+        -- Select a batch of account_ids to update
+        WITH batch AS (
+            SELECT account_id
+            FROM finance.loan_accounts
             WHERE status != CASE
                 WHEN outstanding_amount <= 0 THEN 'closed'
                 WHEN end_date < CURRENT_DATE AND outstanding_amount > 0 THEN 'defaulted'
                 ELSE 'active'
             END
-            RETURNING 1
             LIMIT p_batch_size
+            FOR UPDATE
+        ),
+        updated AS (
+            UPDATE finance.loan_accounts l
+            SET status = CASE
+                WHEN outstanding_amount <= 0 THEN 'closed'
+                WHEN end_date < CURRENT_DATE AND outstanding_amount > 0 THEN 'defaulted'
+                ELSE 'active'
+            END
+            FROM batch b
+            WHERE l.account_id = b.account_id
+            RETURNING 1
         )
         SELECT COUNT(*) INTO v_batch_updated FROM updated;
 
