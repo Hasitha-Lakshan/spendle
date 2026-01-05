@@ -569,13 +569,7 @@ BEGIN
     WHERE user_id = OLD.id
       AND deleted_at IS NULL;
 
-    -- Soft-delete profile itself
-    UPDATE core.profiles
-    SET deleted_at = NOW(),
-        updated_at = NOW()
-    WHERE id = OLD.id;
-
-    RETURN OLD;
+    RETURN NEW;
 END;
 $$;
 
