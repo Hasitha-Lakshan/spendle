@@ -21,7 +21,7 @@ CREATE POLICY select_own_profiles ON core.profiles
 CREATE POLICY insert_own_profiles ON core.profiles
     FOR INSERT
     WITH CHECK (
-        user_id = auth.uid()
+        user_id = (SELECT auth.uid())
     );
 
 -- UPDATE: user may update their own active profile
