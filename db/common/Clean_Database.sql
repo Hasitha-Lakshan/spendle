@@ -8,7 +8,7 @@
 DO $$ DECLARE
     sch_name TEXT;
     r RECORD;
-    custom_schemas TEXT[] := ARRAY['finance','audit','api','util','core'];
+    custom_schemas TEXT[] := ARRAY['public', 'finance','audit','api','util','core'];
 BEGIN
     -- Iterate over custom schemas
     FOREACH sch_name IN ARRAY custom_schemas
