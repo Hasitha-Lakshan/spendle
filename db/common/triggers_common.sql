@@ -304,10 +304,11 @@ BEGIN
 
     -- Special case for profiles table admin changes
     IF TG_OP = 'UPDATE'
-       AND TG_TABLE_SCHEMA = 'core'
-       AND TG_TABLE_NAME = 'profiles'
-       AND OLD.is_admin IS DISTINCT FROM NEW.is_admin THEN
-        action_label := 'ADMIN_PRIVILEGE_CHANGE';
+        AND TG_TABLE_SCHEMA = 'core'
+        AND TG_TABLE_NAME = 'profiles'
+        AND row_data ? 'is_admin' 
+        AND (hstore(OLD)->'is_admin') IS DISTINCT FROM (hstore(NEW)->'is_admin') THEN
+            action_label := 'ADMIN_PRIVILEGE_CHANGE';
     END IF;
 
     -- Detect soft delete (deleted_at transition)
