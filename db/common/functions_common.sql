@@ -283,7 +283,7 @@ DECLARE
 BEGIN
     -- Create Cash account
     PERFORM finance.create_account_internal(
-        p_user_id := p_profile_id,
+        p_profile_id := p_profile_id,
         p_account_name := 'Cash Wallet',
         p_type := 'cash'::finance.account_type,
         p_currency := 'USD',
@@ -292,7 +292,7 @@ BEGIN
 
     -- Create Bank account
     PERFORM finance.create_account_internal(
-        p_user_id := p_profile_id,
+        p_profile_id := p_profile_id,
         p_account_name := 'Default Bank',
         p_type := 'bank'::finance.account_type,
         p_currency := 'USD',
