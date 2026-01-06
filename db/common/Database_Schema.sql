@@ -83,7 +83,7 @@ CREATE TABLE core.profiles (
 -- Generic accounts table containing all types of financial accounts
 CREATE TABLE finance.accounts (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID NOT NULL REFERENCES core.profiles(id), -- account owner
+  profile_id UUID NOT NULL REFERENCES core.profiles(id), -- account owner
   account_name VARCHAR(100) NOT NULL,  -- display name for the account
   type finance.account_type NOT NULL,   -- type: cash, bank, credit_card, loan, investment, crypto, wallet, receivable
   currency VARCHAR(10) NOT NULL,       -- currency used in this account, e.g., USD, LKR, BTC
@@ -97,7 +97,7 @@ CREATE TABLE finance.accounts (
 -- =========================================
 CREATE TABLE finance.counterparties (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID NOT NULL REFERENCES core.profiles(id),
+  profile_id UUID NOT NULL REFERENCES core.profiles(id),
   name VARCHAR(255) NOT NULL,
   type finance.counterparty_type NOT NULL,
   created_at timestamptz DEFAULT now(),
@@ -250,7 +250,7 @@ CREATE TABLE finance.receivable_accounts (
 -- =========================================
 CREATE TABLE finance.expense_categories (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID NOT NULL REFERENCES core.profiles(id),
+  profile_id UUID NOT NULL REFERENCES core.profiles(id),
   name VARCHAR(100) NOT NULL,
   deleted_at timestamptz NULL DEFAULT NULL,
   created_at timestamptz DEFAULT now(),
@@ -271,7 +271,7 @@ CREATE TABLE finance.expense_subcategories (
 -- =========================================
 CREATE TABLE finance.income_sources (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID NOT NULL REFERENCES core.profiles(id),
+  profile_id UUID NOT NULL REFERENCES core.profiles(id),
   name VARCHAR(100) NOT NULL,
   deleted_at timestamptz NULL DEFAULT NULL,
   created_at timestamptz DEFAULT now(),
@@ -284,7 +284,7 @@ CREATE TABLE finance.income_sources (
 -- Base Transactions Table
 CREATE TABLE finance.transactions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID NOT NULL REFERENCES core.profiles(id),
+  profile_id UUID NOT NULL REFERENCES core.profiles(id),
   transaction_date DATE NOT NULL,    -- BUSINESS DATE (when money actually moved)
   type finance.transaction_type NOT NULL,
   original_amount DECIMAL(36,18) NOT NULL,
@@ -411,7 +411,7 @@ CREATE TABLE finance.transactions_adjustment (
 -- 1. Exchange Rates
 CREATE TABLE finance.exchange_rates (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID NOT NULL REFERENCES core.profiles(id),
+  profile_id UUID NOT NULL REFERENCES core.profiles(id),
   from_currency VARCHAR(10) NOT NULL,
   to_currency VARCHAR(10) NOT NULL,
   rate NUMERIC NOT NULL CHECK (rate > 0),
@@ -434,7 +434,7 @@ CREATE TABLE finance.transactions_recurring (
     start_date DATE NOT NULL,
     end_date DATE,                             -- optional, NULL = no end
     next_occurrence DATE NOT NULL,      -- next due date
-    user_id UUID NOT NULL REFERENCES core.profiles(id), -- owner of the recurring transaction (business ownership)
+    profile_id UUID NOT NULL REFERENCES core.profiles(id), -- owner of the recurring transaction (business ownership)
     updated_by TEXT NOT NULL DEFAULT 'system:unknown',  -- who created or last modified the recurring rule
     created_at timestamptz DEFAULT now(),
     updated_at timestamptz DEFAULT now(),
@@ -451,7 +451,7 @@ CREATE TABLE finance.transactions_recurring (
 -- =========================================
 CREATE TABLE audit.audit_logs (
   id BIGSERIAL PRIMARY KEY,
-  user_id UUID NOT NULL REFERENCES core.profiles(id),   -- affected user (context)
+  profile_id UUID REFERENCES core.profiles(id),   -- affected profile (context)
   executed_by TEXT NOT NULL DEFAULT 'system:unknown',   -- who performed the action
   table_name TEXT NOT NULL,
   record_id UUID NOT NULL,
@@ -502,14 +502,14 @@ CREATE TABLE IF NOT EXISTS audit.audit_table_registry (
 -- =========================================
 CREATE TABLE IF NOT EXISTS api.api_rate_limits (
     id BIGSERIAL PRIMARY KEY,
-    user_id UUID NOT NULL REFERENCES core.profiles(id),
+    profile_id UUID NOT NULL REFERENCES core.profiles(id),
     endpoint VARCHAR(100) NOT NULL,
     request_count INTEGER DEFAULT 1,
     last_request_at TIMESTAMPTZ DEFAULT NOW(),
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at timestamptz DEFAULT now(),
 
-    CONSTRAINT api_rate_limits_user_endpoint_unique UNIQUE (user_id, endpoint)
+    CONSTRAINT api_rate_limits_user_endpoint_unique UNIQUE (profile_id, endpoint)
 );
 
 -- Auto-populate audit_table_registry with existing tables

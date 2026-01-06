@@ -26,7 +26,7 @@
 -- =========================================
 CREATE OR REPLACE FUNCTION finance.account_has_active_transactions_internal(
     p_account_id UUID,
-    p_user_id UUID
+    p_profile_id UUID
 )
 RETURNS BOOLEAN
 LANGUAGE plpgsql
@@ -41,8 +41,8 @@ BEGIN
             USING ERRCODE = '22004'; -- null_value_not_allowed
     END IF;
 
-    IF p_user_id IS NULL THEN
-        RAISE EXCEPTION 'p_user_id cannot be null'
+    IF p_profile_id IS NULL THEN
+        RAISE EXCEPTION 'p_profile_id cannot be null'
             USING ERRCODE = '28000'; -- invalid_authorization_specification
     END IF;
 
@@ -50,7 +50,7 @@ BEGIN
     RETURN EXISTS (
         SELECT 1
         FROM finance.transactions t
-        WHERE t.user_id = p_user_id
+        WHERE t.profile_id = p_profile_id
           AND t.deleted_at IS NULL
           AND (
               EXISTS (
@@ -407,15 +407,16 @@ VOLATILE
 AS $$
 DECLARE
     v_balance_changed BOOLEAN := FALSE;
-    v_user_id UUID;
+    v_profile_id UUID;
 BEGIN
-    -- Resolve user_id from parent account record
-    SELECT a.user_id
-    INTO v_user_id
+    -- Resolve profile_id from parent account record
+    SELECT a.profile_id
+    INTO v_profile_id
     FROM finance.accounts a
-    WHERE a.id = OLD.account_id;
+    WHERE a.id = OLD.account_id
+        AND deleted_at IS NULL;
 
-    IF v_user_id IS NULL THEN
+    IF NOT FOUND THEN
         RAISE EXCEPTION
             'prevent_balance_change_if_transactions: account % not found in finance.accounts',
             OLD.account_id
@@ -423,7 +424,7 @@ BEGIN
     END IF;
 
     -- Only enforce if account has active transactions
-    IF finance.account_has_active_transactions_internal(OLD.account_id, v_user_id) THEN
+    IF finance.account_has_active_transactions_internal(OLD.account_id, v_profile_id) THEN
 
         -- Detect balance or related changes per account type
         CASE TG_TABLE_NAME
@@ -746,7 +747,7 @@ VOLATILE
 AS $$
 BEGIN
     -- Only enforce rules if account has active transactions
-    IF finance.account_has_active_transactions_internal(OLD.id, OLD.user_id) THEN
+    IF finance.account_has_active_transactions_internal(OLD.id, OLD.profile_id) THEN
 
         -- Handle UPDATE operations
         IF TG_OP = 'UPDATE' THEN

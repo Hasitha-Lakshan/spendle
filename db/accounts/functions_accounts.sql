@@ -144,7 +144,7 @@ BEGIN
         SELECT 1
         FROM finance.accounts
         WHERE id = p_account_id
-          AND user_id = v_profile_id
+          AND profile_id = v_profile_id
           AND deleted_at IS NULL
     );
 END;
@@ -246,7 +246,7 @@ BEGIN
     v_amount_due := util.get_json_numeric_internal(p_details, 'amount_due', 'DECIMAL', 0);
 
     -- Insert base account
-    INSERT INTO finance.accounts(user_id, account_name, type, currency)
+    INSERT INTO finance.accounts(profile_id, account_name, type, currency)
     VALUES (p_profile_id, p_account_name, p_type, p_currency)
     RETURNING id INTO v_account_id;
 
@@ -303,7 +303,8 @@ BEGIN
                 SELECT 1
                 FROM finance.counterparties
                 WHERE id = v_counterparty_id
-                  AND user_id = p_profile_id
+                  AND profile_id = p_profile_id
+                  AND deleted_at IS NULL
                 FOR SHARE
             ) THEN
                 RAISE EXCEPTION
@@ -378,7 +379,8 @@ BEGIN
                 SELECT 1
                 FROM finance.counterparties
                 WHERE id = v_counterparty_id
-                  AND user_id = p_profile_id
+                  AND profile_id = p_profile_id
+                  AND deleted_at IS NULL
                 FOR SHARE
             ) THEN
                 RAISE EXCEPTION
@@ -612,7 +614,8 @@ BEGIN
                 SELECT 1
                 FROM finance.counterparties
                 WHERE id = v_counterparty_id
-                    AND user_id = v_profile_id
+                    AND profile_id = v_profile_id
+                    AND deleted_at IS NULL
                 FOR SHARE
             ) THEN
                 RAISE EXCEPTION 'Invalid counterparty_id'
@@ -639,7 +642,8 @@ BEGIN
                 SELECT 1
                 FROM finance.counterparties
                 WHERE id = v_counterparty_id
-                    AND user_id = v_profile_id
+                    AND profile_id = v_profile_id
+                    AND deleted_at IS NULL
                 FOR SHARE
             ) THEN
                 RAISE EXCEPTION 'Invalid counterparty_id'
@@ -732,7 +736,7 @@ BEGIN
     SET deleted_at = NOW(),
         updated_at = NOW()
     WHERE id = p_account_id
-      AND user_id = v_profile_id
+      AND profile_id = v_profile_id
       AND deleted_at IS NULL
     RETURNING id INTO v_exists;
 
@@ -1582,7 +1586,7 @@ BEGIN
     LEFT JOIN finance.wallet_accounts wa ON a.id = wa.account_id AND wa.deleted_at IS NULL
     LEFT JOIN finance.receivable_accounts ra ON a.id = ra.account_id AND ra.deleted_at IS NULL
     WHERE a.deleted_at IS NULL
-      AND a.user_id = v_profile_id
+      AND a.profile_id = v_profile_id
     ORDER BY a.account_name;
 END;
 $$;
@@ -1597,7 +1601,7 @@ $$;
 --
 -- Behavior:
 --   - Executes as SECURITY DEFINER to ensure reliable access under RLS.
---   - Enforces account ownership by matching the account’s user_id
+--   - Enforces account ownership by matching the account’s profile_id
 --     with the authenticated user (auth.uid()).
 --   - Validates the account type against the account_type enum
 --     before casting or querying specialized tables.
@@ -1609,7 +1613,7 @@ $$;
 --
 -- Returns:
 --   JSONB - A merged JSON object containing:
---     - Base account fields (id, user_id, account_name, type, currency,
+--     - Base account fields (id, profile_id, account_name, type, currency,
 --       created_at, updated_at).
 --     - Type-specific fields from the corresponding specialized
 --       account table.
@@ -1655,7 +1659,7 @@ BEGIN
     -- Get base account info and enforce ownership
     SELECT jsonb_build_object(
         'id', a.id,
-        'user_id', a.user_id,
+        'profile_id', a.profile_id,
         'account_name', a.account_name,
         'type', a.type,
         'currency', a.currency,
@@ -1666,7 +1670,7 @@ BEGIN
     FROM finance.accounts a
     WHERE a.id = p_account_id
       AND a.deleted_at IS NULL
-      AND a.user_id = v_profile_id;
+      AND a.profile_id = v_profile_id;
 
     IF NOT FOUND THEN
         RAISE EXCEPTION 'Account not found or access denied'
@@ -1807,7 +1811,7 @@ BEGIN
           ON a_base.id = ca.account_id AND ca.deleted_at IS NULL
         WHERE a_base.type = 'cash'
           AND a_base.deleted_at IS NULL
-          AND a_base.user_id = v_profile_id;
+          AND a_base.profile_id = v_profile_id;
 
     -- Bank accounts
     ELSIF p_account_type = 'bank' THEN
@@ -1818,7 +1822,7 @@ BEGIN
           ON a_base.id = ba.account_id AND ba.deleted_at IS NULL
         WHERE a_base.type = 'bank'
           AND a_base.deleted_at IS NULL
-          AND a_base.user_id = v_profile_id;
+          AND a_base.profile_id = v_profile_id;
 
     -- Credit card accounts
     ELSIF p_account_type = 'credit_card' THEN
@@ -1829,7 +1833,7 @@ BEGIN
           ON a_base.id = cc.account_id AND cc.deleted_at IS NULL
         WHERE a_base.type = 'credit_card'
           AND a_base.deleted_at IS NULL
-          AND a_base.user_id = v_profile_id;
+          AND a_base.profile_id = v_profile_id;
 
     -- Loan accounts
     ELSIF p_account_type = 'loan' THEN
@@ -1840,7 +1844,7 @@ BEGIN
           ON a_base.id = la.account_id AND la.deleted_at IS NULL
         WHERE a_base.type = 'loan'
           AND a_base.deleted_at IS NULL
-          AND a_base.user_id = v_profile_id;
+          AND a_base.profile_id = v_profile_id;
 
     -- Investment accounts
     ELSIF p_account_type = 'investment' THEN
@@ -1851,7 +1855,7 @@ BEGIN
           ON a_base.id = ia.account_id AND ia.deleted_at IS NULL
         WHERE a_base.type = 'investment'
           AND a_base.deleted_at IS NULL
-          AND a_base.user_id = v_profile_id;
+          AND a_base.profile_id = v_profile_id;
 
     -- Crypto accounts
     ELSIF p_account_type = 'crypto' THEN
@@ -1862,7 +1866,7 @@ BEGIN
           ON a_base.id = cra.account_id AND cra.deleted_at IS NULL
         WHERE a_base.type = 'crypto'
           AND a_base.deleted_at IS NULL
-          AND a_base.user_id = v_profile_id;
+          AND a_base.profile_id = v_profile_id;
 
     -- Wallet accounts
     ELSIF p_account_type = 'wallet' THEN
@@ -1873,7 +1877,7 @@ BEGIN
           ON a_base.id = wa.account_id AND wa.deleted_at IS NULL
         WHERE a_base.type = 'wallet'
           AND a_base.deleted_at IS NULL
-          AND a_base.user_id = v_profile_id;
+          AND a_base.profile_id = v_profile_id;
 
     -- Receivable accounts
     ELSIF p_account_type = 'receivable' THEN
@@ -1884,7 +1888,7 @@ BEGIN
           ON a_base.id = ra.account_id AND ra.deleted_at IS NULL
         WHERE a_base.type = 'receivable'
           AND a_base.deleted_at IS NULL
-          AND a_base.user_id = v_profile_id;
+          AND a_base.profile_id = v_profile_id;
 
     ELSE
         RAISE EXCEPTION 'Unknown account type: %', p_account_type

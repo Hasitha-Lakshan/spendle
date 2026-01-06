@@ -199,26 +199,26 @@ SET search_path = pg_catalog, api
 VOLATILE
 AS $$
 DECLARE
-    v_user_id UUID;
+    v_profile_id UUID;
     v_counter RECORD;
     v_window_start TIMESTAMPTZ;
     v_now TIMESTAMPTZ := NOW();
 BEGIN
-    v_user_id := util.current_active_profile_id_internal();
+    v_profile_id := util.current_active_profile_id_internal();
     v_window_start := v_now - (p_window_minutes || ' minutes')::INTERVAL;
 
     -- Lock the row for this user/endpoint to prevent race conditions
     SELECT *
     INTO v_counter
     FROM api.api_rate_limits
-    WHERE user_id = v_user_id
+    WHERE profile_id = v_profile_id
       AND endpoint = p_endpoint
     FOR UPDATE;
 
     IF NOT FOUND THEN
         -- Row doesn't exist yet: create it
-        INSERT INTO api.api_rate_limits(user_id, endpoint, request_count, last_request_at)
-        VALUES (v_user_id, p_endpoint, 1, v_now);
+        INSERT INTO api.api_rate_limits(profile_id, endpoint, request_count, last_request_at)
+        VALUES (v_profile_id, p_endpoint, 1, v_now);
         RETURN TRUE;
     ELSE
         -- Row exists: check if the last_request_at is within the rolling window
@@ -227,7 +227,7 @@ BEGIN
             UPDATE api.api_rate_limits
             SET request_count = 1,
                 last_request_at = v_now
-            WHERE user_id = v_user_id
+            WHERE profile_id = v_profile_id
               AND endpoint = p_endpoint;
             RETURN TRUE;
         ELSE
@@ -236,7 +236,7 @@ BEGIN
                 UPDATE api.api_rate_limits
                 SET request_count = request_count + 1,
                     last_request_at = v_now
-                WHERE user_id = v_user_id
+                WHERE profile_id = v_profile_id
                   AND endpoint = p_endpoint;
                 RETURN TRUE;
             ELSE
@@ -306,16 +306,17 @@ BEGIN
     );
 
     -- Insert default expense category
-    INSERT INTO finance.expense_categories(user_id, name)
+    INSERT INTO finance.expense_categories(profile_id, name)
     VALUES (p_profile_id, 'General')
-    ON CONFLICT (user_id, lower(name)) 
+    ON CONFLICT (profile_id, lower(name)) 
     WHERE deleted_at IS NULL
     DO NOTHING;
 
     -- Get the inserted category id
     SELECT id INTO default_category_id
     FROM finance.expense_categories
-    WHERE user_id = p_profile_id AND name = 'General';
+    WHERE profile_id = p_profile_id
+        AND name = 'General';
 
     -- Insert default expense subcategory
     IF default_category_id IS NOT NULL THEN
@@ -327,15 +328,15 @@ BEGIN
     END IF;
 
     -- Insert default income source
-    INSERT INTO finance.income_sources(user_id, name)
+    INSERT INTO finance.income_sources(profile_id, name)
     VALUES (p_profile_id, 'Salary')
-    ON CONFLICT (user_id, lower(name))
+    ON CONFLICT (profile_id, lower(name))
     WHERE deleted_at IS NULL
     DO NOTHING;
 
     -- Insert default exchange rates
     INSERT INTO finance.exchange_rates(
-        user_id, from_currency, to_currency, rate, source, created_at, updated_at
+        profile_id, from_currency, to_currency, rate, source, created_at, updated_at
     )
     VALUES
         -- Fiat currencies
@@ -369,7 +370,7 @@ BEGIN
         (p_profile_id, 'LKR', 'BTC', 0.00000010005, 'CoinGecko', NOW(), NOW()),
         (p_profile_id, 'ETH', 'LKR', 655000.00, 'CoinGecko', NOW(), NOW()),
         (p_profile_id, 'LKR', 'ETH', 0.000001526, 'CoinGecko', NOW(), NOW())
-    ON CONFLICT (user_id, from_currency, to_currency)
+    ON CONFLICT (profile_id, from_currency, to_currency)
     WHERE deleted_at IS NULL
     DO NOTHING;
 
@@ -401,7 +402,7 @@ $$;
 --
 -- Returns:
 --   JSONB - containing:
---       * `user_id`: UUID of the current user
+--       * `profile_id`: UUID of the current user
 --       * `defaults_inserted`: BOOLEAN indicating if defaults were inserted in this execution
 --
 -- Notes:
@@ -476,7 +477,7 @@ $$;
 --
 -- Returns:
 --   JSONB - containing:
---       * `user_id`: UUID of the current user
+--       * `profile_id`: UUID of the current user
 --       * `defaults_inserted`: BOOLEAN indicating if defaults were inserted during this call
 --
 -- Notes:
@@ -557,7 +558,7 @@ $$;
 --
 -- Returns:
 --   JSONB - Object containing:
---     - user_id: the target user's ID
+--     - profile_id: the target user's ID
 --     - defaults_inserted: true if defaults were inserted during this call
 --
 -- Notes:
@@ -650,7 +651,7 @@ $$;
 --
 -- Returns:
 --   JSONB - containing:
---       * `user_id`: UUID of the target user
+--       * `profile_id`: UUID of the target user
 --       * `defaults_inserted`: BOOLEAN indicating whether defaults were inserted during this call
 --
 -- Notes:

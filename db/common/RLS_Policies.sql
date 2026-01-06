@@ -50,20 +50,20 @@ CREATE POLICY delete_profiles_combined ON core.profiles
 ALTER TABLE finance.accounts ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY select_own_accounts ON finance.accounts
-    FOR SELECT USING (user_id = util.current_active_profile_id_internal() AND deleted_at IS NULL);
+    FOR SELECT USING (profile_id = util.current_active_profile_id_internal() AND deleted_at IS NULL);
 CREATE POLICY insert_own_accounts ON finance.accounts
-    FOR INSERT WITH CHECK (user_id = util.current_active_profile_id_internal());
+    FOR INSERT WITH CHECK (profile_id = util.current_active_profile_id_internal());
 CREATE POLICY update_accounts_combined ON finance.accounts
     FOR UPDATE
     USING (
-        (user_id = util.current_active_profile_id_internal() AND deleted_at IS NULL)  -- normal update
+        (profile_id = util.current_active_profile_id_internal() AND deleted_at IS NULL)  -- normal update
         OR
-        (user_id = util.current_active_profile_id_internal())  -- soft-delete update
+        (profile_id = util.current_active_profile_id_internal())  -- soft-delete update
     )
     WITH CHECK (
-        (user_id = util.current_active_profile_id_internal() AND deleted_at IS NULL)  -- normal update check
+        (profile_id = util.current_active_profile_id_internal() AND deleted_at IS NULL)  -- normal update check
         OR
-        (user_id = util.current_active_profile_id_internal())  -- soft-delete check
+        (profile_id = util.current_active_profile_id_internal())  -- soft-delete check
     );
 CREATE POLICY delete_accounts_combined ON finance.accounts
     FOR DELETE USING (
@@ -73,7 +73,7 @@ CREATE POLICY delete_accounts_combined ON finance.accounts
 
 -- =========================================
 -- SPECIALIZED ACCOUNTS
--- Inherit user_id check from accounts
+-- Inherit profile_id check from accounts
 -- =========================================
 DO $$
 DECLARE
@@ -102,7 +102,7 @@ BEGIN
                 EXISTS (
                     SELECT 1 FROM finance.accounts a
                     WHERE a.id = finance.%1$I.account_id
-                    AND a.user_id = util.current_active_profile_id_internal()
+                    AND a.profile_id = util.current_active_profile_id_internal()
                     AND a.deleted_at IS NULL
                 )
             );
@@ -115,7 +115,7 @@ BEGIN
                 EXISTS (
                     SELECT 1 FROM finance.accounts a
                     WHERE a.id = finance.%1$I.account_id
-                    AND a.user_id = util.current_active_profile_id_internal()
+                    AND a.profile_id = util.current_active_profile_id_internal()
                     AND a.deleted_at IS NULL
                 )
             );
@@ -128,7 +128,7 @@ BEGIN
                 EXISTS (
                     SELECT 1 FROM finance.accounts a
                     WHERE a.id = finance.%1$I.account_id
-                    AND a.user_id = util.current_active_profile_id_internal()
+                    AND a.profile_id = util.current_active_profile_id_internal()
                     AND a.deleted_at IS NULL
                 )
             );
@@ -157,12 +157,12 @@ ALTER TABLE finance.expense_categories ENABLE ROW LEVEL SECURITY;
 ALTER TABLE finance.expense_subcategories ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY select_own_expense_categories ON finance.expense_categories
-    FOR SELECT USING (user_id = util.current_active_profile_id_internal() AND deleted_at IS NULL);
+    FOR SELECT USING (profile_id = util.current_active_profile_id_internal() AND deleted_at IS NULL);
 CREATE POLICY insert_own_expense_categories ON finance.expense_categories
-    FOR INSERT WITH CHECK (user_id = util.current_active_profile_id_internal());
+    FOR INSERT WITH CHECK (profile_id = util.current_active_profile_id_internal());
 CREATE POLICY update_own_expense_categories ON finance.expense_categories
-    FOR UPDATE USING (user_id = util.current_active_profile_id_internal() AND deleted_at IS NULL)
-    WITH CHECK (user_id = util.current_active_profile_id_internal() AND deleted_at IS NULL);
+    FOR UPDATE USING (profile_id = util.current_active_profile_id_internal() AND deleted_at IS NULL)
+    WITH CHECK (profile_id = util.current_active_profile_id_internal() AND deleted_at IS NULL);
 CREATE POLICY delete_expense_categories_combined ON finance.expense_categories
     FOR DELETE USING (
         deleted_at IS NOT NULL
@@ -174,7 +174,7 @@ CREATE POLICY select_own_expense_subcategories ON finance.expense_subcategories
         SELECT 1 
         FROM finance.expense_categories ec 
         WHERE ec.id = finance.expense_subcategories.category_id 
-        AND ec.user_id = util.current_active_profile_id_internal() 
+        AND ec.profile_id = util.current_active_profile_id_internal() 
         AND ec.deleted_at IS NULL
     ));
 CREATE POLICY insert_own_expense_subcategories ON finance.expense_subcategories
@@ -182,7 +182,7 @@ CREATE POLICY insert_own_expense_subcategories ON finance.expense_subcategories
         SELECT 1 
         FROM finance.expense_categories ec 
         WHERE ec.id = finance.expense_subcategories.category_id 
-        AND ec.user_id = util.current_active_profile_id_internal() 
+        AND ec.profile_id = util.current_active_profile_id_internal() 
         AND ec.deleted_at IS NULL
     ));
 CREATE POLICY update_own_expense_subcategories ON finance.expense_subcategories
@@ -190,7 +190,7 @@ CREATE POLICY update_own_expense_subcategories ON finance.expense_subcategories
         SELECT 1 
         FROM finance.expense_categories ec 
         WHERE ec.id = finance.expense_subcategories.category_id 
-        AND ec.user_id = util.current_active_profile_id_internal() 
+        AND ec.profile_id = util.current_active_profile_id_internal() 
         AND ec.deleted_at IS NULL
     ));
 CREATE POLICY delete_expense_subcategories_combined ON finance.expense_subcategories
@@ -208,12 +208,12 @@ CREATE POLICY delete_expense_subcategories_combined ON finance.expense_subcatego
 ALTER TABLE finance.income_sources ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY select_own_income_sources ON finance.income_sources
-    FOR SELECT USING (user_id = util.current_active_profile_id_internal() AND deleted_at IS NULL);
+    FOR SELECT USING (profile_id = util.current_active_profile_id_internal() AND deleted_at IS NULL);
 CREATE POLICY insert_own_income_sources ON finance.income_sources
-    FOR INSERT WITH CHECK (user_id = util.current_active_profile_id_internal());
+    FOR INSERT WITH CHECK (profile_id = util.current_active_profile_id_internal());
 CREATE POLICY update_own_income_sources ON finance.income_sources
-    FOR UPDATE USING (user_id = util.current_active_profile_id_internal() AND deleted_at IS NULL)
-    WITH CHECK (user_id = util.current_active_profile_id_internal() AND deleted_at IS NULL);
+    FOR UPDATE USING (profile_id = util.current_active_profile_id_internal() AND deleted_at IS NULL)
+    WITH CHECK (profile_id = util.current_active_profile_id_internal() AND deleted_at IS NULL);
 CREATE POLICY delete_income_sources_combined ON finance.income_sources
     FOR DELETE USING (
         deleted_at IS NOT NULL
@@ -226,12 +226,12 @@ CREATE POLICY delete_income_sources_combined ON finance.income_sources
 ALTER TABLE finance.counterparties ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY select_own_counterparties ON finance.counterparties
-    FOR SELECT USING (user_id = util.current_active_profile_id_internal() AND deleted_at IS NULL);
+    FOR SELECT USING (profile_id = util.current_active_profile_id_internal() AND deleted_at IS NULL);
 CREATE POLICY insert_own_counterparties ON finance.counterparties
-    FOR INSERT WITH CHECK (user_id = util.current_active_profile_id_internal());
+    FOR INSERT WITH CHECK (profile_id = util.current_active_profile_id_internal());
 CREATE POLICY update_own_counterparties ON finance.counterparties
-    FOR UPDATE USING (user_id = util.current_active_profile_id_internal() AND deleted_at IS NULL)
-    WITH CHECK (user_id = util.current_active_profile_id_internal() AND deleted_at IS NULL);
+    FOR UPDATE USING (profile_id = util.current_active_profile_id_internal() AND deleted_at IS NULL)
+    WITH CHECK (profile_id = util.current_active_profile_id_internal() AND deleted_at IS NULL);
 CREATE POLICY delete_counterparties_combined ON finance.counterparties
     FOR DELETE USING (
         deleted_at IS NOT NULL
@@ -246,14 +246,14 @@ ALTER TABLE finance.transactions ENABLE ROW LEVEL SECURITY;
 -- SELECT
 CREATE POLICY select_transactions_combined ON finance.transactions
     FOR SELECT USING (
-        (user_id = util.current_active_profile_id_internal() AND deleted_at IS NULL)
+        (profile_id = util.current_active_profile_id_internal() AND deleted_at IS NULL)
         OR util.check_admin_permissions_internal()
     );
 
 -- INSERT
 CREATE POLICY insert_transactions_combined ON finance.transactions
     FOR INSERT WITH CHECK (
-        user_id = util.current_active_profile_id_internal()
+        profile_id = util.current_active_profile_id_internal()
         OR util.check_admin_permissions_internal()
     );
 
@@ -261,12 +261,12 @@ CREATE POLICY insert_transactions_combined ON finance.transactions
 CREATE POLICY update_transactions_combined ON finance.transactions
     FOR UPDATE
     USING (
-        (user_id = util.current_active_profile_id_internal() AND deleted_at IS NULL)  -- normal update
+        (profile_id = util.current_active_profile_id_internal() AND deleted_at IS NULL)  -- normal update
         OR util.check_admin_permissions_internal()           -- admin override
     )
     WITH CHECK (
-        (user_id = util.current_active_profile_id_internal() AND deleted_at IS NULL)  -- normal update
-        OR (user_id = util.current_active_profile_id_internal())                     -- soft-delete (owner can set deleted_at)
+        (profile_id = util.current_active_profile_id_internal() AND deleted_at IS NULL)  -- normal update
+        OR (profile_id = util.current_active_profile_id_internal())                     -- soft-delete (owner can set deleted_at)
         OR util.check_admin_permissions_internal()           -- admin override
     );
 
@@ -304,7 +304,7 @@ BEGIN
                 EXISTS (
                     SELECT 1 FROM finance.transactions t
                     WHERE t.id = finance.%1$I.transaction_id
-                    AND t.user_id = util.current_active_profile_id_internal()
+                    AND t.profile_id = util.current_active_profile_id_internal()
                     AND t.deleted_at IS NULL
                 )
                 OR util.check_admin_permissions_internal()
@@ -318,7 +318,7 @@ BEGIN
                 EXISTS (
                     SELECT 1 FROM finance.transactions t
                     WHERE t.id = finance.%1$I.transaction_id
-                    AND t.user_id = util.current_active_profile_id_internal()
+                    AND t.profile_id = util.current_active_profile_id_internal()
                     AND t.deleted_at IS NULL
                 )
                 OR util.check_admin_permissions_internal()
@@ -333,7 +333,7 @@ BEGIN
                 EXISTS (
                     SELECT 1 FROM finance.transactions t
                     WHERE t.id = finance.%1$I.transaction_id
-                    AND t.user_id = util.current_active_profile_id_internal()
+                    AND t.profile_id = util.current_active_profile_id_internal()
                     AND t.deleted_at IS NULL
                 )
                 OR util.check_admin_permissions_internal()
@@ -342,7 +342,7 @@ BEGIN
                 EXISTS (
                     SELECT 1 FROM finance.transactions t
                     WHERE t.id = finance.%1$I.transaction_id
-                    AND t.user_id = util.current_active_profile_id_internal()
+                    AND t.profile_id = util.current_active_profile_id_internal()
                     AND t.deleted_at IS NULL
                 )
                 OR util.check_admin_permissions_internal()
@@ -373,14 +373,14 @@ ALTER TABLE finance.transactions_recurring ENABLE ROW LEVEL SECURITY;
 -- SELECT
 CREATE POLICY select_transactions_recurring_combined ON finance.transactions_recurring
     FOR SELECT USING (
-        (user_id = util.current_active_profile_id_internal() AND deleted_at IS NULL)
+        (profile_id = util.current_active_profile_id_internal() AND deleted_at IS NULL)
         OR util.check_admin_permissions_internal()
     );
 
 -- INSERT
 CREATE POLICY insert_transactions_recurring_combined ON finance.transactions_recurring
     FOR INSERT WITH CHECK (
-        user_id = util.current_active_profile_id_internal()
+        profile_id = util.current_active_profile_id_internal()
         OR util.check_admin_permissions_internal()
     );
 
@@ -388,12 +388,12 @@ CREATE POLICY insert_transactions_recurring_combined ON finance.transactions_rec
 CREATE POLICY update_transactions_recurring_combined ON finance.transactions_recurring
     FOR UPDATE
     USING (
-        (user_id = util.current_active_profile_id_internal() AND deleted_at IS NULL) -- normal updates only
+        (profile_id = util.current_active_profile_id_internal() AND deleted_at IS NULL) -- normal updates only
         OR util.check_admin_permissions_internal()
     )
     WITH CHECK (
-        (user_id = util.current_active_profile_id_internal() AND deleted_at IS NULL) -- normal updates only
-        OR (user_id = util.current_active_profile_id_internal())                     -- soft-delete allowed
+        (profile_id = util.current_active_profile_id_internal() AND deleted_at IS NULL) -- normal updates only
+        OR (profile_id = util.current_active_profile_id_internal())                     -- soft-delete allowed
         OR util.check_admin_permissions_internal()
     );
 
@@ -427,16 +427,16 @@ ALTER TABLE api.api_rate_limits ENABLE ROW LEVEL SECURITY;
 
 -- Users can only select their own rows
 CREATE POLICY select_own_api_rate_limits ON api.api_rate_limits
-    FOR SELECT USING (user_id = util.current_active_profile_id_internal());
+    FOR SELECT USING (profile_id = util.current_active_profile_id_internal());
 
 -- Users can only insert rows for themselves
 CREATE POLICY insert_own_api_rate_limits ON api.api_rate_limits
-    FOR INSERT WITH CHECK (user_id = util.current_active_profile_id_internal());
+    FOR INSERT WITH CHECK (profile_id = util.current_active_profile_id_internal());
 
 -- Users can only update their own rows
 CREATE POLICY update_own_api_rate_limits ON api.api_rate_limits
-    FOR UPDATE USING (user_id = util.current_active_profile_id_internal())
-    WITH CHECK (user_id = util.current_active_profile_id_internal());
+    FOR UPDATE USING (profile_id = util.current_active_profile_id_internal())
+    WITH CHECK (profile_id = util.current_active_profile_id_internal());
 
 -- Admins can only delete rows
 CREATE POLICY delete_own_api_rate_limits ON api.api_rate_limits
@@ -453,7 +453,7 @@ CREATE POLICY select_exchange_rates ON finance.exchange_rates
     USING (
         deleted_at IS NULL
         AND (
-            user_id = util.current_active_profile_id_internal()
+            profile_id = util.current_active_profile_id_internal()
             OR util.check_admin_permissions_internal()
         )
     );
@@ -462,7 +462,7 @@ CREATE POLICY select_exchange_rates ON finance.exchange_rates
 CREATE POLICY insert_exchange_rates ON finance.exchange_rates
     FOR INSERT
     WITH CHECK (
-        user_id = util.current_active_profile_id_internal()
+        profile_id = util.current_active_profile_id_internal()
         OR util.check_admin_permissions_internal()
     );
 
@@ -471,14 +471,14 @@ CREATE POLICY update_exchange_rates_combined ON finance.exchange_rates
     FOR UPDATE
     USING (
         (
-            user_id = util.current_active_profile_id_internal()
+            profile_id = util.current_active_profile_id_internal()
             AND deleted_at IS NULL
         )
         OR util.check_admin_permissions_internal()
     )
     WITH CHECK (
         (
-            user_id = util.current_active_profile_id_internal()
+            profile_id = util.current_active_profile_id_internal()
         )
         OR util.check_admin_permissions_internal()
     );

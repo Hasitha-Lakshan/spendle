@@ -3,17 +3,17 @@
 -- ===============================================================================
 -- Active exchange rates per user + currency pair
 CREATE UNIQUE INDEX IF NOT EXISTS exchange_rates_user_from_to_active_unique
-ON finance.exchange_rates (user_id, from_currency, to_currency)
+ON finance.exchange_rates (profile_id, from_currency, to_currency)
 WHERE deleted_at IS NULL;
 
 -- Active accounts per user, account name, and type (case-insensitive)
 CREATE UNIQUE INDEX IF NOT EXISTS accounts_user_name_type_active_unique
-ON finance.accounts (user_id, lower(account_name), type)
+ON finance.accounts (profile_id, lower(account_name), type)
 WHERE deleted_at IS NULL;
 
 -- Active expense categories per user
 CREATE UNIQUE INDEX IF NOT EXISTS expense_categories_user_name_active_unique
-ON finance.expense_categories (user_id, lower(name))
+ON finance.expense_categories (profile_id, lower(name))
 WHERE deleted_at IS NULL;
 
 -- Active expense subcategories per category
@@ -23,12 +23,12 @@ WHERE deleted_at IS NULL;
 
 -- Active income sources per user
 CREATE UNIQUE INDEX IF NOT EXISTS income_sources_user_name_active_unique
-ON finance.income_sources (user_id, lower(name))
+ON finance.income_sources (profile_id, lower(name))
 WHERE deleted_at IS NULL;
 
 -- Active counterparties per user + name + type
 CREATE UNIQUE INDEX IF NOT EXISTS counterparties_user_name_type_active_unique
-ON finance.counterparties (user_id, lower(name), type)
+ON finance.counterparties (profile_id, lower(name), type)
 WHERE deleted_at IS NULL;
 
 -- Active recurring transaction templates
@@ -39,24 +39,24 @@ WHERE deleted_at IS NULL;
 -- ===============================================================================
 -- 2. Foreign key / per-user indexes (for RLS and joins)
 -- ===============================================================================
-CREATE INDEX IF NOT EXISTS idx_accounts_user_id ON finance.accounts(user_id);
-CREATE INDEX IF NOT EXISTS idx_expense_categories_user_id ON finance.expense_categories(user_id);
+CREATE INDEX IF NOT EXISTS idx_accounts_profile_id ON finance.accounts(profile_id);
+CREATE INDEX IF NOT EXISTS idx_expense_categories_profile_id ON finance.expense_categories(profile_id);
 CREATE INDEX IF NOT EXISTS idx_expense_subcategories_category_id ON finance.expense_subcategories(category_id);
-CREATE INDEX IF NOT EXISTS idx_income_sources_user_id ON finance.income_sources(user_id);
-CREATE INDEX IF NOT EXISTS idx_counterparties_user_id ON finance.counterparties(user_id);
+CREATE INDEX IF NOT EXISTS idx_income_sources_profile_id ON finance.income_sources(profile_id);
+CREATE INDEX IF NOT EXISTS idx_counterparties_profile_id ON finance.counterparties(profile_id);
 
-CREATE INDEX IF NOT EXISTS idx_transactions_user_id ON finance.transactions(user_id);
+CREATE INDEX IF NOT EXISTS idx_transactions_profile_id ON finance.transactions(profile_id);
 CREATE INDEX IF NOT EXISTS idx_transactions_type ON finance.transactions(type);
 
 -- ===============================================================================
 -- 3. Soft-delete-aware partial indexes
 -- ===============================================================================
-CREATE INDEX IF NOT EXISTS idx_accounts_active ON finance.accounts(user_id, type) WHERE deleted_at IS NULL;
-CREATE INDEX IF NOT EXISTS idx_transactions_active ON finance.transactions(user_id, created_at) WHERE deleted_at IS NULL;
-CREATE INDEX IF NOT EXISTS idx_counterparties_active ON finance.counterparties(user_id, type) WHERE deleted_at IS NULL;
-CREATE INDEX IF NOT EXISTS idx_expense_categories_active ON finance.expense_categories(user_id, name) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_accounts_active ON finance.accounts(profile_id, type) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_transactions_active ON finance.transactions(profile_id, created_at) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_counterparties_active ON finance.counterparties(profile_id, type) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_expense_categories_active ON finance.expense_categories(profile_id, name) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_expense_subcategories_active ON finance.expense_subcategories(category_id, name) WHERE deleted_at IS NULL;
-CREATE INDEX IF NOT EXISTS idx_income_sources_active ON finance.income_sources(user_id, name) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_income_sources_active ON finance.income_sources(profile_id, name) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_transactions_recurring_deleted_at ON finance.transactions_recurring(deleted_at) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_transactions_deleted_at ON finance.transactions(deleted_at);
 
@@ -65,10 +65,10 @@ CREATE INDEX IF NOT EXISTS idx_transactions_deleted_at ON finance.transactions(d
 -- ===============================================================================
 -- Filter by date / type for per-user queries
 CREATE INDEX IF NOT EXISTS idx_transactions_user_transaction_date 
-    ON finance.transactions(user_id, transaction_date DESC) WHERE deleted_at IS NULL;
+    ON finance.transactions(profile_id, transaction_date DESC) WHERE deleted_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_transactions_user_type_transaction_date
-    ON finance.transactions(user_id, type, transaction_date DESC) WHERE deleted_at IS NULL;
+    ON finance.transactions(profile_id, type, transaction_date DESC) WHERE deleted_at IS NULL;
 
 -- ===============================================================================
 -- 5. Transaction-type table indexes
@@ -111,7 +111,7 @@ CREATE INDEX IF NOT EXISTS idx_txa_account_id ON finance.transactions_adjustment
 -- ===============================================================================
 -- Common lookups
 CREATE INDEX IF NOT EXISTS idx_audit_user_table_record 
-    ON audit.audit_logs(user_id, table_name, record_id);
+    ON audit.audit_logs(profile_id, table_name, record_id);
 CREATE INDEX IF NOT EXISTS idx_audit_executed_by ON audit.audit_logs(executed_by);
 CREATE INDEX IF NOT EXISTS idx_audit_created_at ON audit.audit_logs(created_at);
 
@@ -130,7 +130,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_new_converted_amount ON audit.audit_logs ((
 -- ===============================================================================
 -- API rate-limits
 CREATE INDEX IF NOT EXISTS idx_rate_limits_user_endpoint 
-    ON api.api_rate_limits(user_id, endpoint, last_request_at);
+    ON api.api_rate_limits(profile_id, endpoint, last_request_at);
 
 -- Cleanup / retention support
 CREATE INDEX IF NOT EXISTS idx_api_rate_limits_created_at
@@ -141,17 +141,17 @@ CREATE INDEX IF NOT EXISTS idx_api_rate_limits_created_at
 -- ===============================================================================
 -- Transactions: Index by user and original_amount
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_transactions_original_amount_range
-    ON finance.transactions(user_id, original_amount)
+    ON finance.transactions(profile_id, original_amount)
     WHERE deleted_at IS NULL;
 
 -- Transactions: Index by user and converted_amount
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_transactions_converted_amount_range
-    ON finance.transactions(user_id, converted_amount)
+    ON finance.transactions(profile_id, converted_amount)
     WHERE deleted_at IS NULL;
 
 -- Transactions: Index by month (generated column)
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_transactions_transaction_month
-    ON finance.transactions(user_id, transaction_month)
+    ON finance.transactions(profile_id, transaction_month)
     WHERE deleted_at IS NULL;
 
 -- Transactions: JSONB index for type and amount (generated column)
@@ -161,6 +161,6 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_transaction_details_jsonb
 
 -- Recent transactions (boolean column)
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_recent_transactions
-    ON finance.transactions(user_id, transaction_date DESC)
+    ON finance.transactions(profile_id, transaction_date DESC)
     WHERE deleted_at IS NULL
     AND is_recent = TRUE;
