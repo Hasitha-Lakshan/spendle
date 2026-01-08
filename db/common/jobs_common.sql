@@ -25,8 +25,8 @@
 --   - Uses `hard_delete_record_internal` to handle dependencies and ensure safe deletion
 -- =========================================
 CREATE OR REPLACE FUNCTION finance.cleanup_soft_deleted_records_internal(
-    older_than_days INTEGER DEFAULT 90,
-    batch_size INTEGER DEFAULT 500  -- number of rows to process per batch
+    p_older_than_days NUMERIC DEFAULT 90,
+    p_batch_size INTEGER DEFAULT 500  -- number of rows to process per batch
 )
 RETURNS TABLE(
     table_name TEXT,
@@ -39,9 +39,9 @@ SET search_path = pg_catalog, finance, audit, util
 VOLATILE
 AS $$
 DECLARE
-    cutoff_date TIMESTAMPTZ;
+    v_cutoff_date TIMESTAMPTZ;
     -- List of all tables with soft-delete support
-    tables_to_clean TEXT[] := ARRAY[
+    v_tables_to_clean TEXT[] := ARRAY[
         -- Transactions and related
         'finance.transactions', 'finance.transactions_recurring',
         'finance.transactions_income', 'finance.transactions_expense',
@@ -59,55 +59,55 @@ DECLARE
         'finance.exchange_rates'
     ];
 
-    tbl TEXT;
-    rec RECORD;
-    deleted_counter BIGINT;
-    failed_counter BIGINT;
-    rows_fetched BIGINT;
+    v_tbl TEXT;
+    v_rec RECORD;
+    v_deleted_counter BIGINT;
+    v_failed_counter BIGINT;
+    v_rows_fetched BIGINT;
 BEGIN
     -- Enable hard-delete bypass for entire session
     PERFORM set_config('app.hard_delete', 'on', true);
 
-    cutoff_date := NOW() - (older_than_days || ' days')::INTERVAL;
+    v_cutoff_date := NOW() - (p_older_than_days || ' days')::INTERVAL;
 
-    FOREACH tbl IN ARRAY tables_to_clean LOOP
-        deleted_counter := 0;
-        failed_counter := 0;
+    FOREACH v_tbl IN ARRAY v_tables_to_clean LOOP
+        v_deleted_counter := 0;
+        v_failed_counter := 0;
         LOOP
             -- Fetch a batch of IDs to process
-            rows_fetched := 0;
-            FOR rec IN EXECUTE format(
+            v_rows_fetched := 0;
+            FOR v_rec IN EXECUTE format(
                 'SELECT id FROM %I.%I WHERE deleted_at IS NOT NULL AND deleted_at < $1 ORDER BY deleted_at LIMIT %s FOR UPDATE',
-                split_part(tbl, '.', 1),
-                split_part(tbl, '.', 2),
-                batch_size
-            ) USING cutoff_date
+                split_part(v_tbl, '.', 1),
+                split_part(v_tbl, '.', 2),
+                p_batch_size
+            ) USING v_cutoff_date
             LOOP
-                rows_fetched := rows_fetched + 1;
+                v_rows_fetched := v_rows_fetched + 1;
 
                 BEGIN
                     -- Call the existing hard_delete_record_internal function
-                    IF finance.hard_delete_record_internal(tbl, rec.id) THEN
-                        deleted_counter := deleted_counter + 1;
+                    IF finance.hard_delete_record_internal(v_tbl, v_rec.id) THEN
+                        v_deleted_counter := v_deleted_counter + 1;
                     END IF;
                 EXCEPTION
                     WHEN OTHERS THEN
-                        failed_counter := failed_counter + 1;
+                        v_failed_counter := v_failed_counter + 1;
 
                         -- Log failure
                         RAISE NOTICE
                             'Failed to hard delete record % from table % (SQLSTATE %): %',
-                            rec.id, tbl, SQLSTATE, SQLERRM;
+                            v_rec.id, v_tbl, SQLSTATE, SQLERRM;
                 END;
             END LOOP;
 
             -- If no rows were fetched in this batch, exit the inner loop
-            EXIT WHEN rows_fetched = 0;
+            EXIT WHEN v_rows_fetched = 0;
         END LOOP;
 
         -- Return the results for this table
         RETURN QUERY
-        SELECT tbl, deleted_counter, failed_counter;
+        SELECT v_tbl, v_deleted_counter, v_failed_counter;
     END LOOP;
 END;
 $$;
@@ -131,7 +131,7 @@ SELECT cron.schedule(
 --   - Returns the number of rows deleted
 --
 -- Parameters:
---   p_days_to_keep INTEGER DEFAULT 90 - Number of days to retain audit logs
+--   p_older_than_days INTEGER DEFAULT 90 - Number of days to retain audit logs
 --
 -- Returns:
 --   INTEGER - Number of audit log records deleted
@@ -141,7 +141,7 @@ SELECT cron.schedule(
 --   - Helps control storage growth for audit_logs table
 -- =========================================
 CREATE OR REPLACE FUNCTION audit.cleanup_old_audit_logs_internal(
-    p_days_to_keep INTEGER DEFAULT 90,
+    p_older_than_days NUMERIC DEFAULT 90,
     p_batch_size INTEGER DEFAULT 1000  -- number of rows to delete per batch
 )
 RETURNS INTEGER
@@ -154,16 +154,16 @@ DECLARE
     v_deleted_count INTEGER := 0;        -- total deleted rows
     v_batch_deleted INTEGER := 0;        -- rows deleted in current batch
     v_cutoff_date TIMESTAMPTZ;
-    rec RECORD;
+    v_rec RECORD;
 BEGIN
     -- Calculate cutoff date
-    v_cutoff_date := CURRENT_DATE - (p_days_to_keep || ' days')::INTERVAL;
+    v_cutoff_date := NOW() - (p_older_than_days || ' days')::INTERVAL;
 
     LOOP
         v_batch_deleted := 0;
 
         -- Select a batch of old audit log IDs to delete
-        FOR rec IN
+        FOR v_rec IN
             SELECT id
             FROM audit.audit_logs
             WHERE created_at < v_cutoff_date
@@ -173,7 +173,7 @@ BEGIN
         LOOP
             -- Delete each row individually
             DELETE FROM audit.audit_logs
-            WHERE id = rec.id;
+            WHERE id = v_rec.id;
 
             v_batch_deleted := v_batch_deleted + 1;
         END LOOP;
@@ -186,7 +186,7 @@ BEGIN
     END LOOP;
 
     -- Optional notice for job logs
-    RAISE NOTICE 'Deleted % audit logs older than % days', v_deleted_count, p_days_to_keep;
+    RAISE NOTICE 'Deleted % audit logs older than % days', v_deleted_count, p_older_than_days;
 
     RETURN v_deleted_count;
 END;
@@ -221,7 +221,7 @@ SELECT cron.schedule(
 --   - Helps ensure accurate rate limiting without table bloat
 -- =========================================
 CREATE OR REPLACE FUNCTION util.cleanup_old_rate_limits_internal(
-    p_hours_to_keep INTEGER DEFAULT 24,
+    p_older_than_hours NUMERIC DEFAULT 24,
     p_batch_size INTEGER DEFAULT 1000
 )
 RETURNS INTEGER
@@ -231,12 +231,12 @@ SET search_path = pg_catalog, api, util
 VOLATILE
 AS $$
 DECLARE
-    cutoff_timestamp TIMESTAMPTZ;
+    v_cutoff_timestamp TIMESTAMPTZ;
     v_deleted_count INTEGER := 0;
     v_batch_deleted INTEGER;
 BEGIN
     -- Calculate cutoff timestamp
-    cutoff_timestamp := NOW() - (p_hours_to_keep || ' hours')::INTERVAL;
+    v_cutoff_timestamp := NOW() - (p_older_than_hours || ' hours')::INTERVAL;
 
     LOOP
         /*
@@ -248,7 +248,7 @@ BEGIN
         WITH to_delete AS (
             SELECT id
             FROM api.api_rate_limits
-            WHERE created_at < cutoff_timestamp
+            WHERE created_at < v_cutoff_timestamp
             ORDER BY created_at
             LIMIT p_batch_size
             FOR UPDATE SKIP LOCKED
@@ -269,7 +269,7 @@ BEGIN
     -- Optional notice for job logs
     RAISE NOTICE
         'Deleted % API rate limit records older than % hours',
-        v_deleted_count, p_hours_to_keep;
+        v_deleted_count, p_older_than_hours;
 
     RETURN v_deleted_count;
 END;
