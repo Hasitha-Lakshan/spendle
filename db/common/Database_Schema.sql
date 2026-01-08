@@ -63,6 +63,8 @@ CREATE TYPE finance.counterparty_type AS ENUM ('person','merchant','company','ba
 -- Recurrence frequency for the recurring engine
 CREATE TYPE finance.recurrence_frequency AS ENUM ('daily','weekly','monthly','yearly');
 
+CREATE TYPE audit.job_status AS ENUM ('completed', 'failed', 'partial');
+
 -- =========================================
 -- Users and Profiles
 -- =========================================
@@ -476,7 +478,7 @@ CREATE TABLE IF NOT EXISTS audit.system_job_logs (
     executed_by TEXT NOT NULL DEFAULT 'system',   -- actor performing the job
     started_at TIMESTAMPTZ NOT NULL DEFAULT now(),-- when job started
     finished_at TIMESTAMPTZ,                      -- when job finished
-    status TEXT NOT NULL DEFAULT 'completed',     -- 'completed', 'failed', 'partial'
+    status audit.job_status NOT NULL DEFAULT 'completed',     -- 'completed', 'failed', 'partial'
     result_summary TEXT,                          -- human-readable summary
     details JSONB,                                -- structured data: counts, IDs, errors
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
