@@ -315,9 +315,19 @@ BEGIN
     END IF;
 
     -- Detect soft delete (deleted_at transition)
-    IF TG_OP = 'UPDATE'
-       AND (OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL) THEN
-        v_action_label := 'SOFT_DELETE';
+    IF TG_OP = 'UPDATE' THEN
+        -- Only check deleted_at if the column exists
+        IF EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = TG_TABLE_SCHEMA
+            AND table_name = TG_TABLE_NAME
+            AND column_name = 'deleted_at'
+        ) THEN
+            IF OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL THEN
+                v_action_label := 'SOFT_DELETE';
+            END IF;
+        END IF;
     END IF;
 
     -- 5. RESOLVE AFFECTED USER (ALWAYS core.profiles.id)
