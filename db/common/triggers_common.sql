@@ -53,7 +53,7 @@ BEGIN
           AND c.table_schema IN ('core', 'finance', 'audit', 'api')  -- include all relevant schemas
     LOOP
         -- Deterministic, length-safe trigger name
-        trigger_name := 'trg_updated_at_' || substr(md5(r.table_schema || '.' || r.table_name), 1, 10);
+        trigger_name := 'trg_9949_updated_at_' || substr(md5(r.table_schema || '.' || r.table_name), 1, 10);
 
         BEGIN
             EXECUTE format(
@@ -209,7 +209,7 @@ DECLARE
 BEGIN
     FOR i IN array_lower(tables_to_protect,1)..array_upper(tables_to_protect,1) LOOP
         -- Deterministic trigger name
-        trigger_name := 'trg_' || tables_to_protect[i][2] || '_no_delete';
+        trigger_name := 'trg_9900_' || tables_to_protect[i][2] || '_no_delete';
 
         -- Attempt trigger creation, ignore duplicates
         BEGIN
@@ -480,7 +480,7 @@ BEGIN
         FROM audit.audit_table_registry r
         WHERE r.enabled = TRUE
     LOOP
-        trigger_name := 'trg_audit_' || t.table_schema || '_' || t.table_name;
+        trigger_name := 'trg_9999_audit_' || t.table_schema || '_' || t.table_name;
 
         BEGIN
             EXECUTE format(
@@ -583,7 +583,7 @@ END;
 $$;
 
 -- Trigger: before update on profiles
-CREATE TRIGGER trigger_cascade_soft_delete_profile
+CREATE TRIGGER trigger_0100_cascade_soft_delete_profile
 BEFORE UPDATE OF deleted_at
 ON core.profiles
 FOR EACH ROW

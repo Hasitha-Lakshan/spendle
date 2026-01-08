@@ -209,49 +209,49 @@ $$;
 -- Create triggers on each specialized account table (fully schema-qualified)
 
 -- Cash
-CREATE TRIGGER trg_01_validate_cash_balance
+CREATE TRIGGER trg_0100_validate_cash_balance
 BEFORE INSERT OR UPDATE ON finance.cash_accounts
 FOR EACH ROW
 EXECUTE FUNCTION finance.validate_account_balance();
 
 -- Bank
-CREATE TRIGGER trg_01_validate_bank_balance
+CREATE TRIGGER trg_0100_validate_bank_balance
 BEFORE INSERT OR UPDATE ON finance.bank_accounts
 FOR EACH ROW
 EXECUTE FUNCTION finance.validate_account_balance();
 
 -- Wallet
-CREATE TRIGGER trg_01_validate_wallet_balance
+CREATE TRIGGER trg_0100_validate_wallet_balance
 BEFORE INSERT OR UPDATE ON finance.wallet_accounts
 FOR EACH ROW
 EXECUTE FUNCTION finance.validate_account_balance();
 
 -- Crypto
-CREATE TRIGGER trg_01_validate_crypto_balance
+CREATE TRIGGER trg_0100_validate_crypto_balance
 BEFORE INSERT OR UPDATE ON finance.crypto_accounts
 FOR EACH ROW
 EXECUTE FUNCTION finance.validate_account_balance();
 
 -- Credit Card
-CREATE TRIGGER trg_01_validate_credit_card_balance
+CREATE TRIGGER trg_0100_validate_credit_card_balance
 BEFORE INSERT OR UPDATE ON finance.credit_card_accounts
 FOR EACH ROW
 EXECUTE FUNCTION finance.validate_account_balance();
 
 -- Loan
-CREATE TRIGGER trg_01_validate_loan_balance
+CREATE TRIGGER trg_0100_validate_loan_balance
 BEFORE INSERT OR UPDATE ON finance.loan_accounts
 FOR EACH ROW
 EXECUTE FUNCTION finance.validate_account_balance();
 
 -- Investment
-CREATE TRIGGER trg_01_validate_investment_balance
+CREATE TRIGGER trg_0100_validate_investment_balance
 BEFORE INSERT OR UPDATE ON finance.investment_accounts
 FOR EACH ROW
 EXECUTE FUNCTION finance.validate_account_balance();
 
 -- Receivable
-CREATE TRIGGER trg_01_validate_receivable_balance
+CREATE TRIGGER trg_0100_validate_receivable_balance
 BEFORE INSERT OR UPDATE ON finance.receivable_accounts
 FOR EACH ROW
 EXECUTE FUNCTION finance.validate_account_balance();
@@ -307,7 +307,7 @@ END;
 $$;
 
 -- Create trigger on receivable_accounts table (fully schema-qualified)
-CREATE TRIGGER trg_02_receivable_status
+CREATE TRIGGER trg_0101_receivable_status
 BEFORE INSERT OR UPDATE ON finance.receivable_accounts
 FOR EACH ROW
 EXECUTE FUNCTION finance.update_receivable_status();
@@ -363,7 +363,7 @@ END;
 $$;
 
 -- Create trigger on loan_accounts table (fully schema-qualified)
-CREATE TRIGGER trg_02_loan_status
+CREATE TRIGGER trg_0101_loan_status
 BEFORE INSERT OR UPDATE ON finance.loan_accounts
 FOR EACH ROW
 EXECUTE FUNCTION finance.update_loan_status();
@@ -413,8 +413,7 @@ BEGIN
     SELECT a.profile_id
     INTO v_profile_id
     FROM finance.accounts a
-    WHERE a.id = OLD.account_id
-        AND deleted_at IS NULL;
+    WHERE a.id = OLD.account_id; -- it it comes from soft-delete or hard-delete account record is already soft-deleted.
 
     IF NOT FOUND THEN
         RAISE EXCEPTION
@@ -521,49 +520,49 @@ $$;
 -- Create triggers on each specialized account table (fully schema-qualified)
 
 -- Cash
-CREATE TRIGGER trg_03_prevent_cash_balance_change
+CREATE TRIGGER trg_0102_prevent_cash_balance_change
 BEFORE UPDATE OR DELETE ON finance.cash_accounts
 FOR EACH ROW
 EXECUTE FUNCTION finance.prevent_balance_change_if_transactions();
 
 -- Bank
-CREATE TRIGGER trg_03_prevent_bank_balance_change
+CREATE TRIGGER trg_0102_prevent_bank_balance_change
 BEFORE UPDATE OR DELETE ON finance.bank_accounts
 FOR EACH ROW
 EXECUTE FUNCTION finance.prevent_balance_change_if_transactions();
 
 -- Wallet
-CREATE TRIGGER trg_03_prevent_wallet_balance_change
+CREATE TRIGGER trg_0102_prevent_wallet_balance_change
 BEFORE UPDATE OR DELETE ON finance.wallet_accounts
 FOR EACH ROW
 EXECUTE FUNCTION finance.prevent_balance_change_if_transactions();
 
 -- Crypto
-CREATE TRIGGER trg_03_prevent_crypto_balance_change
+CREATE TRIGGER trg_0102_prevent_crypto_balance_change
 BEFORE UPDATE OR DELETE ON finance.crypto_accounts
 FOR EACH ROW
 EXECUTE FUNCTION finance.prevent_balance_change_if_transactions();
 
 -- Credit Card
-CREATE TRIGGER trg_03_prevent_credit_card_balance_change
+CREATE TRIGGER trg_0102_prevent_credit_card_balance_change
 BEFORE UPDATE OR DELETE ON finance.credit_card_accounts
 FOR EACH ROW
 EXECUTE FUNCTION finance.prevent_balance_change_if_transactions();
 
 -- Investment
-CREATE TRIGGER trg_03_prevent_investment_balance_change
+CREATE TRIGGER trg_0102_prevent_investment_balance_change
 BEFORE UPDATE OR DELETE ON finance.investment_accounts
 FOR EACH ROW
 EXECUTE FUNCTION finance.prevent_balance_change_if_transactions();
 
 -- Loan
-CREATE TRIGGER trg_03_prevent_loan_balance_change
+CREATE TRIGGER trg_0102_prevent_loan_balance_change
 BEFORE UPDATE OR DELETE ON finance.loan_accounts
 FOR EACH ROW
 EXECUTE FUNCTION finance.prevent_balance_change_if_transactions();
 
 -- Receivable
-CREATE TRIGGER trg_03_prevent_receivable_balance_change
+CREATE TRIGGER trg_0102_prevent_receivable_balance_change
 BEFORE UPDATE OR DELETE ON finance.receivable_accounts
 FOR EACH ROW
 EXECUTE FUNCTION finance.prevent_balance_change_if_transactions();
@@ -617,49 +616,49 @@ END;
 $$;
 
 -- Cash
-CREATE TRIGGER trg_04_prevent_cash_soft_delete
+CREATE TRIGGER trg_0103_prevent_cash_soft_delete
 BEFORE UPDATE ON finance.cash_accounts
 FOR EACH ROW
 EXECUTE FUNCTION finance.prevent_specialized_soft_delete();
 
 -- Bank
-CREATE TRIGGER trg_04_prevent_bank_soft_delete
+CREATE TRIGGER trg_0103_prevent_bank_soft_delete
 BEFORE UPDATE ON finance.bank_accounts
 FOR EACH ROW
 EXECUTE FUNCTION finance.prevent_specialized_soft_delete();
 
 -- Credit Card
-CREATE TRIGGER trg_04_prevent_credit_card_soft_delete
+CREATE TRIGGER trg_0103_prevent_credit_card_soft_delete
 BEFORE UPDATE ON finance.credit_card_accounts
 FOR EACH ROW
 EXECUTE FUNCTION finance.prevent_specialized_soft_delete();
 
 -- Loan
-CREATE TRIGGER trg_04_prevent_loan_soft_delete
+CREATE TRIGGER trg_0103_prevent_loan_soft_delete
 BEFORE UPDATE ON finance.loan_accounts
 FOR EACH ROW
 EXECUTE FUNCTION finance.prevent_specialized_soft_delete();
 
 -- Investment
-CREATE TRIGGER trg_04_prevent_investment_soft_delete
+CREATE TRIGGER trg_0103_prevent_investment_soft_delete
 BEFORE UPDATE ON finance.investment_accounts
 FOR EACH ROW
 EXECUTE FUNCTION finance.prevent_specialized_soft_delete();
 
 -- Crypto
-CREATE TRIGGER trg_04_prevent_crypto_soft_delete
+CREATE TRIGGER trg_0103_prevent_crypto_soft_delete
 BEFORE UPDATE ON finance.crypto_accounts
 FOR EACH ROW
 EXECUTE FUNCTION finance.prevent_specialized_soft_delete();
 
 -- Wallet
-CREATE TRIGGER trg_04_prevent_wallet_soft_delete
+CREATE TRIGGER trg_0103_prevent_wallet_soft_delete
 BEFORE UPDATE ON finance.wallet_accounts
 FOR EACH ROW
 EXECUTE FUNCTION finance.prevent_specialized_soft_delete();
 
 -- Receivable
-CREATE TRIGGER trg_04_prevent_receivable_soft_delete
+CREATE TRIGGER trg_0103_prevent_receivable_soft_delete
 BEFORE UPDATE ON finance.receivable_accounts
 FOR EACH ROW
 EXECUTE FUNCTION finance.prevent_specialized_soft_delete();
@@ -710,7 +709,7 @@ END;
 $$;
 
 -- Create trigger on accounts table (fully schema-qualified)
-CREATE TRIGGER trg_01_prevent_account_type_change
+CREATE TRIGGER trg_0100_prevent_account_type_change
 BEFORE UPDATE ON finance.accounts
 FOR EACH ROW
 EXECUTE FUNCTION finance.prevent_account_type_change();
@@ -788,7 +787,7 @@ END;
 $$;
 
 -- Add triggers for account validation
-CREATE TRIGGER trg_02_validate_account_modification
+CREATE TRIGGER trg_0101_validate_account_modification
 BEFORE UPDATE OR DELETE ON finance.accounts
 FOR EACH ROW
 EXECUTE FUNCTION finance.validate_account_modification();
@@ -882,6 +881,6 @@ END;
 $$;
 
 -- Create trigger on accounts table (fully schema-qualified)
-CREATE TRIGGER trg_cleanup_specialized_account
+CREATE TRIGGER trg_0150_cleanup_specialized_account
 AFTER UPDATE ON finance.accounts
 FOR EACH ROW EXECUTE FUNCTION finance.soft_delete_specialized_account();
