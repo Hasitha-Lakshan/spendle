@@ -1334,6 +1334,7 @@ VOLATILE
 AS $$
 DECLARE
     v_user_id UUID := auth.uid();
+    v_profile_id UUID;
     v_deleted BOOLEAN;
 BEGIN
     -- Input validation
@@ -1352,6 +1353,18 @@ BEGIN
             'success', false,
             'code', 'NOT_AUTHENTICATED',
             'message', 'User is not authenticated',
+            'data', NULL
+        );
+    END IF;
+
+    -- Get current active profile ID
+    v_profile_id := util.current_active_profile_id_internal();
+    
+    IF v_profile_id IS DISTINCT FROM p_profile_id THEN
+        RETURN jsonb_build_object(
+            'success', FALSE,
+            'code', 'FORBIDDEN',
+            'message', 'You can only soft-delete your own profile',
             'data', NULL
         );
     END IF;
