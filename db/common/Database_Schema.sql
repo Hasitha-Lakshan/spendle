@@ -473,45 +473,48 @@ CREATE TABLE audit.audit_logs (
 -- System Job Logs
 -- =========================================
 CREATE TABLE IF NOT EXISTS audit.system_job_logs (
-    id BIGSERIAL PRIMARY KEY,                     -- internal unique identifier
-    job_name TEXT NOT NULL,                       -- name of the scheduled job
-    executed_by TEXT NOT NULL DEFAULT 'system',   -- actor performing the job
-    started_at TIMESTAMPTZ NOT NULL DEFAULT now(),-- when job started
-    finished_at TIMESTAMPTZ,                      -- when job finished
-    status audit.job_status NOT NULL DEFAULT 'completed',     -- 'completed', 'failed', 'partial'
-    result_summary TEXT,                          -- human-readable summary
-    details JSONB,                                -- structured data: counts, IDs, errors
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  id BIGSERIAL PRIMARY KEY,                     -- internal unique identifier
+  job_name TEXT NOT NULL,                       -- name of the scheduled job
+  executed_by TEXT NOT NULL DEFAULT 'system',   -- actor performing the job
+  started_at TIMESTAMPTZ NOT NULL DEFAULT now(),-- when job started
+  finished_at TIMESTAMPTZ,                      -- when job finished
+  status audit.job_status NOT NULL DEFAULT 'completed',     -- 'completed', 'failed', 'partial'
+  result_summary TEXT,                          -- human-readable summary
+  details JSONB,                                -- structured data: counts, IDs, errors
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  deleted_at timestamptz NULL DEFAULT NULL
 );
 
 -- =========================================
 -- Audit Table Registry
 -- =========================================
 CREATE TABLE IF NOT EXISTS audit.audit_table_registry (
-    id BIGSERIAL PRIMARY KEY,
-    table_schema TEXT NOT NULL,
-    table_name TEXT NOT NULL,
-    enabled BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at timestamptz DEFAULT now() NOT NULL,
-    updated_at timestamptz DEFAULT now() NOT NULL,
+  id BIGSERIAL PRIMARY KEY,
+  table_schema TEXT NOT NULL,
+  table_name TEXT NOT NULL,
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at timestamptz DEFAULT now() NOT NULL,
+  updated_at timestamptz DEFAULT now() NOT NULL,
+  deleted_at timestamptz NULL DEFAULT NULL,
 
-    CONSTRAINT uq_table_schema_name UNIQUE (table_schema, table_name)
+  CONSTRAINT uq_table_schema_name UNIQUE (table_schema, table_name)
 );
 
 -- =========================================
 -- API Rate Limits
 -- =========================================
 CREATE TABLE IF NOT EXISTS api.api_rate_limits (
-    id BIGSERIAL PRIMARY KEY,
-    profile_id UUID NOT NULL REFERENCES core.profiles(id),
-    endpoint VARCHAR(100) NOT NULL,
-    request_count INTEGER DEFAULT 1 NOT NULL,
-    last_request_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
-    updated_at timestamptz DEFAULT now() NOT NULL,
+  id BIGSERIAL PRIMARY KEY,
+  profile_id UUID NOT NULL REFERENCES core.profiles(id),
+  endpoint VARCHAR(100) NOT NULL,
+  request_count INTEGER DEFAULT 1 NOT NULL,
+  last_request_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+  updated_at timestamptz DEFAULT now() NOT NULL,
+  deleted_at timestamptz NULL DEFAULT NULL,
 
-    CONSTRAINT api_rate_limits_user_endpoint_unique UNIQUE (profile_id, endpoint)
+  CONSTRAINT api_rate_limits_user_endpoint_unique UNIQUE (profile_id, endpoint)
 );
 
 -- Auto-populate audit_table_registry with existing tables
