@@ -1,5 +1,5 @@
 -- =========================================
--- 01. Function: util.build_actor_internal
+-- 01. Function: build_actor_internal
 -- =========================================
 -- Purpose:
 --   Constructs a normalized actor identifier string used for auditing,
@@ -66,7 +66,7 @@ END;
 $$;
 
 -- =========================================
--- 02. Function: util.current_active_profile_id_internal
+-- 02. Function: current_active_profile_id_internal
 -- =========================================
 -- Purpose:
 --   Resolves the current authenticated user's active profile ID.
@@ -1202,7 +1202,7 @@ END;
 $$;
 
 -- =========================================
--- 13. Function: finance.soft_delete_profile_internal
+-- 13. Function: soft_delete_profile_internal
 -- =========================================
 -- Purpose:
 --   Performs a soft-delete of a profile in the `core.profiles` table.
@@ -1287,7 +1287,7 @@ END;
 $$;
 
 -- =========================================
--- 14. Function: public.soft_delete_my_profile
+-- 14. Function: soft_delete_my_profile
 -- =========================================
 -- Purpose:
 --   Soft-deletes the currently active profile of the authenticated user.
@@ -1296,7 +1296,7 @@ $$;
 -- Behavior:
 --   - Retrieves the current active profile ID using `util.current_active_profile_id_internal()`.
 --   - Returns a `NOT_AUTHENTICATED` error if no active profile exists (i.e., user not logged in).
---   - Calls `core.soft_delete_profile_internal(v_profile_id)` to perform the soft-delete:
+--   - Calls `finance.soft_delete_profile_internal(v_profile_id)` to perform the soft-delete:
 --       * Returns `ALREADY_DELETED` if the profile was already soft-deleted.
 --       * Raises SQLSTATE '02000' if the profile does not exist.
 --       * Returns `TRUE` if the profile was successfully soft-deleted.
@@ -1357,7 +1357,7 @@ BEGIN
     END IF;
 
     -- Call internal function
-    v_deleted := core.soft_delete_profile_internal(p_profile_id);
+    v_deleted := finance.soft_delete_profile_internal(p_profile_id);
 
     -- Already soft-deleted
     IF NOT v_deleted THEN
@@ -1414,7 +1414,7 @@ END;
 $$;
 
 -- =========================================
--- 15. Function: public.admin_soft_delete_user_profile
+-- 15. Function: admin_soft_delete_user_profile
 -- =========================================
 -- Purpose:
 --   Allows an administrator to soft-delete a specific user profile.
@@ -1427,7 +1427,7 @@ $$;
 --       * Returns `NOT_AUTHORIZED` if the user lacks admin rights.
 --   - Validates the input `p_profile_id`:
 --       * Returns `MISSING_PROFILE_ID` if NULL.
---   - Calls `core.soft_delete_profile_internal(p_profile_id)`:
+--   - Calls `finance.soft_delete_profile_internal(p_profile_id)`:
 --       * Returns `ALREADY_DELETED` if the profile was already soft-deleted.
 --       * Raises SQLSTATE '02000' if the profile does not exist.
 --       * Returns `TRUE` if the profile was successfully soft-deleted.
@@ -1486,7 +1486,7 @@ BEGIN
     END IF;
 
     -- Call internal function to soft-delete profile
-    v_deleted := core.soft_delete_profile_internal(p_profile_id);
+    v_deleted := finance.soft_delete_profile_internal(p_profile_id);
 
     -- Already soft-deleted
     IF NOT v_deleted THEN
