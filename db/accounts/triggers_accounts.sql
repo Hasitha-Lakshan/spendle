@@ -413,7 +413,7 @@ BEGIN
     SELECT a.profile_id
     INTO v_profile_id
     FROM finance.accounts a
-    WHERE a.id = OLD.account_id; -- it it comes from soft-delete or hard-delete account record is already soft-deleted.
+    WHERE a.id = OLD.account_id; -- it may trigger from an already soft-deleted account record: no need to check for active accounts here.
 
     IF NOT FOUND THEN
         RAISE EXCEPTION
