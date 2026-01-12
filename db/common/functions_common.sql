@@ -138,7 +138,68 @@ END;
 $$;
 
 -- =========================================
--- 03. Function: current_active_profile_id_internal
+-- 03. Function: is_valid_enum_internal
+-- =========================================
+-- Purpose:
+--   Checks whether a given value exists in a specified ENUM type within a given schema.
+--
+-- Behavior:
+--   - Queries the system catalogs (`pg_enum`, `pg_type`, `pg_namespace`) to determine if
+--     the specified `p_value` is a valid member of the ENUM type `p_enum_type` in the schema `p_schema_name`.
+--   - Returns TRUE if the value exists in the ENUM, otherwise FALSE.
+--
+-- Parameters:
+--   p_schema_name TEXT
+--     The name of the schema containing the ENUM type.
+--
+--   p_enum_type TEXT
+--     The name of the ENUM type to validate against (unqualified).
+--
+--   p_value TEXT
+--     The candidate value to check for membership in the ENUM.
+--
+-- Returns:
+--   BOOLEAN
+--     TRUE if `p_value` exists in the ENUM, FALSE otherwise.
+--
+-- Notes:
+--   - Designed for internal use by functions that require safe ENUM validation
+--     before casting or inserting values into typed columns.
+--   - Marked STABLE as the result depends on catalog metadata, not table data.
+--   - Defined as SECURITY DEFINER to allow execution by restricted callers
+--     without direct access to system catalogs.
+--   - The search_path is restricted to `pg_catalog` to prevent object hijacking.
+-- =========================================
+CREATE OR REPLACE FUNCTION util.is_valid_enum_internal(
+    p_schema_name TEXT,
+    p_enum_type TEXT,
+    p_value TEXT
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+STABLE
+AS $$
+DECLARE
+    v_exists BOOLEAN;
+BEGIN
+    SELECT EXISTS (
+        SELECT 1
+        FROM pg_enum e
+        JOIN pg_type t ON t.oid = e.enumtypid
+        JOIN pg_namespace n ON n.oid = t.typnamespace
+        WHERE t.typname = p_enum_type
+          AND n.nspname = p_schema_name
+          AND e.enumlabel = p_value
+    ) INTO v_exists;
+
+    RETURN v_exists;
+END;
+$$;
+
+-- =========================================
+-- 04. Function: current_active_profile_id_internal
 -- =========================================
 -- Purpose:
 --   Resolves the current authenticated user's active profile ID.
@@ -180,7 +241,7 @@ END;
 $$;
 
 -- =========================================
--- 04. Function: check_admin_permissions_internal
+-- 05. Function: check_admin_permissions_internal
 -- =========================================
 -- Purpose:
 --   Determines whether the current session user has administrative privileges.
@@ -234,7 +295,7 @@ END;
 $$;
 
 -- =========================================
--- 05. Function: check_rate_limit_internal
+-- 06. Function: check_rate_limit_internal
 -- =========================================
 -- Purpose:
 --   Enforces per-user API rate limits for a given endpoint within a rolling time window.
@@ -321,7 +382,7 @@ END;
 $$;
 
 -- =========================================
--- 06. Function: initialize_defaults_for_user_internal
+-- 07. Function: initialize_defaults_for_user_internal
 -- =========================================
 -- Purpose:
 --   Inserts all default data for a given user, including:
@@ -455,7 +516,7 @@ END;
 $$;
 
 -- =========================================
--- 07. Function: initialize_my_defaults_internal
+-- 08. Function: initialize_my_defaults_internal
 -- =========================================
 -- Purpose:
 --   Initializes default data for the current session user if not already inserted.
@@ -532,7 +593,7 @@ END;
 $$;
 
 -- =========================================
--- 08. Function: initialize_my_defaults
+-- 09. Function: initialize_my_defaults
 -- =========================================
 -- Purpose:
 --   Wrapper function to initialize default data for the current session user.
@@ -618,7 +679,7 @@ END;
 $$;
 
 -- =========================================
--- 09. Function: admin_initialize_user_defaults_internal
+-- 10. Function: admin_initialize_user_defaults_internal
 -- =========================================
 -- Purpose:
 --   Allows an administrator to initialize default data for any user.
@@ -703,7 +764,7 @@ END;
 $$;
 
 -- =========================================
--- 10. Function: admin_initialize_user_defaults
+-- 11. Function: admin_initialize_user_defaults
 -- =========================================
 -- Purpose:
 --   Wrapper function to initialize default data for a specified user,
@@ -820,7 +881,7 @@ END;
 $$;
 
 -- =========================================
--- 11. Function: hard_delete_record_internal
+-- 12. Function: hard_delete_record_internal
 -- =========================================
 -- Purpose:
 --   Executes a hard delete of a record from a specified table, including all
@@ -1049,7 +1110,7 @@ END;
 $$;
 
 -- =========================================
--- 12. Function: admin_hard_delete_record_internal
+-- 13. Function: admin_hard_delete_record_internal
 -- =========================================
 -- Purpose:
 --   Performs a hard delete of a record from a specified table, bypassing
@@ -1106,7 +1167,7 @@ END;
 $$;
 
 -- =========================================
--- 13. Function: admin_hard_delete_record
+-- 14. Function: admin_hard_delete_record
 -- =========================================
 -- Purpose:
 --   Wrapper function to perform a hard delete on a specific record
@@ -1254,7 +1315,7 @@ END;
 $$;
 
 -- =========================================
--- 14. Function: soft_delete_profile_internal
+-- 15. Function: soft_delete_profile_internal
 -- =========================================
 -- Purpose:
 --   Performs a soft-delete of a profile in the `core.profiles` table.
@@ -1339,7 +1400,7 @@ END;
 $$;
 
 -- =========================================
--- 15. Function: soft_delete_my_profile
+-- 16. Function: soft_delete_my_profile
 -- =========================================
 -- Purpose:
 --   Soft-deletes the currently active profile of the authenticated user.
@@ -1479,7 +1540,7 @@ END;
 $$;
 
 -- =========================================
--- 16. Function: admin_soft_delete_user_profile
+-- 17. Function: admin_soft_delete_user_profile
 -- =========================================
 -- Purpose:
 --   Allows an administrator to soft-delete a specific user profile.
