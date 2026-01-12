@@ -66,7 +66,79 @@ END;
 $$;
 
 -- =========================================
--- 02. Function: current_active_profile_id_internal
+-- 02. Function: resolve_primary_key_column_internal
+-- =========================================
+-- Purpose:
+--   Resolves the primary key column name for a given table using a strict,
+--   predefined allow-list of supported identifier columns.
+--
+-- Behavior:
+--   - Inspects `information_schema.columns` for the specified schema and table.
+--   - Selects the first matching column from the ordered whitelist:
+--       * 'id'
+--       * 'account_id'
+--       * 'transaction_id'
+--   - Ordering enforces deterministic preference when multiple identifiers exist.
+--   - Raises an exception if no supported primary key column is found.
+--
+-- Parameters:
+--   p_schema_name TEXT
+--     The schema containing the target table.
+--
+--   p_table_name TEXT
+--     The name of the target table (unqualified).
+--
+-- Returns:
+--   TEXT
+--     The resolved primary key column name.
+--
+-- Notes:
+--   - Designed for internal use by privileged operations that require
+--     deterministic primary key resolution (e.g., controlled hard deletes).
+--   - Marked STABLE as the result depends on catalog metadata, not table data.
+--   - Defined as SECURITY DEFINER to allow execution in restricted contexts
+--     where callers may not have direct access to catalog metadata.
+--   - The search_path is restricted to pg_catalog to prevent object hijacking.
+-- =========================================
+CREATE OR REPLACE FUNCTION util.resolve_primary_key_column_internal(
+    p_schema_name TEXT,
+    p_table_name  TEXT
+)
+RETURNS TEXT
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+STABLE
+AS $$
+DECLARE
+    v_primary_key_col TEXT;
+BEGIN
+    SELECT column_name
+    INTO v_primary_key_col
+    FROM information_schema.columns
+    WHERE table_schema = p_schema_name
+      AND table_name  = p_table_name
+      AND column_name IN ('id', 'account_id', 'transaction_id')
+    ORDER BY CASE column_name
+                 WHEN 'id' THEN 1
+                 WHEN 'account_id' THEN 2
+                 WHEN 'transaction_id' THEN 3
+             END
+    LIMIT 1;
+
+    IF v_primary_key_col IS NULL THEN
+        RAISE EXCEPTION
+            'No primary key column found in %.%',
+            p_schema_name, p_table_name
+            USING ERRCODE = '55000';
+    END IF;
+
+    RETURN v_primary_key_col;
+END;
+$$;
+
+-- =========================================
+-- 03. Function: current_active_profile_id_internal
 -- =========================================
 -- Purpose:
 --   Resolves the current authenticated user's active profile ID.
@@ -108,7 +180,7 @@ END;
 $$;
 
 -- =========================================
--- 03. Function: check_admin_permissions_internal
+-- 04. Function: check_admin_permissions_internal
 -- =========================================
 -- Purpose:
 --   Determines whether the current session user has administrative privileges.
@@ -162,7 +234,7 @@ END;
 $$;
 
 -- =========================================
--- 04. Function: check_rate_limit_internal
+-- 05. Function: check_rate_limit_internal
 -- =========================================
 -- Purpose:
 --   Enforces per-user API rate limits for a given endpoint within a rolling time window.
@@ -249,7 +321,7 @@ END;
 $$;
 
 -- =========================================
--- 05. Function: initialize_defaults_for_user_internal
+-- 06. Function: initialize_defaults_for_user_internal
 -- =========================================
 -- Purpose:
 --   Inserts all default data for a given user, including:
@@ -383,7 +455,7 @@ END;
 $$;
 
 -- =========================================
--- 06. Function: initialize_my_defaults_internal
+-- 07. Function: initialize_my_defaults_internal
 -- =========================================
 -- Purpose:
 --   Initializes default data for the current session user if not already inserted.
@@ -460,7 +532,7 @@ END;
 $$;
 
 -- =========================================
--- 07. Function: initialize_my_defaults
+-- 08. Function: initialize_my_defaults
 -- =========================================
 -- Purpose:
 --   Wrapper function to initialize default data for the current session user.
@@ -546,7 +618,7 @@ END;
 $$;
 
 -- =========================================
--- 08. Function: admin_initialize_user_defaults_internal
+-- 09. Function: admin_initialize_user_defaults_internal
 -- =========================================
 -- Purpose:
 --   Allows an administrator to initialize default data for any user.
@@ -631,7 +703,7 @@ END;
 $$;
 
 -- =========================================
--- 09. Function: admin_initialize_user_defaults
+-- 10. Function: admin_initialize_user_defaults
 -- =========================================
 -- Purpose:
 --   Wrapper function to initialize default data for a specified user,
@@ -748,7 +820,7 @@ END;
 $$;
 
 -- =========================================
--- 10. Function: hard_delete_record_internal
+-- 11. Function: hard_delete_record_internal
 -- =========================================
 -- Purpose:
 --   Executes a hard delete of a record from a specified table, including all
@@ -817,28 +889,8 @@ BEGIN
             USING ERRCODE = '42601'; -- syntax_error (semantic misuse)
     END IF;
 
-    BEGIN
-        -- Determine PK column dynamically from whitelist
-        SELECT column_name
-        INTO v_primary_key_col
-        FROM information_schema.columns
-        WHERE table_schema = v_schema_name
-          AND table_name = v_table_name
-          AND column_name IN ('id','account_id','transaction_id')
-        ORDER BY CASE column_name
-                     WHEN 'id' THEN 1
-                     WHEN 'account_id' THEN 2
-                     WHEN 'transaction_id' THEN 3
-                 END
-        LIMIT 1;
-
-        IF v_primary_key_col IS NULL THEN
-            RAISE EXCEPTION 'No primary key column found in table %', p_table_name
-            USING ERRCODE = '55000';
-        END IF;
-    EXCEPTION WHEN OTHERS THEN
-        RAISE EXCEPTION 'Failed to determine primary key column for table %: %', p_table_name, SQLERRM;
-    END;
+    -- Resolve primary key column
+    v_primary_key_col := util.resolve_primary_key_column_internal(v_schema_name, v_table_name);
 
     v_sql_query := format(
         'SELECT %I, deleted_at FROM %I.%I WHERE %I = $1 FOR UPDATE',
@@ -997,7 +1049,7 @@ END;
 $$;
 
 -- =========================================
--- 11. Function: admin_hard_delete_record_internal
+-- 12. Function: admin_hard_delete_record_internal
 -- =========================================
 -- Purpose:
 --   Performs a hard delete of a record from a specified table, bypassing
@@ -1054,7 +1106,7 @@ END;
 $$;
 
 -- =========================================
--- 12. Function: admin_hard_delete_record
+-- 13. Function: admin_hard_delete_record
 -- =========================================
 -- Purpose:
 --   Wrapper function to perform a hard delete on a specific record
@@ -1202,7 +1254,7 @@ END;
 $$;
 
 -- =========================================
--- 13. Function: soft_delete_profile_internal
+-- 14. Function: soft_delete_profile_internal
 -- =========================================
 -- Purpose:
 --   Performs a soft-delete of a profile in the `core.profiles` table.
@@ -1287,7 +1339,7 @@ END;
 $$;
 
 -- =========================================
--- 14. Function: soft_delete_my_profile
+-- 15. Function: soft_delete_my_profile
 -- =========================================
 -- Purpose:
 --   Soft-deletes the currently active profile of the authenticated user.
@@ -1427,7 +1479,7 @@ END;
 $$;
 
 -- =========================================
--- 15. Function: admin_soft_delete_user_profile
+-- 16. Function: admin_soft_delete_user_profile
 -- =========================================
 -- Purpose:
 --   Allows an administrator to soft-delete a specific user profile.
