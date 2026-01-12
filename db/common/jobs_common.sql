@@ -59,7 +59,10 @@ DECLARE
         'finance.exchange_rates'
     ];
 
-    v_tbl TEXT;
+    v_table TEXT;
+    v_schema_name TEXT;
+    v_table_name TEXT;
+    v_primary_key_col TEXT;
     v_rec RECORD;
     v_deleted_counter BIGINT;
     v_failed_counter BIGINT;
@@ -70,24 +73,32 @@ BEGIN
 
     v_cutoff_date := NOW() - (p_older_than_days || ' days')::INTERVAL;
 
-    FOREACH v_tbl IN ARRAY v_tables_to_clean LOOP
+    FOREACH v_table IN ARRAY v_tables_to_clean LOOP
+        -- Split the input table name into schema and table
+        v_schema_name := split_part(v_table, '.', 1);
+        v_table_name := split_part(v_table, '.', 2);
+        -- Resolve primary key column
+        v_primary_key_col := util.resolve_primary_key_column_internal(v_schema_name, v_table_name);
+        -- Initialize counters
         v_deleted_counter := 0;
         v_failed_counter := 0;
+
         LOOP
             -- Fetch a batch of IDs to process
             v_rows_fetched := 0;
             FOR v_rec IN EXECUTE format(
-                'SELECT id FROM %I.%I WHERE deleted_at IS NOT NULL AND deleted_at < $1 ORDER BY deleted_at LIMIT %s FOR UPDATE',
-                split_part(v_tbl, '.', 1),
-                split_part(v_tbl, '.', 2),
-                p_batch_size
+                'SELECT %I FROM %I.%I WHERE deleted_at IS NOT NULL AND deleted_at < $1 ORDER BY deleted_at LIMIT %s FOR UPDATE',
+                v_primary_key_col,  -- primary key column
+                v_schema_name,      -- schema
+                v_table_name,       -- table
+                p_batch_size        -- batch size
             ) USING v_cutoff_date
             LOOP
                 v_rows_fetched := v_rows_fetched + 1;
 
                 BEGIN
                     -- Call the existing hard_delete_record_internal function
-                    IF finance.hard_delete_record_internal(v_tbl, v_rec.id) THEN
+                    IF finance.hard_delete_record_internal(v_table, v_rec.id) THEN
                         v_deleted_counter := v_deleted_counter + 1;
                     END IF;
                 EXCEPTION
@@ -97,7 +108,7 @@ BEGIN
                         -- Log failure
                         RAISE NOTICE
                             'Failed to hard delete record % from table % (SQLSTATE %): %',
-                            v_rec.id, v_tbl, SQLSTATE, SQLERRM;
+                            v_rec.id, v_table, SQLSTATE, SQLERRM;
                 END;
             END LOOP;
 
@@ -107,7 +118,7 @@ BEGIN
 
         -- Return the results for this table
         RETURN QUERY
-        SELECT v_tbl, v_deleted_counter, v_failed_counter;
+        SELECT v_table, v_deleted_counter, v_failed_counter;
     END LOOP;
 END;
 $$;
