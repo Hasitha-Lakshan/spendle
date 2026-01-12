@@ -43,18 +43,19 @@ DECLARE
     -- List of all tables with soft-delete support
     v_tables_to_clean TEXT[] := ARRAY[
         -- Transactions and related
-        'finance.transactions', 'finance.transactions_recurring',
-        'finance.transactions_income', 'finance.transactions_expense',
-        'finance.transactions_investment', 'finance.transactions_borrow',
-        'finance.transactions_lend', 'finance.transactions_transfer',
-        'finance.transactions_adjustment',
+        'finance.transactions_recurring', 'finance.transactions_income',
+        'finance.transactions_expense', 'finance.transactions_investment',
+        'finance.transactions_borrow', 'finance.transactions_lend',
+        'finance.transactions_transfer', 'finance.transactions_adjustment',
+        'finance.transactions',
         -- Accounts and specialized accounts
-        'finance.accounts', 'finance.cash_accounts', 'finance.bank_accounts',
+        'finance.cash_accounts', 'finance.bank_accounts',
         'finance.credit_card_accounts', 'finance.loan_accounts',
         'finance.investment_accounts', 'finance.crypto_accounts',
         'finance.wallet_accounts', 'finance.receivable_accounts',
+        'finance.accounts', 
         -- Categories and sources
-        'finance.expense_categories', 'finance.expense_subcategories',
+        'finance.expense_subcategories', 'finance.expense_categories',
         'finance.income_sources', 'finance.counterparties',
         'finance.exchange_rates'
     ];
@@ -87,7 +88,7 @@ BEGIN
             -- Fetch a batch of IDs to process
             v_rows_fetched := 0;
             FOR v_rec IN EXECUTE format(
-                'SELECT %I FROM %I.%I WHERE deleted_at IS NOT NULL AND deleted_at < $1 ORDER BY deleted_at LIMIT %s FOR UPDATE',
+                'SELECT %I AS record_id FROM %I.%I WHERE deleted_at IS NOT NULL AND deleted_at < $1 ORDER BY deleted_at LIMIT %s FOR UPDATE',
                 v_primary_key_col,  -- primary key column
                 v_schema_name,      -- schema
                 v_table_name,       -- table
@@ -98,7 +99,7 @@ BEGIN
 
                 BEGIN
                     -- Call the existing hard_delete_record_internal function
-                    IF finance.hard_delete_record_internal(v_table, v_rec.id) THEN
+                    IF finance.hard_delete_record_internal(v_table, v_rec.record_id) THEN
                         v_deleted_counter := v_deleted_counter + 1;
                     END IF;
                 EXCEPTION
@@ -108,7 +109,7 @@ BEGIN
                         -- Log failure
                         RAISE NOTICE
                             'Failed to hard delete record % from table % (SQLSTATE %): %',
-                            v_rec.id, v_table, SQLSTATE, SQLERRM;
+                            v_rec.record_id, v_table, SQLSTATE, SQLERRM;
                 END;
             END LOOP;
 
